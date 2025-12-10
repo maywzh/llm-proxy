@@ -163,6 +163,39 @@ async def completions(request: Request, authorization: Optional[str] = Header(No
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get('/v1/models')
+async def list_models(authorization: Optional[str] = Header(None)):
+    """List all available models (OpenAI compatible)"""
+    # Verify master API key
+    if not verify_master_key(authorization):
+        raise HTTPException(status_code=401, detail='Unauthorized')
+    
+    # Collect all unique models from all providers
+    models_set = set()
+    for provider in providers:
+        if 'model_mapping' in provider:
+            models_set.update(provider['model_mapping'].keys())
+    
+    # Format response according to OpenAI API spec
+    models_list = [
+        {
+            'id': model,
+            'object': 'model',
+            'created': 1677610602,  # Unix timestamp
+            'owned_by': 'system',
+            'permission': [],
+            'root': model,
+            'parent': None
+        }
+        for model in sorted(models_set)
+    ]
+    
+    return {
+        'object': 'list',
+        'data': models_list
+    }
+
+
 @app.get('/health')
 async def health():
     """Basic health check endpoint"""
@@ -271,8 +304,9 @@ async def startup_event():
     """Initialize configuration on startup"""
     global providers, provider_weights, verify_ssl, master_api_key
     
-    # Load configuration
-    config = load_config()
+    # Load configuration from environment variable or default
+    config_path = os.environ.get('CONFIG_PATH', 'config.yaml')
+    config = load_config(config_path)
     providers = config['providers']
     
     # Extract weights (default to 1 if not specified)
@@ -296,12 +330,22 @@ async def startup_event():
 
 if __name__ == '__main__':
     import uvicorn
+    import argparse
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='LLM API Proxy Server')
+    parser.add_argument('--config', type=str, default='config.yaml',
+                       help='Path to configuration file (default: config.yaml)')
+    args = parser.parse_args()
     
     # Load config to get server settings
-    config = load_config()
+    config = load_config(args.config)
     server_config = config.get('server', {})
-    host = server_config.get('host', '0.0.0.0')
-    port = server_config.get('port', 8000)
     
+    # Priority: ENV > config file > default
+    host = os.environ.get('HOST', server_config.get('host', '0.0.0.0'))
+    port = int(os.environ.get('PORT', server_config.get('port', 18000)))
+    
+    print(f"Using config file: {args.config}")
     print(f"Listening on {host}:{port}")
     uvicorn.run(app, host=host, port=port)
