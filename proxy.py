@@ -13,7 +13,11 @@ import urllib3
 import random
 from typing import Optional
 import asyncio
+import re
 
+from dotenv import load_dotenv
+
+load_dotenv()
 # Disable SSL warnings when verify_ssl is False
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -29,12 +33,57 @@ provider_weights = []
 verify_ssl = True
 master_api_key = None
 
-os.environ["SSL_CERT_FILE"] = "./cacerts.pem"
+def expand_env_vars(value):
+    """
+    Expand environment variables in a string value.
+    Supports formats:
+    - ${VAR} - simple substitution
+    - ${VAR:-default} - with default value
+    - ${VAR:default} - alternative syntax
+    """
+    if not isinstance(value, str):
+        return value
+    
+    # Pattern: ${VAR} or ${VAR:-default} or ${VAR:default}
+    pattern = r'\$\{([^}:]+)(?::?-([^}]*))?\}'
+    
+    def replacer(match):
+        var_name = match.group(1)
+        default_value = match.group(2) if match.group(2) is not None else ''
+        return os.environ.get(var_name, default_value)
+    
+    return re.sub(pattern, replacer, value)
+
+
+def expand_config_env_vars(config):
+    """Recursively expand environment variables in config"""
+    if isinstance(config, dict):
+        return {k: expand_config_env_vars(v) for k, v in config.items()}
+    elif isinstance(config, list):
+        return [expand_config_env_vars(item) for item in config]
+    elif isinstance(config, str):
+        return expand_env_vars(config)
+    else:
+        return config
+
+
+def str_to_bool(value):
+    """Convert string representation of boolean to actual boolean"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ('true', '1', 'yes', 'on')
+    return bool(value)
+
 
 def load_config(config_path='config.yaml'):
-    """Load configuration from YAML file"""
+    """Load configuration from YAML file and expand environment variables"""
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
+    
+    # Expand environment variables in the entire config
+    config = expand_config_env_vars(config)
+    
     return config
 
 
@@ -279,6 +328,9 @@ async def health_detailed():
         except Exception as e:
             end_time = time.time()
             latency_ms = int((end_time - start_time) * 1000)
+            import traceback
+            error_msg = traceback.format_exc()
+            print(f"Error testing {provider_name}: {error_msg}", flush=True)
             return {
                 provider_name: {
                     'status': 'error',
@@ -312,8 +364,8 @@ async def startup_event():
     # Extract weights (default to 1 if not specified)
     provider_weights = [p.get('weight', 1) for p in providers]
     
-    # Get SSL verification setting
-    verify_ssl = config.get('verify_ssl', True)
+    # Get SSL verification setting and convert to boolean
+    verify_ssl = str_to_bool(config.get('verify_ssl', True))
     
     # Get master API key
     server_config = config.get('server', {})
