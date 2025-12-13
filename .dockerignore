@@ -27,6 +27,10 @@ ENV/
 # Documentation
 README.md
 *.md
+!REFACTORING.md
 
 # Other
 .DS_Store
+proxy.py.old
+.analyse/
+.debug/

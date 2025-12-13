@@ -95,7 +95,7 @@ run:
 	else \
 		echo "No environment file found. Running without environment variables."; \
 	fi; \
-	python3 proxy.py
+	uv run python main.py
 
 upload-docker-image:
 	@if ! $(MAKE) -s check-image 2>/dev/null; then \
