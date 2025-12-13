@@ -24,7 +24,7 @@ RUN if [ -f /tmp/build/config.yaml ]; then cp /tmp/build/config.yaml ./config.ya
 RUN uv sync --frozen
 
 # Expose port (default 8000, can be overridden by config)
-EXPOSE 8000
+EXPOSE 18000
 
 # Set default config path (can be overridden by environment variable)
 ENV CONFIG_PATH=/app/config.yaml
