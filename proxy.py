@@ -116,9 +116,11 @@ async def chat_completions(request: Request, authorization: Optional[str] = Head
     # Get request data
     data = await request.json()
     
+    # Store original model name for response rewriting
+    original_model = data.get('model')
+    
     # Apply model mapping if configured
     if 'model' in data and 'model_mapping' in provider:
-        original_model = data['model']
         mapped_model = provider['model_mapping'].get(original_model, original_model)
         data['model'] = mapped_model
     
@@ -140,6 +142,26 @@ async def chat_completions(request: Request, authorization: Optional[str] = Head
                 try:
                     async with client.stream('POST', url, json=data, headers=headers) as response:
                         async for chunk in response.aiter_bytes():
+                            # Rewrite model field in SSE chunks
+                            chunk_str = chunk.decode('utf-8', errors='ignore')
+                            if original_model and '"model":' in chunk_str:
+                                # Replace mapped model with original model in JSON
+                                import json
+                                lines = chunk_str.split('\n')
+                                rewritten_lines = []
+                                for line in lines:
+                                    if line.startswith('data: ') and line != 'data: [DONE]':
+                                        try:
+                                            json_str = line[6:]  # Remove 'data: ' prefix
+                                            json_obj = json.loads(json_str)
+                                            if 'model' in json_obj:
+                                                json_obj['model'] = original_model
+                                            rewritten_lines.append('data: ' + json.dumps(json_obj))
+                                        except:
+                                            rewritten_lines.append(line)
+                                    else:
+                                        rewritten_lines.append(line)
+                                chunk = '\n'.join(rewritten_lines).encode('utf-8')
                             yield chunk
                 finally:
                     await client.aclose()
@@ -151,8 +173,12 @@ async def chat_completions(request: Request, authorization: Optional[str] = Head
         else:
             async with httpx.AsyncClient(verify=verify_ssl, timeout=300.0) as client:
                 response = await client.post(url, json=data, headers=headers)
+                response_data = response.json()
+                # Rewrite model field in non-streaming response
+                if original_model and 'model' in response_data:
+                    response_data['model'] = original_model
                 return JSONResponse(
-                    content=response.json(),
+                    content=response_data,
                     status_code=response.status_code
                 )
     
@@ -171,9 +197,11 @@ async def completions(request: Request, authorization: Optional[str] = Header(No
     
     data = await request.json()
     
+    # Store original model name for response rewriting
+    original_model = data.get('model')
+    
     # Apply model mapping if configured
     if 'model' in data and 'model_mapping' in provider:
-        original_model = data['model']
         mapped_model = provider['model_mapping'].get(original_model, original_model)
         data['model'] = mapped_model
     
@@ -192,6 +220,26 @@ async def completions(request: Request, authorization: Optional[str] = Header(No
                 try:
                     async with client.stream('POST', url, json=data, headers=headers) as response:
                         async for chunk in response.aiter_bytes():
+                            # Rewrite model field in SSE chunks
+                            chunk_str = chunk.decode('utf-8', errors='ignore')
+                            if original_model and '"model":' in chunk_str:
+                                # Replace mapped model with original model in JSON
+                                import json
+                                lines = chunk_str.split('\n')
+                                rewritten_lines = []
+                                for line in lines:
+                                    if line.startswith('data: ') and line != 'data: [DONE]':
+                                        try:
+                                            json_str = line[6:]  # Remove 'data: ' prefix
+                                            json_obj = json.loads(json_str)
+                                            if 'model' in json_obj:
+                                                json_obj['model'] = original_model
+                                            rewritten_lines.append('data: ' + json.dumps(json_obj))
+                                        except:
+                                            rewritten_lines.append(line)
+                                    else:
+                                        rewritten_lines.append(line)
+                                chunk = '\n'.join(rewritten_lines).encode('utf-8')
                             yield chunk
                 finally:
                     await client.aclose()
@@ -203,8 +251,12 @@ async def completions(request: Request, authorization: Optional[str] = Header(No
         else:
             async with httpx.AsyncClient(verify=verify_ssl, timeout=300.0) as client:
                 response = await client.post(url, json=data, headers=headers)
+                response_data = response.json()
+                # Rewrite model field in non-streaming response
+                if original_model and 'model' in response_data:
+                    response_data['model'] = original_model
                 return JSONResponse(
-                    content=response.json(),
+                    content=response_data,
                     status_code=response.status_code
                 )
     
