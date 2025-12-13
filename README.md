@@ -1,6 +1,5 @@
-# LLM API Round-Robin Proxy
-
-一个简单的 LLM API 代理服务，支持多个提供商的轮询（round-robin）请求分发。
+# tvs-llm-proxy
+tvs-llm-proxy 是一个简单的 LLM API 代理服务，通过轮询（round-robin）模式将请求分发到多个后端提供商。
 
 ## 功能特性
 
