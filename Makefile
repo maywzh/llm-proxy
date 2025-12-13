@@ -50,7 +50,7 @@ check-image:
 		exit 1; \
 	fi
 
-build:
+build-docker-image:
 	@echo "Building Docker image..."
 	@BUILD_ARGS=""; \
 	if [ -n "$(ARGS_JSON)" ] && [ -f "$(ARGS_JSON)" ]; then \
@@ -97,7 +97,7 @@ run:
 	fi; \
 	python3 proxy.py
 
-upload:
+upload-docker-image:
 	@if ! $(MAKE) -s check-image 2>/dev/null; then \
 		echo "Image $(IMAGE_NAME):latest not found. Building..."; \
 		$(MAKE) build; \
