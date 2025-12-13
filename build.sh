@@ -70,10 +70,19 @@ image_exists() {
 
 # Function to build image
 build_image() {
-    echo "Building Docker image..."
+    if [ "$FORCE_BUILD" = true ]; then
+        echo "Force building Docker image (no cache)..."
+    else
+        echo "Building Docker image..."
+    fi
     
     # Prepare build args
     BUILD_ARGS=""
+    
+    # Add --no-cache if force build is enabled
+    if [ "$FORCE_BUILD" = true ]; then
+        BUILD_ARGS="--no-cache"
+    fi
     if [ -n "$ARGS_FILE" ] && [ -f "$ARGS_FILE" ]; then
         echo "Using build args file: $ARGS_FILE"
         
@@ -103,13 +112,9 @@ build_image() {
         fi
     fi
     
-    # Build with or without build args
-    if [ -n "$BUILD_ARGS" ]; then
-        echo "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
-        eval "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
-    else
-        docker build --platform linux/amd64 -t "$IMAGE_NAME" .
-    fi
+    # Build with build args (including --no-cache if force build)
+    echo "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
+    eval "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
     
     echo "Image built successfully: $IMAGE_NAME:latest"
 }
