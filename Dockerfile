@@ -12,7 +12,8 @@ RUN pip install uv
 # Copy project files
 COPY pyproject.toml ./
 COPY uv.lock ./
-COPY proxy.py ./
+COPY main.py ./
+COPY app/ ./app/
 
 # Copy default config and certificate if they exist
 COPY . /tmp/build/
@@ -31,4 +32,4 @@ ENV CONFIG_PATH=/app/config.yaml
 
 # Run the application
 # Can be overridden in docker-compose or docker run with custom config path
-CMD ["sh", "-c", "uv run proxy.py --config=${CONFIG_PATH}"]
+CMD ["sh", "-c", "uv run python main.py --config=${CONFIG_PATH}"]
