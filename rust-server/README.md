@@ -77,8 +77,59 @@ docker run -p 18000:18000 \
 
 ## Configuration
 
-Create a `config.yaml` file (see `../config.example.yaml` for reference):
+The server supports flexible configuration through environment variables and YAML files.
 
+### Quick Start
+
+1. **Copy example files:**
+   ```bash
+   cp .env.example .env
+   cp config.example.yaml config.yaml
+   ```
+
+2. **Edit `.env` with your values:**
+   ```bash
+   # Edit API keys and sensitive data
+   nano .env
+   ```
+
+3. **Run the server:**
+   ```bash
+   cargo run
+   # Or with a specific config file
+   CONFIG_PATH=config.prod.yaml cargo run
+   ```
+
+### Configuration Methods
+
+The server supports three configuration methods with the following priority (highest to lowest):
+
+1. **Direct Environment Variables** - Set in shell or system
+2. **`.env` File** - Loaded automatically if present
+3. **YAML Configuration** - Structured config in `config.yaml`
+
+### Key Environment Variables
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `CONFIG_PATH` | Path to YAML config | `config.yaml` | `config.prod.yaml` |
+| `HOST` | Server bind address | `0.0.0.0` | `127.0.0.1` |
+| `PORT` | Server port | `18000` | `8080` |
+| `MASTER_API_KEY` | Master API key | None | `sk-your-key` |
+| `VERIFY_SSL` | Verify SSL certs | `true` | `false` |
+
+### Example Configuration
+
+**`.env` file:**
+```bash
+API_KEY_1=your-api-key-1
+API_KEY_2=your-api-key-2
+API_BASE_URL=https://api.example.com
+MASTER_API_KEY=sk-your-master-key
+VERIFY_SSL=false
+```
+
+**`config.yaml` file:**
 ```yaml
 providers:
   - name: "Provider-1"
@@ -96,12 +147,41 @@ providers:
       "claude-4.5-sonnet": "actual-model-name"
 
 server:
-  host: "0.0.0.0"
-  port: 18000
+  host: "${HOST:-0.0.0.0}"
+  port: ${PORT:-18000}
   master_api_key: "${MASTER_API_KEY}"
 
 verify_ssl: true
 ```
+
+### Environment-Specific Configs
+
+Use different config files for different environments:
+
+```bash
+# Development
+CONFIG_PATH=config.dev.yaml cargo run
+
+# Staging
+CONFIG_PATH=config.staging.yaml cargo run
+
+# Production
+CONFIG_PATH=config.prod.yaml cargo run
+```
+
+### Override Configuration
+
+Override specific settings without changing files:
+
+```bash
+# Override port and host
+PORT=8080 HOST=127.0.0.1 cargo run
+
+# Disable SSL verification
+VERIFY_SSL=false cargo run
+```
+
+📖 **For detailed configuration documentation, see [CONFIGURATION.md](CONFIGURATION.md)**
 
 ## API Endpoints
 
