@@ -101,7 +101,8 @@ impl AppConfig {
     /// let config = AppConfig::load("config.yaml").expect("Failed to load config");
     /// ```
     pub fn load(path: &str) -> Result<Self> {
-        // Load .env file if it exists
+        // Load .env file if it exists (skip in tests to avoid interference)
+        #[cfg(not(test))]
         dotenv::dotenv().ok();
 
         let content = fs::read_to_string(path)
@@ -113,7 +114,28 @@ impl AppConfig {
         let mut config: AppConfig = serde_yaml::from_str(&expanded)
             .with_context(|| format!("Failed to parse config file: {}", path))?;
 
-        // Handle verify_ssl as string or bool from environment
+        // Override with environment variables (env vars take precedence)
+        
+        // Server host override
+        if let Ok(host) = std::env::var("HOST") {
+            config.server.host = host;
+        }
+        
+        // Server port override
+        if let Ok(port_str) = std::env::var("PORT") {
+            if let Ok(port) = port_str.parse::<u16>() {
+                config.server.port = port;
+            }
+        }
+        
+        // Master API key override
+        if let Ok(key) = std::env::var("MASTER_API_KEY") {
+            if !key.trim().is_empty() {
+                config.server.master_api_key = Some(key);
+            }
+        }
+        
+        // SSL verification override
         if let Ok(verify_ssl_str) = std::env::var("VERIFY_SSL") {
             config.verify_ssl = str_to_bool(&verify_ssl_str);
         }
@@ -132,16 +154,39 @@ impl AppConfig {
 /// Expand environment variables in configuration content.
 ///
 /// Supports patterns: ${VAR}, ${VAR:-default}, ${VAR:default}
+///
+/// This function also handles numeric values by removing quotes around
+/// expanded values that look like numbers or booleans.
 fn expand_env_vars(content: &str) -> String {
-    let re = Regex::new(r"\$\{([^}:]+)(?::?-?([^}]*))?\}").unwrap();
+    let re = Regex::new(r#"["']?\$\{([^}:]+)(?::?-?([^}]*))?\}["']?"#).unwrap();
 
     re.replace_all(content, |caps: &regex::Captures| {
         let var_name = &caps[1];
         let default_value = caps.get(2).map(|m| m.as_str()).unwrap_or("");
 
-        std::env::var(var_name).unwrap_or_else(|_| default_value.to_string())
+        let expanded = std::env::var(var_name).unwrap_or_else(|_| default_value.to_string());
+        
+        // If the expanded value looks like a number or boolean, don't quote it
+        // This allows YAML to parse it as the correct type
+        if is_numeric_or_bool(&expanded) {
+            expanded
+        } else {
+            // For string values, preserve them as-is
+            expanded
+        }
     })
     .to_string()
+}
+
+/// Check if a string represents a numeric value or boolean.
+fn is_numeric_or_bool(s: &str) -> bool {
+    // Check if it's a number (integer or float)
+    if s.parse::<f64>().is_ok() {
+        return true;
+    }
+    
+    // Check if it's a boolean
+    matches!(s.to_lowercase().as_str(), "true" | "false")
 }
 
 /// Convert string to boolean.
@@ -157,8 +202,24 @@ fn str_to_bool(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_is_numeric_or_bool() {
+        assert!(is_numeric_or_bool("123"));
+        assert!(is_numeric_or_bool("18000"));
+        assert!(is_numeric_or_bool("3.14"));
+        assert!(is_numeric_or_bool("0"));
+        assert!(is_numeric_or_bool("true"));
+        assert!(is_numeric_or_bool("false"));
+        assert!(is_numeric_or_bool("True"));
+        assert!(is_numeric_or_bool("FALSE"));
+        assert!(!is_numeric_or_bool("test_value"));
+        assert!(!is_numeric_or_bool("http://example.com"));
+        assert!(!is_numeric_or_bool(""));
+    }
 
     #[test]
     fn test_expand_env_vars() {
@@ -170,6 +231,32 @@ mod tests {
         assert_eq!(output, "api_key: test_value");
         unsafe {
             std::env::remove_var("TEST_VAR");
+        }
+    }
+
+    #[test]
+    fn test_expand_env_vars_numeric() {
+        unsafe {
+            std::env::set_var("TEST_PORT", "18000");
+        }
+        let input = "port: ${TEST_PORT}";
+        let output = expand_env_vars(input);
+        assert_eq!(output, "port: 18000");
+        unsafe {
+            std::env::remove_var("TEST_PORT");
+        }
+    }
+
+    #[test]
+    fn test_expand_env_vars_boolean() {
+        unsafe {
+            std::env::set_var("TEST_BOOL", "true");
+        }
+        let input = "verify_ssl: ${TEST_BOOL}";
+        let output = expand_env_vars(input);
+        assert_eq!(output, "verify_ssl: true");
+        unsafe {
+            std::env::remove_var("TEST_BOOL");
         }
     }
 
@@ -258,7 +345,16 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_config_from_file() {
+        // Clear environment variables that might interfere
+        unsafe {
+            std::env::remove_var("HOST");
+            std::env::remove_var("PORT");
+            std::env::remove_var("MASTER_API_KEY");
+            std::env::remove_var("VERIFY_SSL");
+        }
+        
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
 providers:
@@ -346,7 +442,16 @@ verify_ssl: true
     }
 
     #[test]
+    #[serial]
     fn test_empty_master_api_key_becomes_none() {
+        // Clear ALL environment variables that might interfere
+        unsafe {
+            std::env::remove_var("HOST");
+            std::env::remove_var("PORT");
+            std::env::remove_var("MASTER_API_KEY");
+            std::env::remove_var("VERIFY_SSL");
+        }
+        
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
 providers:
@@ -355,6 +460,8 @@ providers:
     api_key: test_key
 
 server:
+  host: 127.0.0.1
+  port: 8080
   master_api_key: "   "
 
 verify_ssl: true
@@ -364,6 +471,54 @@ verify_ssl: true
 
         let config = AppConfig::load(temp_file.path().to_str().unwrap()).unwrap();
         assert!(config.server.master_api_key.is_none());
+        
+        // Verify other values are as expected
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 8080);
+    }
+    
+    #[test]
+    #[serial]
+    fn test_env_var_overrides() {
+        // Test that environment variables override config file values
+        unsafe {
+            std::env::set_var("HOST", "192.168.1.1");
+            std::env::set_var("PORT", "9999");
+            std::env::set_var("MASTER_API_KEY", "env-master-key");
+            std::env::set_var("VERIFY_SSL", "false");
+        }
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let config_content = r#"
+providers:
+  - name: TestProvider
+    api_base: http://localhost:8000
+    api_key: test_key
+
+server:
+  host: 127.0.0.1
+  port: 8080
+  master_api_key: config-master-key
+
+verify_ssl: true
+"#;
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        let config = AppConfig::load(temp_file.path().to_str().unwrap()).unwrap();
+        
+        // Environment variables should override config file
+        assert_eq!(config.server.host, "192.168.1.1");
+        assert_eq!(config.server.port, 9999);
+        assert_eq!(config.server.master_api_key.as_ref().unwrap(), "env-master-key");
+        assert!(!config.verify_ssl);
+        
+        unsafe {
+            std::env::remove_var("HOST");
+            std::env::remove_var("PORT");
+            std::env::remove_var("MASTER_API_KEY");
+            std::env::remove_var("VERIFY_SSL");
+        }
     }
 
     #[test]
