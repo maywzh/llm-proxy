@@ -17,7 +17,7 @@ use llm_proxy_rust::{
     core::{init_metrics, AppConfig, MetricsMiddleware},
     services::ProviderService,
 };
-use serde_json::json;
+// use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceExt;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};

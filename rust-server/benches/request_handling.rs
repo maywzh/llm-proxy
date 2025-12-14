@@ -5,7 +5,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use llm_proxy_rust::{
     api::models::{ChatCompletionRequest, Message},
-    core::config::{AppConfig, ProviderConfig, ServerConfig},
+    core::config::AppConfig,
 };
 use std::collections::HashMap;
 
