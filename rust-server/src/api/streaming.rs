@@ -5,17 +5,18 @@
 
 use crate::api::models::{StreamChunk, Usage};
 use crate::core::metrics::get_metrics;
-use axum::response::sse::{Event, KeepAlive, Sse};
-use futures::stream::{Stream, StreamExt};
+use axum::body::Body;
+use axum::response::Response as AxumResponse;
+use futures::stream::StreamExt;
 use reqwest::Response;
-use std::convert::Infallible;
 
 /// Create an SSE stream from a provider response.
 ///
 /// This function:
-/// - Converts the provider's byte stream to SSE events
+/// - Converts the provider's byte stream to raw SSE format
 /// - Rewrites model names to match the original request
 /// - Tracks token usage from streaming responses
+/// - Maintains OpenAI-compatible SSE format (data: prefix, double newlines, [DONE] message)
 ///
 /// # Arguments
 ///
@@ -26,10 +27,10 @@ pub async fn create_sse_stream(
     response: Response,
     original_model: String,
     provider_name: String,
-) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+) -> AxumResponse {
     let stream = response.bytes_stream();
 
-    let event_stream = stream.filter_map(move |chunk_result| {
+    let byte_stream = stream.filter_map(move |chunk_result| {
         let original_model = original_model.clone();
         let provider_name = provider_name.clone();
 
@@ -45,10 +46,9 @@ pub async fn create_sse_stream(
                         }
                     }
 
-                    // Rewrite model in chunk
+                    // Rewrite model in chunk and return as bytes
                     let rewritten = rewrite_model_in_chunk(&chunk_str, &original_model);
-
-                    Some(Ok(Event::default().data(rewritten)))
+                    Some(Ok::<Vec<u8>, std::io::Error>(rewritten.into_bytes()))
                 }
                 Err(e) => {
                     tracing::error!("Stream error: {}", e);
@@ -58,7 +58,16 @@ pub async fn create_sse_stream(
         }
     });
 
-    Sse::new(event_stream).keep_alive(KeepAlive::default())
+    // Convert to Body and create response with proper SSE headers
+    let body = Body::from_stream(byte_stream);
+    
+    AxumResponse::builder()
+        .status(200)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(body)
+        .unwrap()
 }
 
 /// Rewrite model name in a streaming chunk.
