@@ -28,7 +28,7 @@ async def rewrite_sse_chunk(chunk: bytes, original_model: Optional[str]) -> byte
                 json_obj = json.loads(json_str)
                 if 'model' in json_obj:
                     json_obj['model'] = original_model
-                rewritten_lines.append('data: ' + json.dumps(json_obj))
+                rewritten_lines.append('data: ' + json.dumps(json_obj, separators=(', ', ': ')))
             except:
                 rewritten_lines.append(line)
         else:
