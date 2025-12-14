@@ -1,0 +1,33 @@
+# Rust
+/target/
+Cargo.lock
+
+# Test coverage
+/coverage/
+*.profraw
+*.profdata
+
+# Benchmark results
+/criterion/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Config
+config.yaml
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

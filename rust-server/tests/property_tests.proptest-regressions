@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 89c209891735945371fe28ea57d35c2a74d2358a7ce334c21e7ecc4a1bfeda30 # shrinks to config = AppConfig { providers: [ProviderConfig { name: "Provider_srrlqo", api_base: "http://localhost:8002", api_key: "key_zmkljtdnr", weight: 2, model_mapping: {} }, ProviderConfig { name: "Provider_ridmkk", api_base: "http://localhost:8086", api_key: "key_fbffvhn", weight: 86, model_mapping: {} }], server: ServerConfig { host: "0.0.0.0", port: 18000, master_api_key: None }, verify_ssl: true }
