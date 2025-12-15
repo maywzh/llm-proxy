@@ -26,8 +26,20 @@ Thumbs.db
 logs/
 *.log
 
-.analyse
-.debug
+# Analysis and debug files
+.analyse/
+.debug/
 
+# Test and coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+coverage.json
+.pytest_cache/
+.hypothesis/
+*.proptest-regressions
+
+# Config files
 config.yaml
 proxy.py.old

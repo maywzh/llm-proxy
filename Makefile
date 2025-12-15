@@ -1,4 +1,4 @@
-.PHONY: help build run upload force-build clean check-image
+.PHONY: help build run upload force-build clean check-image test test-unit test-integration test-property coverage clean-test
 
 IMAGE_NAME := llm-proxy
 REGISTRY := nyuwa-user-docker-local.arf.tesla.cn/nyuwa-ns-voc
@@ -16,15 +16,23 @@ ARGS_TYPE ?=
 TAG := $(shell date +"%m%d%H%M")
 
 help:
-	@echo "=== Docker Build Makefile ==="
+	@echo "=== LLM Proxy Makefile ==="
 	@echo ""
-	@echo "Available targets:"
+	@echo "Docker targets:"
 	@echo "  make build              Build Docker image"
-	@echo "  make run                Run Docker container (builds if needed)"
+	@echo "  make run                Run application locally"
 	@echo "  make upload             Upload to registry (builds if needed)"
 	@echo "  make force-build        Force rebuild even if image exists"
 	@echo "  make clean              Stop and remove container"
 	@echo "  make check-image        Check if image exists"
+	@echo ""
+	@echo "Test targets:"
+	@echo "  make test               Run all tests"
+	@echo "  make test-unit          Run unit tests only"
+	@echo "  make test-integration   Run integration tests only"
+	@echo "  make test-property      Run property-based tests only"
+	@echo "  make coverage           Generate coverage report"
+	@echo "  make clean-test         Clean test artifacts"
 	@echo ""
 	@echo "Environment variables:"
 	@echo "  ENV_FILE=FILE           Use .env file for environment variables"
@@ -35,11 +43,9 @@ help:
 	@echo "Examples:"
 	@echo "  make build"
 	@echo "  make build ARGS_FILE=build.args"
-	@echo "  make build ARGS_JSON=build.json"
 	@echo "  make run ENV_FILE=.env"
-	@echo "  make run ENV_JSON=.env.json"
-	@echo "  make upload"
-	@echo "  make run ENV_FILE=.env && make upload"
+	@echo "  make test"
+	@echo "  make coverage"
 
 check-image:
 	@if docker images --format "table {{.Repository}}:{{.Tag}}" | grep -q "^$(IMAGE_NAME):latest$$"; then \
@@ -115,3 +121,29 @@ clean:
 	@docker stop $(IMAGE_NAME) 2>/dev/null || true
 	@docker rm $(IMAGE_NAME) 2>/dev/null || true
 	@echo "Container cleaned up"
+
+# Test targets
+test:
+	@echo "Running all tests..."
+	@bash scripts/test.sh
+
+test-unit:
+	@echo "Running unit tests..."
+	@.venv/bin/pytest tests/ -m unit -v
+
+test-integration:
+	@echo "Running integration tests..."
+	@.venv/bin/pytest tests/ -m integration -v
+
+test-property:
+	@echo "Running property-based tests..."
+	@.venv/bin/pytest tests/ -m property -v
+
+coverage:
+	@echo "Generating coverage report..."
+	@bash scripts/coverage.sh
+
+clean-test:
+	@echo "Cleaning test artifacts..."
+	@rm -rf .coverage .coverage.* htmlcov/ coverage.xml coverage.json .pytest_cache/ .hypothesis/
+	@echo "Test artifacts cleaned"
