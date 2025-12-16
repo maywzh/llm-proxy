@@ -109,6 +109,9 @@ class TestDetailedHealthEndpoint:
         assert 'provider2' in data
         assert data['provider1']['status'] == 'ok'
         assert data['provider2']['status'] == 'ok'
+        # Check model-level status
+        assert 'models' in data['provider1']
+        assert len(data['provider1']['models']) > 0
     
     @respx.mock
     def test_detailed_health_provider_error(self, app_client):
@@ -130,7 +133,9 @@ class TestDetailedHealthEndpoint:
         
         assert data['provider1']['status'] == 'ok'
         assert data['provider2']['status'] == 'error'
-        assert 'HTTP 500' in data['provider2']['error']
+        # Check model-level error
+        assert 'models' in data['provider2']
+        assert any('HTTP 500' in m.get('error', '') for m in data['provider2']['models'])
     
     @respx.mock
     def test_detailed_health_timeout(self, app_client):
@@ -152,7 +157,9 @@ class TestDetailedHealthEndpoint:
         
         assert data['provider1']['status'] == 'ok'
         assert data['provider2']['status'] == 'error'
-        assert 'Timeout' in data['provider2']['error']
+        # Check model-level timeout error
+        assert 'models' in data['provider2']
+        assert any('Timeout' in m.get('error', '') for m in data['provider2']['models'])
     
     @respx.mock
     def test_detailed_health_latency_tracking(self, app_client):
@@ -170,11 +177,15 @@ class TestDetailedHealthEndpoint:
         assert response.status_code == 200
         data = response.json()
         
-        # Both providers should have latency information
-        assert 'latency' in data['provider1']
-        assert 'latency' in data['provider2']
-        assert 'ms' in data['provider1']['latency']
-        assert 'ms' in data['provider2']['latency']
+        # Both providers should have latency information at model level
+        assert 'models' in data['provider1']
+        assert 'models' in data['provider2']
+        for model in data['provider1']['models']:
+            assert 'latency' in model
+            assert 'ms' in model['latency']
+        for model in data['provider2']['models']:
+            assert 'latency' in model
+            assert 'ms' in model['latency']
     
     @respx.mock
     def test_detailed_health_tested_model(self, app_client):
@@ -192,9 +203,13 @@ class TestDetailedHealthEndpoint:
         assert response.status_code == 200
         data = response.json()
         
-        # Should show which model was tested
-        assert 'tested_model' in data['provider1']
-        assert 'tested_model' in data['provider2']
+        # Should show which models were tested
+        assert 'models' in data['provider1']
+        assert 'models' in data['provider2']
+        for model in data['provider1']['models']:
+            assert 'model' in model
+        for model in data['provider2']['models']:
+            assert 'model' in model
     
     def test_detailed_health_no_auth_required(self, app_client):
         """Test detailed health check doesn't require authentication"""
@@ -208,12 +223,16 @@ class TestDetailedHealthEndpoint:
 class TestHealthEndpointEdgeCases:
     """Test health endpoint edge cases"""
     
-    def test_health_with_single_provider(self, monkeypatch):
+    def test_health_with_single_provider(self, monkeypatch, clear_config_cache):
         """Test health check with single provider"""
         from app.models.config import AppConfig, ProviderConfig
         from app.core import config as config_module
+        from app.core.config import get_config
         from fastapi.testclient import TestClient
         from app.main import app
+        
+        # Clear cache first
+        get_config.cache_clear()
         
         config = AppConfig(
             providers=[
@@ -242,12 +261,16 @@ class TestHealthEndpointEdgeCases:
         assert data['providers'] == 1
         assert data['provider_info'][0]['probability'] == '100.0%'
     
-    def test_health_with_equal_weights(self, monkeypatch):
+    def test_health_with_equal_weights(self, monkeypatch, clear_config_cache):
         """Test health check with equal provider weights"""
         from app.models.config import AppConfig, ProviderConfig
         from app.core import config as config_module
+        from app.core.config import get_config
         from fastapi.testclient import TestClient
         from app.main import app
+        
+        # Clear cache first
+        get_config.cache_clear()
         
         config = AppConfig(
             providers=[
@@ -285,12 +308,16 @@ class TestHealthEndpointEdgeCases:
             assert provider['probability'] == '50.0%'
     
     @respx.mock
-    def test_detailed_health_provider_no_models(self, monkeypatch):
+    def test_detailed_health_provider_no_models(self, monkeypatch, clear_config_cache):
         """Test detailed health check with provider having no models"""
         from app.models.config import AppConfig, ProviderConfig
         from app.core import config as config_module
+        from app.core.config import get_config
         from fastapi.testclient import TestClient
         from app.main import app
+        
+        # Clear cache first
+        get_config.cache_clear()
         
         config = AppConfig(
             providers=[
@@ -319,6 +346,8 @@ class TestHealthEndpointEdgeCases:
         assert 'no-models' in data
         assert data['no-models']['status'] == 'error'
         assert 'no models configured' in data['no-models']['error']
+        assert 'models' in data['no-models']
+        assert data['no-models']['models'] == []
     
     @respx.mock
     def test_detailed_health_concurrent_checks(self, app_client):
