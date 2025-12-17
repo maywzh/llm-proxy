@@ -157,10 +157,17 @@ pub struct ProviderHealth {
     pub status: String,
     
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub latency: Option<String>,
+    pub error: Option<String>,
     
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tested_model: Option<String>,
+    pub models: Vec<ModelHealth>,
+}
+
+/// Health status for a single model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelHealth {
+    pub model: String,
+    pub status: String,
+    pub latency: String,
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -358,24 +365,29 @@ mod tests {
     fn test_provider_health() {
         let health = ProviderHealth {
             status: "ok".to_string(),
-            latency: Some("100ms".to_string()),
-            tested_model: Some("gpt-4".to_string()),
             error: None,
+            models: vec![
+                ModelHealth {
+                    model: "gpt-4".to_string(),
+                    status: "ok".to_string(),
+                    latency: "100ms".to_string(),
+                    error: None,
+                },
+            ],
         };
         
         let json = serde_json::to_string(&health).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
-        assert!(json.contains("\"latency\":\"100ms\""));
-        assert!(!json.contains("error"));
+        assert!(json.contains("\"models\""));
+        assert!(!json.contains("\"error\""));
     }
 
     #[test]
     fn test_provider_health_with_error() {
         let health = ProviderHealth {
             status: "error".to_string(),
-            latency: Some("50ms".to_string()),
-            tested_model: None,
             error: Some("Connection refused".to_string()),
+            models: vec![],
         };
         
         let json = serde_json::to_string(&health).unwrap();
@@ -406,9 +418,15 @@ mod tests {
             "provider1".to_string(),
             ProviderHealth {
                 status: "ok".to_string(),
-                latency: Some("100ms".to_string()),
-                tested_model: Some("gpt-4".to_string()),
                 error: None,
+                models: vec![
+                    ModelHealth {
+                        model: "gpt-4".to_string(),
+                        status: "ok".to_string(),
+                        latency: "100ms".to_string(),
+                        error: None,
+                    },
+                ],
             },
         );
         
@@ -418,6 +436,7 @@ mod tests {
         // With flatten, provider name should be at top level
         assert!(json.contains("\"provider1\""));
         assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"models\""));
     }
 
     #[test]

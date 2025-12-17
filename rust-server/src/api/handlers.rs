@@ -186,43 +186,69 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> 
 }
 
 /// Detailed health check with provider testing.
+/// Tests all providers concurrently, but models serially within each provider.
 pub async fn health_detailed(
     State(state): State<Arc<AppState>>,
 ) -> Json<DetailedHealthResponse> {
     let providers = state.provider_service.get_all_providers();
-    let mut results = std::collections::HashMap::new();
+    
+    // Test all providers concurrently
+    let tasks: Vec<_> = providers
+        .into_iter()
+        .map(|provider| {
+            let config = state.config.clone();
+            async move {
+                test_provider(provider, config).await
+            }
+        })
+        .collect();
+    
+    let results = futures::future::join_all(tasks).await;
+    
+    let mut providers_map = std::collections::HashMap::new();
+    for (name, health) in results {
+        providers_map.insert(name, health);
+    }
+    
+    Json(DetailedHealthResponse { providers: providers_map })
+}
 
-    for provider in providers {
+/// Test a single provider by checking all its models serially.
+async fn test_provider(
+    provider: crate::api::models::Provider,
+    config: crate::core::config::AppConfig,
+) -> (String, crate::api::models::ProviderHealth) {
+    use crate::api::models::{ModelHealth, ProviderHealth};
+    
+    if provider.model_mapping.is_empty() {
+        return (
+            provider.name.clone(),
+            ProviderHealth {
+                status: "error".to_string(),
+                error: Some("no models configured".to_string()),
+                models: vec![],
+            },
+        );
+    }
+    
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(!config.verify_ssl)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap();
+    
+    let mut model_results = Vec::new();
+    
+    // Test models serially within this provider
+    for (model_name, actual_model) in &provider.model_mapping {
         let start = Instant::now();
-
-        if provider.model_mapping.is_empty() {
-            results.insert(
-                provider.name.clone(),
-                ProviderHealth {
-                    status: "error".to_string(),
-                    latency: Some("0ms".to_string()),
-                    tested_model: None,
-                    error: Some("no models configured".to_string()),
-                },
-            );
-            continue;
-        }
-
-        let model_name = provider.model_mapping.keys().next().unwrap().clone();
-        let actual_model = provider.model_mapping.get(&model_name).unwrap().clone();
-
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(!state.config.verify_ssl)
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap();
-
+        
         let test_payload = serde_json::json!({
             "model": actual_model,
             "messages": [{"role": "user", "content": "Hi"}],
             "max_tokens": 10
         });
-
+        
         match client
             .post(format!("{}/chat/completions", provider.api_base))
             .header("Authorization", format!("Bearer {}", provider.api_key))
@@ -234,43 +260,53 @@ pub async fn health_detailed(
             Ok(response) => {
                 let latency_ms = start.elapsed().as_millis();
                 if response.status().is_success() {
-                    results.insert(
-                        provider.name.clone(),
-                        ProviderHealth {
-                            status: "ok".to_string(),
-                            latency: Some(format!("{}ms", latency_ms)),
-                            tested_model: Some(model_name),
-                            error: None,
-                        },
-                    );
+                    model_results.push(ModelHealth {
+                        model: model_name.clone(),
+                        status: "ok".to_string(),
+                        latency: format!("{}ms", latency_ms),
+                        error: None,
+                    });
                 } else {
-                    results.insert(
-                        provider.name.clone(),
-                        ProviderHealth {
-                            status: "error".to_string(),
-                            latency: Some(format!("{}ms", latency_ms)),
-                            tested_model: None,
-                            error: Some(format!("HTTP {}", response.status())),
-                        },
-                    );
+                    model_results.push(ModelHealth {
+                        model: model_name.clone(),
+                        status: "error".to_string(),
+                        latency: format!("{}ms", latency_ms),
+                        error: Some(format!("HTTP {}", response.status())),
+                    });
                 }
             }
             Err(e) => {
                 let latency_ms = start.elapsed().as_millis();
-                results.insert(
-                    provider.name.clone(),
-                    ProviderHealth {
-                        status: "error".to_string(),
-                        latency: Some(format!("{}ms", latency_ms)),
-                        tested_model: None,
-                        error: Some(e.to_string().chars().take(100).collect()),
-                    },
-                );
+                model_results.push(ModelHealth {
+                    model: model_name.clone(),
+                    status: "error".to_string(),
+                    latency: format!("{}ms", latency_ms),
+                    error: Some(e.to_string().chars().take(100).collect()),
+                });
             }
         }
     }
-
-    Json(DetailedHealthResponse { providers: results })
+    
+    // Determine overall provider status
+    let all_ok = model_results.iter().all(|m| m.status == "ok");
+    let any_ok = model_results.iter().any(|m| m.status == "ok");
+    
+    let provider_status = if all_ok {
+        "ok"
+    } else if any_ok {
+        "partial"
+    } else {
+        "error"
+    };
+    
+    (
+        provider.name.clone(),
+        ProviderHealth {
+            status: provider_status.to_string(),
+            error: None,
+            models: model_results,
+        },
+    )
 }
 
 /// Prometheus metrics endpoint.
