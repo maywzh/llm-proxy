@@ -55,8 +55,13 @@ pub async fn chat_completions(
 ) -> Result<Response> {
     verify_auth(&headers, &state.config)?;
 
-    let provider = state.provider_service.get_next_provider();
     let original_model = payload.model.clone();
+    
+    // Select provider based on the requested model
+    let provider = state
+        .provider_service
+        .get_next_provider(Some(&original_model))
+        .map_err(AppError::Internal)?;
 
     // Map model if needed
     if let Some(mapped_model) = provider.model_mapping.get(&payload.model) {
@@ -112,7 +117,14 @@ pub async fn completions(
 ) -> Result<Response> {
     verify_auth(&headers, &state.config)?;
 
-    let provider = state.provider_service.get_next_provider();
+    // Extract model from payload if available
+    let model = payload.get("model").and_then(|m| m.as_str());
+    
+    let provider = state
+        .provider_service
+        .get_next_provider(model)
+        .map_err(AppError::Internal)?;
+    
     let url = format!("{}/completions", provider.api_base);
 
     let client = reqwest::Client::builder()

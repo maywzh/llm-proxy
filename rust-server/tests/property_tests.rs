@@ -42,7 +42,7 @@ proptest! {
     #[test]
     fn prop_provider_selection_returns_valid_provider(config in app_config_strategy()) {
         let service = ProviderService::new(config.clone());
-        let provider = service.get_next_provider();
+        let provider = service.get_next_provider(None).unwrap();
         
         // Provider name should match one of the configured providers
         let valid_names: Vec<String> = config.providers.iter()
@@ -61,7 +61,7 @@ proptest! {
         // Sample many times to ensure all providers are selected
         let iterations = config.providers.len() * 1000;
         for _ in 0..iterations {
-            let provider = service.get_next_provider();
+            let provider = service.get_next_provider(None).unwrap();
             selected_providers.insert(provider.name);
         }
         
@@ -108,7 +108,7 @@ proptest! {
         
         let iterations = 10000;
         for _ in 0..iterations {
-            let provider = service.get_next_provider();
+            let provider = service.get_next_provider(None).unwrap();
             if provider.name == "Provider1" {
                 provider1_count += 1;
             } else {
@@ -209,7 +209,7 @@ proptest! {
             let service_clone = Arc::clone(&service);
             let handle = thread::spawn(move || {
                 for _ in 0..100 {
-                    let _provider = service_clone.get_next_provider();
+                    let _provider = service_clone.get_next_provider(None).unwrap();
                 }
             });
             handles.push(handle);
@@ -240,7 +240,7 @@ proptest! {
         let service = ProviderService::new(config);
         
         for _ in 0..100 {
-            let provider = service.get_next_provider();
+            let provider = service.get_next_provider(None).unwrap();
             prop_assert_eq!(provider.name, "OnlyProvider");
         }
     }
@@ -268,7 +268,7 @@ proptest! {
         // Collect 100 selections
         let mut selections = vec![];
         for _ in 0..100 {
-            selections.push(service.get_next_provider().name);
+            selections.push(service.get_next_provider(None).unwrap().name);
         }
         
         // Should have some variation (not all the same)
@@ -354,5 +354,195 @@ mod quickcheck_tests {
         let all_providers = service.get_all_providers();
 
         TestResult::from_bool(all_providers.len() == count)
+    }
+}
+
+#[cfg(test)]
+mod complex_multi_provider_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Test complex multi-provider multi-model weight calculation
+    ///
+    /// Scenario:
+    /// - Provider0: models A, B, C (weight=2)
+    /// - Provider1: models A, B, D (weight=3)
+    /// - Provider2: models B, D (weight=1)
+    /// - Provider3: model C (weight=4)
+    ///
+    /// Expected behavior:
+    /// 1. Model A: Provider0(2) + Provider1(3) = ratio 2:3
+    /// 2. Model B: Provider0(2) + Provider1(3) + Provider2(1) = ratio 2:3:1
+    /// 3. Model C: Provider0(2) + Provider3(4) = ratio 2:4 = 1:2
+    /// 4. Model D: Provider1(3) + Provider2(1) = ratio 3:1
+    /// 5. Model E: Should return error (no provider supports it)
+    #[test]
+    fn test_complex_weight_calculation_scenario() {
+        let config = AppConfig {
+            providers: vec![
+                ProviderConfig {
+                    name: "provider0".to_string(),
+                    api_base: "https://api0.com".to_string(),
+                    api_key: "key0".to_string(),
+                    weight: 2,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("model-a".to_string(), "provider0-model-a".to_string());
+                        map.insert("model-b".to_string(), "provider0-model-b".to_string());
+                        map.insert("model-c".to_string(), "provider0-model-c".to_string());
+                        map
+                    },
+                },
+                ProviderConfig {
+                    name: "provider1".to_string(),
+                    api_base: "https://api1.com".to_string(),
+                    api_key: "key1".to_string(),
+                    weight: 3,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("model-a".to_string(), "provider1-model-a".to_string());
+                        map.insert("model-b".to_string(), "provider1-model-b".to_string());
+                        map.insert("model-d".to_string(), "provider1-model-d".to_string());
+                        map
+                    },
+                },
+                ProviderConfig {
+                    name: "provider2".to_string(),
+                    api_base: "https://api2.com".to_string(),
+                    api_key: "key2".to_string(),
+                    weight: 1,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("model-b".to_string(), "provider2-model-b".to_string());
+                        map.insert("model-d".to_string(), "provider2-model-d".to_string());
+                        map
+                    },
+                },
+                ProviderConfig {
+                    name: "provider3".to_string(),
+                    api_base: "https://api3.com".to_string(),
+                    api_key: "key3".to_string(),
+                    weight: 4,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("model-c".to_string(), "provider3-model-c".to_string());
+                        map
+                    },
+                },
+            ],
+            server: ServerConfig::default(),
+            verify_ssl: true,
+        };
+
+        let service = ProviderService::new(config);
+
+        // Test 1: Model A - Provider0(2) and Provider1(3) participate, ratio 2:3
+        let mut model_a_counts = HashMap::new();
+        for _ in 0..2000 {
+            let provider = service.get_next_provider(Some("model-a")).unwrap();
+            *model_a_counts.entry(provider.name).or_insert(0) += 1;
+        }
+
+        assert!(model_a_counts.contains_key("provider0"));
+        assert!(model_a_counts.contains_key("provider1"));
+        assert!(!model_a_counts.contains_key("provider2"));
+        assert!(!model_a_counts.contains_key("provider3"));
+
+        let ratio_a = *model_a_counts.get("provider0").unwrap() as f64
+            / *model_a_counts.get("provider1").unwrap() as f64;
+        // Expected ratio 2:3 = 0.667, allow 30% variance
+        assert!(
+            ratio_a > 0.47 && ratio_a < 0.87,
+            "Model A ratio was {}, expected ~0.667",
+            ratio_a
+        );
+
+        // Test 2: Model B - Provider0(2), Provider1(3), Provider2(1) participate, ratio 2:3:1
+        let mut model_b_counts = HashMap::new();
+        for _ in 0..3000 {
+            let provider = service.get_next_provider(Some("model-b")).unwrap();
+            *model_b_counts.entry(provider.name).or_insert(0) += 1;
+        }
+
+        assert!(model_b_counts.contains_key("provider0"));
+        assert!(model_b_counts.contains_key("provider1"));
+        assert!(model_b_counts.contains_key("provider2"));
+        assert!(!model_b_counts.contains_key("provider3"));
+
+        // Check ratios: provider0:provider1 should be 2:3
+        let ratio_b_01 = *model_b_counts.get("provider0").unwrap() as f64
+            / *model_b_counts.get("provider1").unwrap() as f64;
+        assert!(
+            ratio_b_01 > 0.47 && ratio_b_01 < 0.87,
+            "Model B provider0:provider1 ratio was {}, expected ~0.667",
+            ratio_b_01
+        );
+
+        // Check ratios: provider0:provider2 should be 2:1
+        let ratio_b_02 = *model_b_counts.get("provider0").unwrap() as f64
+            / *model_b_counts.get("provider2").unwrap() as f64;
+        assert!(
+            ratio_b_02 > 1.4 && ratio_b_02 < 2.6,
+            "Model B provider0:provider2 ratio was {}, expected ~2.0",
+            ratio_b_02
+        );
+
+        // Check ratios: provider1:provider2 should be 3:1
+        let ratio_b_12 = *model_b_counts.get("provider1").unwrap() as f64
+            / *model_b_counts.get("provider2").unwrap() as f64;
+        assert!(
+            ratio_b_12 > 2.1 && ratio_b_12 < 3.9,
+            "Model B provider1:provider2 ratio was {}, expected ~3.0",
+            ratio_b_12
+        );
+
+        // Test 3: Model C - Provider0(2) and Provider3(4) participate, ratio 2:4 = 1:2
+        let mut model_c_counts = HashMap::new();
+        for _ in 0..2000 {
+            let provider = service.get_next_provider(Some("model-c")).unwrap();
+            *model_c_counts.entry(provider.name).or_insert(0) += 1;
+        }
+
+        assert!(model_c_counts.contains_key("provider0"));
+        assert!(model_c_counts.contains_key("provider3"));
+        assert!(!model_c_counts.contains_key("provider1"));
+        assert!(!model_c_counts.contains_key("provider2"));
+
+        let ratio_c = *model_c_counts.get("provider0").unwrap() as f64
+            / *model_c_counts.get("provider3").unwrap() as f64;
+        // Expected ratio 2:4 = 0.5, allow 30% variance
+        assert!(
+            ratio_c > 0.35 && ratio_c < 0.65,
+            "Model C ratio was {}, expected ~0.5",
+            ratio_c
+        );
+
+        // Test 4: Model D - Provider1(3) and Provider2(1) participate, ratio 3:1
+        let mut model_d_counts = HashMap::new();
+        for _ in 0..2000 {
+            let provider = service.get_next_provider(Some("model-d")).unwrap();
+            *model_d_counts.entry(provider.name).or_insert(0) += 1;
+        }
+
+        assert!(model_d_counts.contains_key("provider1"));
+        assert!(model_d_counts.contains_key("provider2"));
+        assert!(!model_d_counts.contains_key("provider0"));
+        assert!(!model_d_counts.contains_key("provider3"));
+
+        let ratio_d = *model_d_counts.get("provider1").unwrap() as f64
+            / *model_d_counts.get("provider2").unwrap() as f64;
+        // Expected ratio 3:1 = 3.0, allow 30% variance
+        assert!(
+            ratio_d > 2.1 && ratio_d < 3.9,
+            "Model D ratio was {}, expected ~3.0",
+            ratio_d
+        );
+
+        // Test 5: Model E - No provider supports it, should return error
+        let result = service.get_next_provider(Some("model-e"));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("No provider supports model: model-e"));
     }
 }

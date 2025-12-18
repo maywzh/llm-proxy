@@ -69,10 +69,51 @@ impl ProviderService {
     ///
     /// This method is thread-safe and can be called concurrently.
     /// Returns a clone of the provider to avoid holding locks.
-    pub fn get_next_provider(&self) -> Provider {
+    ///
+    /// # Arguments
+    ///
+    /// * `model` - Optional model name to filter providers that support it
+    ///
+    /// # Returns
+    ///
+    /// Selected provider
+    ///
+    /// # Errors
+    ///
+    /// Returns error if model is specified but no provider supports it
+    pub fn get_next_provider(&self, model: Option<&str>) -> Result<Provider, String> {
         let mut rng = thread_rng();
-        let index = self.weighted_index.sample(&mut rng);
-        self.providers[index].clone()
+        
+        // If no model specified, use all providers with original weights
+        if model.is_none() {
+            let index = self.weighted_index.sample(&mut rng);
+            return Ok(self.providers[index].clone());
+        }
+        
+        let model_name = model.unwrap();
+        
+        // Filter providers that have the requested model
+        let mut available_providers = Vec::new();
+        let mut available_weights = Vec::new();
+        
+        for (provider, &weight) in self.providers.iter().zip(self.weights.iter()) {
+            if provider.model_mapping.contains_key(model_name) {
+                available_providers.push(provider.clone());
+                available_weights.push(weight);
+            }
+        }
+        
+        // If no provider has the model, return error
+        if available_providers.is_empty() {
+            return Err(format!("No provider supports model: {}", model_name));
+        }
+        
+        // Create weighted index for available providers
+        let weighted_index = WeightedIndex::new(&available_weights)
+            .map_err(|e| format!("Failed to create weighted index: {}", e))?;
+        
+        let index = weighted_index.sample(&mut rng);
+        Ok(available_providers[index].clone())
     }
 
     /// Get all configured providers.
@@ -192,7 +233,7 @@ mod tests {
         let service = ProviderService::new(config);
 
         // Test that selection works
-        let provider = service.get_next_provider();
+        let provider = service.get_next_provider(None).unwrap();
         assert!(provider.name == "Provider1" || provider.name == "Provider2");
     }
 
@@ -206,7 +247,7 @@ mod tests {
 
         // Sample 1000 times to check distribution
         for _ in 0..1000 {
-            let provider = service.get_next_provider();
+            let provider = service.get_next_provider(None).unwrap();
             if provider.name == "Provider1" {
                 provider1_count += 1;
             } else {
@@ -227,7 +268,7 @@ mod tests {
         let service = ProviderService::new(config);
 
         for _ in 0..100 {
-            let provider = service.get_next_provider();
+            let provider = service.get_next_provider(None).unwrap();
             assert_eq!(provider.name, "OnlyProvider");
         }
     }
@@ -272,8 +313,8 @@ mod tests {
         let config = create_test_config();
         let service = ProviderService::new(config);
 
-        let provider1 = service.get_next_provider();
-        let provider2 = service.get_next_provider();
+        let provider1 = service.get_next_provider(None).unwrap();
+        let provider2 = service.get_next_provider(None).unwrap();
 
         // Providers should be independent clones
         assert!(provider1.name == "Provider1" || provider1.name == "Provider2");
@@ -306,7 +347,7 @@ mod tests {
             .map(|_| {
                 let service = Arc::clone(&service);
                 thread::spawn(move || {
-                    let _provider = service.get_next_provider();
+                    let _provider = service.get_next_provider(None).unwrap();
                 })
             })
             .collect();
@@ -328,7 +369,7 @@ mod tests {
                 let service = Arc::clone(&service);
                 thread::spawn(move || {
                     for _ in 0..10 {
-                        let provider = service.get_next_provider();
+                        let provider = service.get_next_provider(None).unwrap();
                         assert!(provider.name == "Provider1" || provider.name == "Provider2");
                     }
                 })
@@ -352,7 +393,7 @@ mod tests {
         let mut provider2_count = 0;
 
         for _ in 0..1000 {
-            let provider = service.get_next_provider();
+            let provider = service.get_next_provider(None).unwrap();
             if provider.name == "Provider1" {
                 provider1_count += 1;
             } else {
@@ -376,7 +417,7 @@ mod tests {
         let mut provider1_count = 0;
 
         for _ in 0..1000 {
-            let provider = service.get_next_provider();
+            let provider = service.get_next_provider(None).unwrap();
             if provider.name == "Provider1" {
                 provider1_count += 1;
             }
@@ -399,5 +440,86 @@ mod tests {
         
         let provider2 = providers.iter().find(|p| p.name == "Provider2").unwrap();
         assert_eq!(provider2.model_mapping.get("model2").unwrap(), "provider2-model2");
+    }
+
+    #[test]
+    fn test_get_next_provider_with_model() {
+        let config = create_test_config();
+        let service = ProviderService::new(config);
+
+        // Request model1 which only Provider1 has
+        for _ in 0..10 {
+            let provider = service.get_next_provider(Some("model1")).unwrap();
+            assert_eq!(provider.name, "Provider1");
+            assert!(provider.model_mapping.contains_key("model1"));
+        }
+    }
+
+    #[test]
+    fn test_get_next_provider_with_nonexistent_model() {
+        let config = create_test_config();
+        let service = ProviderService::new(config);
+
+        // Request a model that no provider has
+        let result = service.get_next_provider(Some("nonexistent-model"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No provider supports model"));
+    }
+
+    #[test]
+    fn test_get_next_provider_without_model_uses_all_providers() {
+        let config = create_test_config();
+        let service = ProviderService::new(config);
+
+        let mut provider1_count = 0;
+        let mut provider2_count = 0;
+
+        for _ in 0..1000 {
+            let provider = service.get_next_provider(None).unwrap();
+            if provider.name == "Provider1" {
+                provider1_count += 1;
+            } else {
+                provider2_count += 1;
+            }
+        }
+
+        // Both providers should be selected
+        assert!(provider1_count > 0);
+        assert!(provider2_count > 0);
+
+        // Should follow weight distribution (2:1 ratio)
+        let ratio = provider1_count as f64 / provider2_count as f64;
+        assert!(ratio > 1.5 && ratio < 2.5, "Ratio was {}", ratio);
+    }
+
+    #[test]
+    fn test_get_next_provider_with_shared_model() {
+        // Create config where both providers have the same model
+        let mut config = create_test_config();
+        config.providers[0].model_mapping.insert("shared-model".to_string(), "provider1-shared".to_string());
+        config.providers[1].model_mapping.insert("shared-model".to_string(), "provider2-shared".to_string());
+        
+        let service = ProviderService::new(config);
+
+        let mut provider1_count = 0;
+        let mut provider2_count = 0;
+
+        // Request the shared model many times
+        for _ in 0..1000 {
+            let provider = service.get_next_provider(Some("shared-model")).unwrap();
+            if provider.name == "Provider1" {
+                provider1_count += 1;
+            } else {
+                provider2_count += 1;
+            }
+        }
+
+        // Both providers should be selected
+        assert!(provider1_count > 0);
+        assert!(provider2_count > 0);
+
+        // Should follow weight distribution (2:1 ratio)
+        let ratio = provider1_count as f64 / provider2_count as f64;
+        assert!(ratio > 1.5 && ratio < 2.5, "Ratio was {}", ratio);
     }
 }

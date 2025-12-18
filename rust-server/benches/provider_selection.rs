@@ -40,7 +40,7 @@ fn bench_provider_selection(c: &mut Criterion) {
             provider_count,
             |b, _| {
                 b.iter(|| {
-                    black_box(service.get_next_provider());
+                    black_box(service.get_next_provider(None));
                 });
             },
         );
@@ -66,7 +66,7 @@ fn bench_provider_selection_concurrent(c: &mut Criterion) {
                     for _ in 0..thread_count {
                         let service_clone = std::sync::Arc::clone(&service);
                         let handle = std::thread::spawn(move || {
-                            black_box(service_clone.get_next_provider());
+                            black_box(service_clone.get_next_provider(None));
                         });
                         handles.push(handle);
                     }
@@ -146,7 +146,7 @@ fn bench_weighted_distribution(c: &mut Criterion) {
     group.bench_function("1000_selections", |b| {
         b.iter(|| {
             for _ in 0..1000 {
-                black_box(service.get_next_provider());
+                black_box(service.get_next_provider(None));
             }
         });
     });
