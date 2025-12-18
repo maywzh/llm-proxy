@@ -22,9 +22,15 @@ async def proxy_completion_request(
     provider_svc: ProviderService
 ):
     """Common logic for proxying completion requests"""
-    provider = provider_svc.get_next_provider()
     data = await request.json()
     original_model = data.get('model')
+    
+    # Select provider based on the requested model
+    try:
+        provider = provider_svc.get_next_provider(model=original_model)
+    except ValueError as e:
+        logger.error(f"Provider selection failed: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
     
     # Store model and provider in request state for metrics middleware
     request.state.model = original_model or 'unknown'
