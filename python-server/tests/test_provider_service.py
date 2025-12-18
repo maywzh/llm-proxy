@@ -98,7 +98,7 @@ class TestProviderService:
         expected_models = {'gpt-4', 'gpt-3.5-turbo', 'claude-3'}
         assert models == expected_models
     
-    def test_get_all_models_empty_mapping(self, test_config, monkeypatch):
+    def test_get_all_models_empty_mapping(self, test_config, monkeypatch, clear_config_cache):
         """Test get_all_models with empty model mappings"""
         # Create config with no model mappings
         config = AppConfig(
@@ -113,8 +113,9 @@ class TestProviderService:
             verify_ssl=True
         )
         
-        from app.core import config as config_module
-        monkeypatch.setattr(config_module, 'get_config', lambda: config)
+        from app.services import provider_service as ps_module
+        monkeypatch.setattr(ps_module, 'get_config', lambda: config)
+        ps_module._provider_service = None
         
         service = ProviderService()
         service.initialize()
@@ -333,6 +334,197 @@ class TestProviderServiceEdgeCases:
         models = service.get_all_models()
         # Should have unique model names (gpt-4 appears in both but counted once)
         assert models == {'gpt-4', 'gpt-3.5', 'claude'}
+
+
+@pytest.mark.unit
+class TestModelBasedProviderSelection:
+    """Test model-based provider selection"""
+    
+    def test_get_next_provider_with_model(self, provider_service):
+        """Test provider selection with specific model"""
+        # Request gpt-4 which both providers have
+        provider = provider_service.get_next_provider(model='gpt-4')
+        assert provider.name in ['provider1', 'provider2']
+        assert 'gpt-4' in provider.model_mapping
+    
+    def test_get_next_provider_with_model_only_one_has(self, provider_service):
+        """Test provider selection when only one provider has the model"""
+        # Request gpt-3.5-turbo which only provider1 has
+        for _ in range(10):
+            provider = provider_service.get_next_provider(model='gpt-3.5-turbo')
+            assert provider.name == 'provider1'
+            assert 'gpt-3.5-turbo' in provider.model_mapping
+    
+    def test_get_next_provider_with_model_weighted_distribution(self, provider_service):
+        """Test weighted distribution when multiple providers have the model"""
+        # Both providers have gpt-4, provider1 has weight 2, provider2 has weight 1
+        selections = [provider_service.get_next_provider(model='gpt-4').name for _ in range(1000)]
+        from collections import Counter
+        counts = Counter(selections)
+        
+        # Should follow weight distribution (2:1 ratio)
+        ratio = counts['provider1'] / counts['provider2']
+        assert 1.5 < ratio < 2.5
+    
+    def test_get_next_provider_with_nonexistent_model(self, provider_service):
+        """Test error when requesting model that no provider has"""
+        with pytest.raises(ValueError, match="No provider supports model"):
+            provider_service.get_next_provider(model='nonexistent-model')
+    
+    def test_get_next_provider_without_model_uses_all_providers(self, provider_service):
+        """Test that not specifying model uses all providers"""
+        selections = [provider_service.get_next_provider().name for _ in range(1000)]
+        from collections import Counter
+        counts = Counter(selections)
+        
+        # Both providers should be selected
+        assert 'provider1' in counts
+        assert 'provider2' in counts
+        
+        # Should follow weight distribution (2:1 ratio)
+        ratio = counts['provider1'] / counts['provider2']
+        assert 1.5 < ratio < 2.5
+
+
+@pytest.mark.unit
+class TestComplexMultiProviderMultiModel:
+    """Test complex scenarios with multiple providers and models"""
+    
+    def test_complex_weight_calculation_scenario(self, monkeypatch, clear_config_cache):
+        """Test complex multi-provider multi-model weight calculation
+        
+        Scenario:
+        - Provider0: models A, B, C (weight=2)
+        - Provider1: models A, B, D (weight=3)
+        - Provider2: models B, D (weight=1)
+        - Provider3: model C (weight=4)
+        
+        Expected behavior:
+        1. Model A: Provider0(2) + Provider1(3) = ratio 2:3
+        2. Model B: Provider0(2) + Provider1(3) + Provider2(1) = ratio 2:3:1
+        3. Model C: Provider0(2) + Provider3(4) = ratio 2:4 = 1:2
+        4. Model D: Provider1(3) + Provider2(1) = ratio 3:1
+        5. Model E: Should raise ValueError (no provider supports it)
+        """
+        from app.models.config import AppConfig, ProviderConfig
+        
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name='provider0',
+                    api_base='https://api0.com',
+                    api_key='key0',
+                    weight=2,
+                    model_mapping={
+                        'model-a': 'provider0-model-a',
+                        'model-b': 'provider0-model-b',
+                        'model-c': 'provider0-model-c'
+                    }
+                ),
+                ProviderConfig(
+                    name='provider1',
+                    api_base='https://api1.com',
+                    api_key='key1',
+                    weight=3,
+                    model_mapping={
+                        'model-a': 'provider1-model-a',
+                        'model-b': 'provider1-model-b',
+                        'model-d': 'provider1-model-d'
+                    }
+                ),
+                ProviderConfig(
+                    name='provider2',
+                    api_base='https://api2.com',
+                    api_key='key2',
+                    weight=1,
+                    model_mapping={
+                        'model-b': 'provider2-model-b',
+                        'model-d': 'provider2-model-d'
+                    }
+                ),
+                ProviderConfig(
+                    name='provider3',
+                    api_base='https://api3.com',
+                    api_key='key3',
+                    weight=4,
+                    model_mapping={
+                        'model-c': 'provider3-model-c'
+                    }
+                )
+            ],
+            verify_ssl=True
+        )
+        
+        from app.services import provider_service as ps_module
+        monkeypatch.setattr(ps_module, 'get_config', lambda: config)
+        ps_module._provider_service = None
+        
+        service = ProviderService()
+        service.initialize()
+        
+        # Test 1: Model A - Provider0(2) and Provider1(3) participate, ratio 2:3
+        model_a_selections = [service.get_next_provider(model='model-a').name for _ in range(2000)]
+        model_a_counts = Counter(model_a_selections)
+        
+        assert 'provider0' in model_a_counts
+        assert 'provider1' in model_a_counts
+        assert 'provider2' not in model_a_counts
+        assert 'provider3' not in model_a_counts
+        
+        ratio_a = model_a_counts['provider0'] / model_a_counts['provider1']
+        # Expected ratio 2:3 = 0.667, allow 30% variance
+        assert 0.47 < ratio_a < 0.87, f"Model A ratio was {ratio_a}, expected ~0.667"
+        
+        # Test 2: Model B - Provider0(2), Provider1(3), Provider2(1) participate, ratio 2:3:1
+        model_b_selections = [service.get_next_provider(model='model-b').name for _ in range(3000)]
+        model_b_counts = Counter(model_b_selections)
+        
+        assert 'provider0' in model_b_counts
+        assert 'provider1' in model_b_counts
+        assert 'provider2' in model_b_counts
+        assert 'provider3' not in model_b_counts
+        
+        # Check ratios: provider0:provider1 should be 2:3
+        ratio_b_01 = model_b_counts['provider0'] / model_b_counts['provider1']
+        assert 0.47 < ratio_b_01 < 0.87, f"Model B provider0:provider1 ratio was {ratio_b_01}, expected ~0.667"
+        
+        # Check ratios: provider0:provider2 should be 2:1
+        ratio_b_02 = model_b_counts['provider0'] / model_b_counts['provider2']
+        assert 1.4 < ratio_b_02 < 2.6, f"Model B provider0:provider2 ratio was {ratio_b_02}, expected ~2.0"
+        
+        # Check ratios: provider1:provider2 should be 3:1
+        ratio_b_12 = model_b_counts['provider1'] / model_b_counts['provider2']
+        assert 2.1 < ratio_b_12 < 3.9, f"Model B provider1:provider2 ratio was {ratio_b_12}, expected ~3.0"
+        
+        # Test 3: Model C - Provider0(2) and Provider3(4) participate, ratio 2:4 = 1:2
+        model_c_selections = [service.get_next_provider(model='model-c').name for _ in range(2000)]
+        model_c_counts = Counter(model_c_selections)
+        
+        assert 'provider0' in model_c_counts
+        assert 'provider3' in model_c_counts
+        assert 'provider1' not in model_c_counts
+        assert 'provider2' not in model_c_counts
+        
+        ratio_c = model_c_counts['provider0'] / model_c_counts['provider3']
+        # Expected ratio 2:4 = 0.5, allow 30% variance
+        assert 0.35 < ratio_c < 0.65, f"Model C ratio was {ratio_c}, expected ~0.5"
+        
+        # Test 4: Model D - Provider1(3) and Provider2(1) participate, ratio 3:1
+        model_d_selections = [service.get_next_provider(model='model-d').name for _ in range(2000)]
+        model_d_counts = Counter(model_d_selections)
+        
+        assert 'provider1' in model_d_counts
+        assert 'provider2' in model_d_counts
+        assert 'provider0' not in model_d_counts
+        assert 'provider3' not in model_d_counts
+        
+        ratio_d = model_d_counts['provider1'] / model_d_counts['provider2']
+        # Expected ratio 3:1 = 3.0, allow 30% variance
+        assert 2.1 < ratio_d < 3.9, f"Model D ratio was {ratio_d}, expected ~3.0"
+        
+        # Test 5: Model E - No provider supports it, should raise ValueError
+        with pytest.raises(ValueError, match="No provider supports model: model-e"):
+            service.get_next_provider(model='model-e')
 
 
 @pytest.mark.unit
