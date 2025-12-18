@@ -1,6 +1,6 @@
 """Provider selection and management service"""
 import random
-from typing import Dict
+from typing import Dict, Optional
 
 from app.models.provider import Provider
 from app.core.config import get_config
@@ -33,11 +33,39 @@ class ProviderService:
         self._weights = [p.weight for p in self._providers]
         self._initialized = True
     
-    def get_next_provider(self) -> Provider:
-        """Get next provider based on weighted random selection"""
+    def get_next_provider(self, model: Optional[str] = None) -> Provider:
+        """Get next provider based on weighted random selection
+        
+        Args:
+            model: Optional model name to filter providers that support it
+            
+        Returns:
+            Selected provider
+            
+        Raises:
+            ValueError: If no provider supports the requested model
+        """
         if not self._initialized:
             self.initialize()
-        return random.choices(self._providers, weights=self._weights, k=1)[0]
+        
+        # If no model specified, use all providers with original weights
+        if model is None:
+            return random.choices(self._providers, weights=self._weights, k=1)[0]
+        
+        # Filter providers that have the requested model
+        available_providers = []
+        available_weights = []
+        
+        for provider, weight in zip(self._providers, self._weights):
+            if model in provider.model_mapping:
+                available_providers.append(provider)
+                available_weights.append(weight)
+        
+        # If no provider has the model, raise error
+        if not available_providers:
+            raise ValueError(f"No provider supports model: {model}")
+        
+        return random.choices(available_providers, weights=available_weights, k=1)[0]
     
     def get_all_providers(self) -> list[Provider]:
         """Get all configured providers"""
