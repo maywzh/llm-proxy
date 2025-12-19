@@ -2,7 +2,11 @@
 import sys
 import logging
 from pathlib import Path
+from contextvars import ContextVar
 from loguru import logger
+
+# Context variable to store current provider name
+current_provider: ContextVar[str] = ContextVar('current_provider', default='')
 
 
 class InterceptHandler(logging.Handler):
@@ -22,7 +26,14 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
         
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        # Add provider prefix for httpx logs
+        message = record.getMessage()
+        if record.name.startswith('httpx') and 'HTTP Request:' in message:
+            provider_name = current_provider.get()
+            if provider_name:
+                message = f"[Provider: {provider_name}] {message}"
+        
+        logger.opt(depth=depth, exception=record.exc_info).log(level, message)
 
 
 def setup_logging(log_level: str = "INFO", log_file: str = "logs/app.log") -> None:
@@ -61,12 +72,26 @@ def setup_logging(log_level: str = "INFO", log_file: str = "logs/app.log") -> No
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
     
     # Configure specific loggers
-    for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"]:
+    for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "fastapi", "httpx"]:
         logging_logger = logging.getLogger(logger_name)
         logging_logger.handlers = [InterceptHandler()]
         logging_logger.propagate = False
     
     logger.info(f"Logging initialized: level={log_level}, file={log_file}")
+
+
+def set_provider_context(provider_name: str) -> None:
+    """Set the current provider name in context for logging
+    
+    Args:
+        provider_name: Name of the provider making the request
+    """
+    current_provider.set(provider_name)
+
+
+def clear_provider_context() -> None:
+    """Clear the provider context"""
+    current_provider.set('')
 
 
 def get_logger():

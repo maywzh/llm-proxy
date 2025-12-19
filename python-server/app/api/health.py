@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from app.api.dependencies import get_provider_svc
 from app.services.provider_service import ProviderService
 from app.core.config import get_config
+from app.core.logging import set_provider_context, clear_provider_context
 
 router = APIRouter()
 
@@ -43,6 +44,9 @@ async def health_detailed(provider_svc: ProviderService = Depends(get_provider_s
         start_time = time.time()
         
         try:
+            # Set provider context for logging
+            set_provider_context(provider.name)
+            
             headers = {
                 'Authorization': f"Bearer {provider.api_key}",
                 'Content-Type': 'application/json'
@@ -81,6 +85,9 @@ async def health_detailed(provider_svc: ProviderService = Depends(get_provider_s
                 'error': str(e)[:100],
                 'latency': f'{latency_ms}ms'
             }
+        finally:
+            # Clear provider context after request
+            clear_provider_context()
     
     async def test_provider(provider):
         """Test all models for a single provider serially"""
