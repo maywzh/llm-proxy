@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.config import get_config
 from app.core.metrics import TOKEN_USAGE
+from app.core.logging import set_provider_context, clear_provider_context
 
 
 async def rewrite_sse_chunk(chunk: bytes, original_model: Optional[str]) -> bytes:
@@ -47,6 +48,9 @@ async def stream_response(
 ) -> AsyncIterator[bytes]:
     """Stream response from provider with model rewriting and token tracking"""
     try:
+        # Set provider context for logging
+        set_provider_context(provider_name)
+        
         async with client.stream('POST', url, json=data, headers=headers) as response:
             async for chunk in response.aiter_bytes():
                 # Track token usage from streaming chunks
@@ -87,6 +91,8 @@ async def stream_response(
                 
                 yield await rewrite_sse_chunk(chunk, original_model)
     finally:
+        # Clear provider context after streaming completes
+        clear_provider_context()
         await client.aclose()
 
 

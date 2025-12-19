@@ -10,7 +10,7 @@ from app.services.provider_service import ProviderService
 from app.utils.streaming import create_streaming_response, rewrite_model_in_response
 from app.core.config import get_config
 from app.core.metrics import TOKEN_USAGE
-from app.core.logging import get_logger
+from app.core.logging import get_logger, set_provider_context, clear_provider_context
 
 router = APIRouter()
 logger = get_logger()
@@ -47,6 +47,9 @@ async def proxy_completion_request(
     url = f"{provider.api_base}/{endpoint}"
     
     try:
+        # Set provider context for logging
+        set_provider_context(provider.name)
+        
         if data.get('stream', False):
             logger.debug(f"Streaming request to {provider.name} for model {original_model}")
             return create_streaming_response(url, data, headers, original_model, provider.name)
@@ -103,6 +106,9 @@ async def proxy_completion_request(
     except Exception as e:
         logger.exception(f"Unexpected error for provider {provider.name}")
         raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        # Clear provider context after request
+        clear_provider_context()
 
 
 @router.post('/chat/completions')
