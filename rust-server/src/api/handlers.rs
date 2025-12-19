@@ -6,6 +6,7 @@
 use crate::api::models::*;
 use crate::api::streaming::{create_sse_stream, rewrite_model_in_response};
 use crate::core::{AppError, Result};
+use crate::core::logging::{clear_provider_context, set_provider_context, PROVIDER_CONTEXT};
 use crate::core::metrics::get_metrics;
 use crate::services::ProviderService;
 use axum::{
@@ -15,6 +16,7 @@ use axum::{
     Json,
 };
 use prometheus::{Encoder, TextEncoder};
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -71,42 +73,66 @@ pub async fn chat_completions(
     let url = format!("{}/chat/completions", provider.api_base);
     let is_stream = payload.stream.unwrap_or(false);
 
-    tracing::debug!(
-        "Request to {} for model {} (stream: {})",
-        provider.name,
-        original_model,
-        is_stream
-    );
+    // Execute request within provider context scope
+    PROVIDER_CONTEXT
+        .scope(RefCell::new(provider.name.clone()), async move {
+            // Set provider context for logging
+            set_provider_context(&provider.name);
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(!state.config.verify_ssl)
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+            tracing::debug!(
+                "[Provider: {}] Request to {} for model {} (stream: {})",
+                provider.name,
+                provider.name,
+                original_model,
+                is_stream
+            );
 
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", provider.api_key))
-        .header("Content-Type", "application/json")
-        .json(&payload)
-        .send()
-        .await?;
+            let client = reqwest::Client::builder()
+                .danger_accept_invalid_certs(!state.config.verify_ssl)
+                .timeout(std::time::Duration::from_secs(300))
+                .build()?;
 
-    if is_stream {
-        let sse_stream = create_sse_stream(response, original_model, provider.name).await;
-        Ok(sse_stream.into_response())
-    } else {
-        let response_data: serde_json::Value = response.json().await?;
+            let response = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", provider.api_key))
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| {
+                    tracing::error!("[Provider: {}] HTTP request failed: {}", provider.name, e);
+                    AppError::from(e)
+                })?;
 
-        // Record token usage
-        if let Some(usage_obj) = response_data.get("usage") {
-            if let Ok(usage) = serde_json::from_value::<Usage>(usage_obj.clone()) {
-                record_token_usage(&usage, &original_model, &provider.name);
-            }
-        }
+            tracing::info!(
+                "[Provider: {}] HTTP Request: POST {} - Status: {}",
+                provider.name,
+                url,
+                response.status()
+            );
 
-        let rewritten = rewrite_model_in_response(response_data, &original_model);
-        Ok(Json(rewritten).into_response())
-    }
+            let result = if is_stream {
+                let sse_stream = create_sse_stream(response, original_model, provider.name).await;
+                Ok(sse_stream.into_response())
+            } else {
+                let response_data: serde_json::Value = response.json().await?;
+
+                // Record token usage
+                if let Some(usage_obj) = response_data.get("usage") {
+                    if let Ok(usage) = serde_json::from_value::<Usage>(usage_obj.clone()) {
+                        record_token_usage(&usage, &original_model, &provider.name);
+                    }
+                }
+
+                let rewritten = rewrite_model_in_response(response_data, &original_model);
+                Ok(Json(rewritten).into_response())
+            };
+
+            // Clear provider context after request
+            clear_provider_context();
+            result
+        })
+        .await
 }
 
 /// Handle legacy completions endpoint.
@@ -127,21 +153,50 @@ pub async fn completions(
     
     let url = format!("{}/completions", provider.api_base);
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(!state.config.verify_ssl)
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+    // Execute request within provider context scope
+    PROVIDER_CONTEXT
+        .scope(RefCell::new(provider.name.clone()), async move {
+            // Set provider context for logging
+            set_provider_context(&provider.name);
 
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", provider.api_key))
-        .header("Content-Type", "application/json")
-        .json(&payload)
-        .send()
-        .await?;
+            tracing::debug!(
+                "[Provider: {}] Request to {} for completions",
+                provider.name,
+                provider.name
+            );
 
-    let response_data: serde_json::Value = response.json().await?;
-    Ok(Json(response_data).into_response())
+            let client = reqwest::Client::builder()
+                .danger_accept_invalid_certs(!state.config.verify_ssl)
+                .timeout(std::time::Duration::from_secs(300))
+                .build()?;
+
+            let response = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", provider.api_key))
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| {
+                    tracing::error!("[Provider: {}] HTTP request failed: {}", provider.name, e);
+                    AppError::from(e)
+                })?;
+
+            tracing::info!(
+                "[Provider: {}] HTTP Request: POST {} - Status: {}",
+                provider.name,
+                url,
+                response.status()
+            );
+
+            let response_data: serde_json::Value = response.json().await?;
+            
+            // Clear provider context after request
+            clear_provider_context();
+            
+            Ok(Json(response_data).into_response())
+        })
+        .await
 }
 
 /// List available models.
