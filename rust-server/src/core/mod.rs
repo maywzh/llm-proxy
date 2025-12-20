@@ -15,6 +15,6 @@ pub mod middleware;
 // Re-export commonly used types
 pub use config::{AppConfig, ProviderConfig, ServerConfig};
 pub use error::{AppError, Result};
-pub use logging::{clear_provider_context, get_provider_context, set_provider_context, PROVIDER_CONTEXT};
+pub use logging::{get_provider_context, PROVIDER_CONTEXT};
 pub use metrics::{get_metrics, init_metrics, Metrics};
 pub use middleware::MetricsMiddleware;
