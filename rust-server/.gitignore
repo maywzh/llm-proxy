@@ -34,3 +34,27 @@ Thumbs.db
 
 .analyse
 .debug
+
+# Rust build artifacts
+**/*.rlib
+**/*.rmeta
+
+# Rustup toolchain files
+rust-toolchain
+rust-toolchain.toml
+
+# Cargo package files
+/target/
+Cargo.lock
+
+# Dependency folders
+/node_modules/
+vendor/
+
+# Backup files
+*.bak
+
+# Caches
+.cache/
+.cargo/
+.env.*.json
