@@ -4,3 +4,12 @@ target/
 *.md
 .env
 .vscode/
+
+Cargo.lock
+*.log
+.idea/
+.DS_Store
+*.rs.bk
+tests/
+test-results/
+docker-compose.yml
