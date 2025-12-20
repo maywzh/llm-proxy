@@ -1,53 +1,22 @@
 //! Logging utilities with provider context support.
 //!
 //! This module provides context-aware logging that can include provider names
-//! in HTTP request logs, similar to Python's contextvars implementation.
-
-use std::cell::RefCell;
+//! and request IDs in HTTP request logs, similar to Python's contextvars implementation.
 
 tokio::task_local! {
     /// Task-local storage for the current provider name.
-    /// 
+    ///
     /// This allows HTTP request logs to include the provider name
     /// without passing it through every function call.
-    pub static PROVIDER_CONTEXT: RefCell<String>;
+    pub static PROVIDER_CONTEXT: String;
 }
 
-/// Set the current provider name in the task-local context.
-///
-/// This should be called before making HTTP requests to a provider.
-/// The provider name will be included in subsequent HTTP request logs.
-///
-/// # Arguments
-///
-/// * `provider_name` - Name of the provider making the request
-///
-/// # Examples
-///
-/// ```no_run
-/// use llm_proxy_rust::core::logging::set_provider_context;
-///
-/// set_provider_context("OpenAI");
-/// // HTTP requests will now be logged with [Provider: OpenAI] prefix
-/// ```
-pub fn set_provider_context(provider_name: &str) {
-    if let Ok(context) = PROVIDER_CONTEXT.try_with(|ctx| {
-        *ctx.borrow_mut() = provider_name.to_string();
-    }) {
-        context
-    }
-}
-
-/// Clear the provider context.
-///
-/// This should be called after completing requests to a provider
-/// to avoid leaking context to subsequent operations.
-pub fn clear_provider_context() {
-    if let Ok(context) = PROVIDER_CONTEXT.try_with(|ctx| {
-        ctx.borrow_mut().clear();
-    }) {
-        context
-    }
+tokio::task_local! {
+    /// Task-local storage for the current request ID.
+    ///
+    /// This allows HTTP request logs to include a unique request ID
+    /// for tracking all logs related to a single request.
+    pub static REQUEST_ID: String;
 }
 
 /// Get the current provider name from context, if set.
@@ -55,8 +24,24 @@ pub fn clear_provider_context() {
 /// Returns an empty string if no provider context is set.
 pub fn get_provider_context() -> String {
     PROVIDER_CONTEXT
-        .try_with(|ctx| ctx.borrow().clone())
+        .try_with(|ctx| ctx.clone())
         .unwrap_or_default()
+}
+
+/// Get the current request ID from context, if set.
+///
+/// Returns an empty string if no request ID is set.
+pub fn get_request_id() -> String {
+    REQUEST_ID
+        .try_with(|id| id.clone())
+        .unwrap_or_default()
+}
+
+/// Generate a new unique request ID using UUID v4.
+///
+/// Returns a string representation of the UUID.
+pub fn generate_request_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Create a tracing span with provider context.
@@ -83,21 +68,9 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_provider_context_set_and_get() {
-        PROVIDER_CONTEXT.scope(RefCell::new(String::new()), async {
-            set_provider_context("TestProvider");
+    async fn test_provider_context_get() {
+        PROVIDER_CONTEXT.scope("TestProvider".to_string(), async {
             assert_eq!(get_provider_context(), "TestProvider");
-        }).await;
-    }
-
-    #[tokio::test]
-    async fn test_provider_context_clear() {
-        PROVIDER_CONTEXT.scope(RefCell::new(String::new()), async {
-            set_provider_context("TestProvider");
-            assert_eq!(get_provider_context(), "TestProvider");
-            
-            clear_provider_context();
-            assert_eq!(get_provider_context(), "");
         }).await;
     }
 
@@ -105,16 +78,14 @@ mod tests {
     async fn test_provider_context_isolation() {
         // Test that contexts are isolated between tasks
         let task1 = tokio::spawn(async {
-            PROVIDER_CONTEXT.scope(RefCell::new(String::new()), async {
-                set_provider_context("Provider1");
+            PROVIDER_CONTEXT.scope("Provider1".to_string(), async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                 get_provider_context()
             }).await
         });
 
         let task2 = tokio::spawn(async {
-            PROVIDER_CONTEXT.scope(RefCell::new(String::new()), async {
-                set_provider_context("Provider2");
+            PROVIDER_CONTEXT.scope("Provider2".to_string(), async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                 get_provider_context()
             }).await
@@ -130,8 +101,81 @@ mod tests {
     #[tokio::test]
     async fn test_provider_context_default() {
         // Test that context returns empty string when not set
-        PROVIDER_CONTEXT.scope(RefCell::new(String::new()), async {
-            assert_eq!(get_provider_context(), "");
+        assert_eq!(get_provider_context(), "");
+    }
+
+    #[tokio::test]
+    async fn test_request_id_get() {
+        let request_id = "test-request-123".to_string();
+        REQUEST_ID.scope(request_id.clone(), async {
+            assert_eq!(get_request_id(), "test-request-123");
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn test_request_id_isolation() {
+        // Test that request IDs are isolated between tasks
+        let task1 = tokio::spawn(async {
+            REQUEST_ID.scope("request-1".to_string(), async {
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                get_request_id()
+            }).await
+        });
+
+        let task2 = tokio::spawn(async {
+            REQUEST_ID.scope("request-2".to_string(), async {
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                get_request_id()
+            }).await
+        });
+
+        let result1 = task1.await.unwrap();
+        let result2 = task2.await.unwrap();
+
+        assert_eq!(result1, "request-1");
+        assert_eq!(result2, "request-2");
+    }
+
+    #[tokio::test]
+    async fn test_request_id_default() {
+        // Test that request ID returns empty string when not set
+        assert_eq!(get_request_id(), "");
+    }
+
+    #[tokio::test]
+    async fn test_generate_request_id() {
+        // Test that generate_request_id creates valid UUIDs
+        let id1 = generate_request_id();
+        let id2 = generate_request_id();
+        
+        // UUIDs should be 36 characters (including hyphens)
+        assert_eq!(id1.len(), 36);
+        assert_eq!(id2.len(), 36);
+        
+        // Each generated ID should be unique
+        assert_ne!(id1, id2);
+        
+        // Should be valid UUID format (8-4-4-4-12)
+        let parts: Vec<&str> = id1.split('-').collect();
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0].len(), 8);
+        assert_eq!(parts[1].len(), 4);
+        assert_eq!(parts[2].len(), 4);
+        assert_eq!(parts[3].len(), 4);
+        assert_eq!(parts[4].len(), 12);
+    }
+
+    #[tokio::test]
+    async fn test_nested_contexts() {
+        // Test that both provider and request ID contexts work together
+        let request_id = "test-request-456".to_string();
+        let provider = "TestProvider".to_string();
+        
+        REQUEST_ID.scope(request_id.clone(), async {
+            PROVIDER_CONTEXT.scope(provider.clone(), async {
+                assert_eq!(get_request_id(), "test-request-456");
+                assert_eq!(get_provider_context(), "TestProvider");
+            }).await
         }).await;
     }
 }

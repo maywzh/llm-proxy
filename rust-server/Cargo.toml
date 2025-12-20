@@ -43,6 +43,9 @@ rand = "0.8"
 # Environment variable expansion
 regex = "1.10"
 
+# UUID generation for request tracking
+uuid = { version = "1.11", features = ["v4", "fast-rng"] }
+
 [dev-dependencies]
 # Testing framework
 tokio-test = "0.4"

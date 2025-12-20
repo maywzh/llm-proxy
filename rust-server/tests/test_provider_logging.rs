@@ -3,33 +3,15 @@
 //! This test suite verifies that the provider context is properly set
 //! and that HTTP request logs include the provider name.
 
-use llm_proxy_rust::core::logging::{
-    clear_provider_context, get_provider_context, set_provider_context, PROVIDER_CONTEXT,
-};
-use std::cell::RefCell;
+use llm_proxy_rust::core::logging::{get_provider_context, PROVIDER_CONTEXT};
 
 #[tokio::test]
 async fn test_provider_context_basic() {
-    // Test basic set and get
+    // Test basic get with scope
     PROVIDER_CONTEXT
-        .scope(RefCell::new(String::new()), async {
-            set_provider_context("TestProvider");
+        .scope("TestProvider".to_string(), async {
             let context = get_provider_context();
             assert_eq!(context, "TestProvider");
-        })
-        .await;
-}
-
-#[tokio::test]
-async fn test_provider_context_clear() {
-    // Test clearing context
-    PROVIDER_CONTEXT
-        .scope(RefCell::new(String::new()), async {
-            set_provider_context("TestProvider");
-            assert_eq!(get_provider_context(), "TestProvider");
-
-            clear_provider_context();
-            assert_eq!(get_provider_context(), "");
         })
         .await;
 }
@@ -39,8 +21,7 @@ async fn test_provider_context_isolation() {
     // Test that contexts are isolated between tasks
     let task1 = tokio::spawn(async {
         PROVIDER_CONTEXT
-            .scope(RefCell::new(String::new()), async {
-                set_provider_context("Provider1");
+            .scope("Provider1".to_string(), async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 get_provider_context()
             })
@@ -49,8 +30,7 @@ async fn test_provider_context_isolation() {
 
     let task2 = tokio::spawn(async {
         PROVIDER_CONTEXT
-            .scope(RefCell::new(String::new()), async {
-                set_provider_context("Provider2");
+            .scope("Provider2".to_string(), async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 get_provider_context()
             })
@@ -68,13 +48,11 @@ async fn test_provider_context_isolation() {
 async fn test_provider_context_nested_scopes() {
     // Test nested scopes
     PROVIDER_CONTEXT
-        .scope(RefCell::new(String::new()), async {
-            set_provider_context("OuterProvider");
+        .scope("OuterProvider".to_string(), async {
             assert_eq!(get_provider_context(), "OuterProvider");
 
             PROVIDER_CONTEXT
-                .scope(RefCell::new(String::new()), async {
-                    set_provider_context("InnerProvider");
+                .scope("InnerProvider".to_string(), async {
                     assert_eq!(get_provider_context(), "InnerProvider");
                 })
                 .await;
@@ -88,18 +66,12 @@ async fn test_provider_context_nested_scopes() {
 #[tokio::test]
 async fn test_provider_logging_simulation() {
     // Simulate the actual usage pattern in handlers
+    let provider_name = "OpenAI";
     PROVIDER_CONTEXT
-        .scope(RefCell::new(String::new()), async {
-            let provider_name = "OpenAI";
-            set_provider_context(provider_name);
-
+        .scope(provider_name.to_string(), async {
             // Simulate HTTP request logging
             let context = get_provider_context();
             assert_eq!(context, provider_name);
-
-            // Simulate cleanup
-            clear_provider_context();
-            assert_eq!(get_provider_context(), "");
         })
         .await;
 }
@@ -114,15 +86,12 @@ async fn test_concurrent_provider_requests() {
         .map(|provider| {
             tokio::spawn(async move {
                 PROVIDER_CONTEXT
-                    .scope(RefCell::new(String::new()), async move {
-                        set_provider_context(provider);
-                        
+                    .scope(provider.to_string(), async move {
                         // Simulate some work
                         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                         
                         let context = get_provider_context();
                         assert_eq!(context, provider);
-                        clear_provider_context();
                         
                         provider
                     })
@@ -143,9 +112,5 @@ async fn test_concurrent_provider_requests() {
 #[tokio::test]
 async fn test_provider_context_default() {
     // Test that context returns empty string when not set
-    PROVIDER_CONTEXT
-        .scope(RefCell::new(String::new()), async {
-            assert_eq!(get_provider_context(), "");
-        })
-        .await;
+    assert_eq!(get_provider_context(), "");
 }
