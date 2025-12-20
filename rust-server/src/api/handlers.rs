@@ -6,7 +6,7 @@
 use crate::api::models::*;
 use crate::api::streaming::{create_sse_stream, rewrite_model_in_response};
 use crate::core::{AppError, Result};
-use crate::core::logging::{clear_provider_context, set_provider_context, PROVIDER_CONTEXT};
+use crate::core::logging::{PROVIDER_CONTEXT, REQUEST_ID, generate_request_id};
 use crate::core::metrics::get_metrics;
 use crate::services::ProviderService;
 use axum::{
@@ -16,7 +16,7 @@ use axum::{
     Json,
 };
 use prometheus::{Encoder, TextEncoder};
-use std::cell::RefCell;
+use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -50,42 +50,49 @@ fn verify_auth(headers: &HeaderMap, config: &crate::core::config::AppConfig) -> 
 /// Handle chat completion requests.
 ///
 /// Supports both streaming and non-streaming responses.
+#[tracing::instrument(
+    skip(state, headers, payload),
+    fields(
+        model = %payload.model,
+        stream = payload.stream.unwrap_or(false),
+    )
+)]
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(mut payload): Json<ChatCompletionRequest>,
 ) -> Result<Response> {
-    verify_auth(&headers, &state.config)?;
-
-    let original_model = payload.model.clone();
+    let request_id = generate_request_id();
     
-    // Select provider based on the requested model
-    let provider = state
-        .provider_service
-        .get_next_provider(Some(&original_model))
-        .map_err(AppError::Internal)?;
+    REQUEST_ID.scope(request_id.clone(), async move {
+        verify_auth(&headers, &state.config)?;
 
-    // Map model if needed
-    if let Some(mapped_model) = provider.model_mapping.get(&payload.model) {
-        payload.model = mapped_model.clone();
-    }
+        let original_model = payload.model.clone();
+        
+        // Select provider based on the requested model
+        let provider = state
+            .provider_service
+            .get_next_provider(Some(&original_model))
+            .map_err(AppError::Internal)?;
 
-    let url = format!("{}/chat/completions", provider.api_base);
-    let is_stream = payload.stream.unwrap_or(false);
+        // Map model if needed
+        if let Some(mapped_model) = provider.model_mapping.get(&payload.model) {
+            payload.model = mapped_model.clone();
+        }
 
-    // Execute request within provider context scope
-    PROVIDER_CONTEXT
-        .scope(RefCell::new(provider.name.clone()), async move {
-            // Set provider context for logging
-            set_provider_context(&provider.name);
+        let url = format!("{}/chat/completions", provider.api_base);
+        let is_stream = payload.stream.unwrap_or(false);
 
-            tracing::debug!(
-                "[Provider: {}] Request to {} for model {} (stream: {})",
-                provider.name,
-                provider.name,
-                original_model,
-                is_stream
-            );
+        // Execute request within provider context scope
+        PROVIDER_CONTEXT
+            .scope(provider.name.clone(), async move {
+                tracing::debug!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    model = %original_model,
+                    stream = is_stream,
+                    "Processing chat completion request"
+                );
 
             let client = reqwest::Client::builder()
                 .danger_accept_invalid_certs(!state.config.verify_ssl)
@@ -100,18 +107,30 @@ pub async fn chat_completions(
                 .send()
                 .await
                 .map_err(|e| {
-                    tracing::error!("[Provider: {}] HTTP request failed: {}", provider.name, e);
+                    tracing::error!(
+                        request_id = %request_id,
+                        provider = %provider.name,
+                        url = %url,
+                        model = %original_model,
+                        error = %e,
+                        error_source = ?e.source(),
+                        is_timeout = e.is_timeout(),
+                        is_connect = e.is_connect(),
+                        "HTTP request failed to provider"
+                    );
                     AppError::from(e)
                 })?;
 
-            tracing::info!(
-                "[Provider: {}] HTTP Request: POST {} - Status: {}",
-                provider.name,
-                url,
-                response.status()
+            tracing::debug!(
+                request_id = %request_id,
+                provider = %provider.name,
+                url = %url,
+                status = %response.status(),
+                method = "POST",
+                "HTTP request completed"
             );
 
-            let result = if is_stream {
+            if is_stream {
                 let sse_stream = create_sse_stream(response, original_model, provider.name).await;
                 Ok(sse_stream.into_response())
             } else {
@@ -126,44 +145,48 @@ pub async fn chat_completions(
 
                 let rewritten = rewrite_model_in_response(response_data, &original_model);
                 Ok(Json(rewritten).into_response())
-            };
-
-            // Clear provider context after request
-            clear_provider_context();
-            result
+            }
         })
         .await
+    }).await
 }
 
 /// Handle legacy completions endpoint.
+#[tracing::instrument(
+    skip(state, headers, payload),
+    fields(
+        model = payload.get("model").and_then(|m| m.as_str()).unwrap_or("unknown"),
+    )
+)]
 pub async fn completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Response> {
-    verify_auth(&headers, &state.config)?;
-
-    // Extract model from payload if available
-    let model = payload.get("model").and_then(|m| m.as_str());
+    let request_id = generate_request_id();
     
-    let provider = state
-        .provider_service
-        .get_next_provider(model)
-        .map_err(AppError::Internal)?;
-    
-    let url = format!("{}/completions", provider.api_base);
+    REQUEST_ID.scope(request_id.clone(), async move {
+        verify_auth(&headers, &state.config)?;
 
-    // Execute request within provider context scope
-    PROVIDER_CONTEXT
-        .scope(RefCell::new(provider.name.clone()), async move {
-            // Set provider context for logging
-            set_provider_context(&provider.name);
+        // Extract model from payload if available
+        let model = payload.get("model").and_then(|m| m.as_str());
+        let model_str = model.map(|m| m.to_string());
+        
+        let provider = state
+            .provider_service
+            .get_next_provider(model)
+            .map_err(AppError::Internal)?;
+        
+        let url = format!("{}/completions", provider.api_base);
 
-            tracing::debug!(
-                "[Provider: {}] Request to {} for completions",
-                provider.name,
-                provider.name
-            );
+        // Execute request within provider context scope
+        PROVIDER_CONTEXT
+            .scope(provider.name.clone(), async move {
+                tracing::debug!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    "Processing completions request"
+                );
 
             let client = reqwest::Client::builder()
                 .danger_accept_invalid_certs(!state.config.verify_ssl)
@@ -178,35 +201,53 @@ pub async fn completions(
                 .send()
                 .await
                 .map_err(|e| {
-                    tracing::error!("[Provider: {}] HTTP request failed: {}", provider.name, e);
+                    tracing::error!(
+                        request_id = %request_id,
+                        provider = %provider.name,
+                        url = %url,
+                        model = ?model_str,
+                        error = %e,
+                        error_source = ?e.source(),
+                        is_timeout = e.is_timeout(),
+                        is_connect = e.is_connect(),
+                        "HTTP request failed to provider"
+                    );
                     AppError::from(e)
                 })?;
 
-            tracing::info!(
-                "[Provider: {}] HTTP Request: POST {} - Status: {}",
-                provider.name,
-                url,
-                response.status()
+            tracing::debug!(
+                request_id = %request_id,
+                provider = %provider.name,
+                url = %url,
+                status = %response.status(),
+                method = "POST",
+                "HTTP request completed"
             );
 
             let response_data: serde_json::Value = response.json().await?;
-            
-            // Clear provider context after request
-            clear_provider_context();
-            
             Ok(Json(response_data).into_response())
         })
         .await
+    }).await
 }
 
 /// List available models.
+#[tracing::instrument(skip(state, headers))]
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<ModelList>> {
-    verify_auth(&headers, &state.config)?;
+    let request_id = generate_request_id();
+    
+    REQUEST_ID.scope(request_id.clone(), async move {
+        verify_auth(&headers, &state.config)?;
 
-    let models = state.provider_service.get_all_models();
+        tracing::debug!(
+            request_id = %request_id,
+            "Listing available models"
+        );
+
+        let models = state.provider_service.get_all_models();
     let mut model_list: Vec<ModelInfo> = models
         .into_iter()
         .map(|model| ModelInfo {
@@ -217,17 +258,27 @@ pub async fn list_models(
         })
         .collect();
 
-    model_list.sort_by(|a, b| a.id.cmp(&b.id));
+        model_list.sort_by(|a, b| a.id.cmp(&b.id));
 
-    Ok(Json(ModelList {
-        object: "list".to_string(),
-        data: model_list,
-    }))
+        Ok(Json(ModelList {
+            object: "list".to_string(),
+            data: model_list,
+        }))
+    }).await
 }
 
 /// Basic health check endpoint.
+#[tracing::instrument(skip(state))]
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let providers = state.provider_service.get_all_providers();
+    let request_id = generate_request_id();
+    
+    REQUEST_ID.scope(request_id.clone(), async move {
+        tracing::debug!(
+            request_id = %request_id,
+            "Health check requested"
+        );
+
+        let providers = state.provider_service.get_all_providers();
     let weights = state.provider_service.get_provider_weights();
     let total_weight: u32 = weights.iter().sum();
 
@@ -245,19 +296,29 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> 
         })
         .collect();
 
-    Json(HealthResponse {
-        status: "ok".to_string(),
-        providers: providers.len(),
-        provider_info,
-    })
+        Json(HealthResponse {
+            status: "ok".to_string(),
+            providers: providers.len(),
+            provider_info,
+        })
+    }).await
 }
 
 /// Detailed health check with provider testing.
 /// Tests all providers concurrently, but models serially within each provider.
+#[tracing::instrument(skip(state))]
 pub async fn health_detailed(
     State(state): State<Arc<AppState>>,
 ) -> Json<DetailedHealthResponse> {
-    let providers = state.provider_service.get_all_providers();
+    let request_id = generate_request_id();
+    
+    REQUEST_ID.scope(request_id.clone(), async move {
+        tracing::debug!(
+            request_id = %request_id,
+            "Detailed health check requested"
+        );
+
+        let providers = state.provider_service.get_all_providers();
     
     // Test all providers concurrently
     let tasks: Vec<_> = providers
@@ -277,10 +338,18 @@ pub async fn health_detailed(
         providers_map.insert(name, health);
     }
     
-    Json(DetailedHealthResponse { providers: providers_map })
+        Json(DetailedHealthResponse { providers: providers_map })
+    }).await
 }
 
 /// Test a single provider by checking all its models serially.
+#[tracing::instrument(
+    skip(provider, config),
+    fields(
+        provider_name = %provider.name,
+        models_count = provider.model_mapping.len(),
+    )
+)]
 async fn test_provider(
     provider: crate::api::models::Provider,
     config: crate::core::config::AppConfig,
@@ -377,6 +446,7 @@ async fn test_provider(
 }
 
 /// Prometheus metrics endpoint.
+#[tracing::instrument]
 pub async fn metrics_handler() -> Result<Response> {
     let encoder = TextEncoder::new();
     let metric_families = prometheus::gather();
@@ -394,6 +464,16 @@ pub async fn metrics_handler() -> Result<Response> {
 }
 
 /// Record token usage metrics.
+#[tracing::instrument(
+    skip(usage),
+    fields(
+        model = %model,
+        provider = %provider,
+        prompt_tokens = usage.prompt_tokens,
+        completion_tokens = usage.completion_tokens,
+        total_tokens = usage.total_tokens,
+    )
+)]
 fn record_token_usage(usage: &Usage, model: &str, provider: &str) {
     let metrics = get_metrics();
     
@@ -412,12 +492,14 @@ fn record_token_usage(usage: &Usage, model: &str, provider: &str) {
         .with_label_values(&[model, provider, "total"])
         .inc_by(usage.total_tokens as u64);
 
+    let request_id = crate::core::logging::get_request_id();
     tracing::debug!(
-        "Token usage - model={} provider={} prompt={} completion={} total={}",
-        model,
-        provider,
-        usage.prompt_tokens,
-        usage.completion_tokens,
-        usage.total_tokens
+        request_id = %request_id,
+        model = %model,
+        provider = %provider,
+        prompt_tokens = usage.prompt_tokens,
+        completion_tokens = usage.completion_tokens,
+        total_tokens = usage.total_tokens,
+        "Token usage recorded"
     );
 }
