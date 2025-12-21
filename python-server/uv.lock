@@ -499,7 +499,7 @@ wheels = [
 ]
 
 [[package]]
-name = "tvs-llm-proxy"
+name = "llm-proxy"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

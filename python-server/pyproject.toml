@@ -1,5 +1,5 @@
 [project]
-name = "tvs-llm-proxy"
+name = "llm-proxy"
 version = "0.1.0"
 description = "Simple Round-Robin LLM API Proxy"
 readme = "README.md"
