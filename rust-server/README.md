@@ -115,7 +115,6 @@ The server supports three configuration methods with the following priority (hig
 | `CONFIG_PATH` | Path to YAML config | `config.yaml` | `config.prod.yaml` |
 | `HOST` | Server bind address | `0.0.0.0` | `127.0.0.1` |
 | `PORT` | Server port | `18000` | `8080` |
-| `MASTER_API_KEY` | Master API key | None | `sk-your-key` |
 | `VERIFY_SSL` | Verify SSL certs | `true` | `false` |
 
 ### Example Configuration
@@ -125,7 +124,7 @@ The server supports three configuration methods with the following priority (hig
 API_KEY_1=your-api-key-1
 API_KEY_2=your-api-key-2
 API_BASE_URL=https://api.example.com
-MASTER_API_KEY=sk-your-master-key
+MASTER_KEY_1=sk-your-master-key
 VERIFY_SSL=false
 ```
 
@@ -146,10 +145,23 @@ providers:
     model_mapping:
       "claude-4.5-sonnet": "actual-model-name"
 
+# Master keys with optional rate limiting
+master_keys:
+  # Key with rate limiting
+  - name: "Production Key"
+    key: "${MASTER_KEY_1}"
+    rate_limit:
+      requests_per_second: 100
+      burst_size: 150
+  
+  # Key without rate limiting (unlimited requests)
+  - name: "Unlimited Key"
+    key: "${MASTER_KEY_UNLIMITED}"
+    # No rate_limit field = no rate limiting
+
 server:
   host: "${HOST:-0.0.0.0}"
   port: ${PORT:-18000}
-  master_api_key: "${MASTER_API_KEY}"
 
 verify_ssl: true
 ```
@@ -189,7 +201,7 @@ VERIFY_SSL=false cargo run
 
 ```bash
 POST /v1/chat/completions
-Authorization: Bearer <master_api_key>
+Authorization: Bearer <master_key>
 Content-Type: application/json
 
 {
@@ -203,7 +215,7 @@ Content-Type: application/json
 
 ```bash
 GET /v1/models
-Authorization: Bearer <master_api_key>
+Authorization: Bearer <master_key>
 ```
 
 ### Health Check
@@ -223,6 +235,44 @@ GET /health/detailed
 ```bash
 GET /metrics
 ```
+
+## Master Key Rate Limiting
+
+The system supports optional per-key rate limiting. Each master key can have independent rate limits, or no rate limiting at all.
+
+### Configuration
+
+**Enable Rate Limiting:**
+```yaml
+master_keys:
+  - name: "Limited Key"
+    key: "sk-limited-key"
+    rate_limit:
+      requests_per_second: 100  # Maximum 100 requests per second
+      burst_size: 150           # Allow burst of 150 requests
+```
+
+**Disable Rate Limiting (Unlimited):**
+```yaml
+master_keys:
+  - name: "Unlimited Key"
+    key: "sk-unlimited-key"
+    # No rate_limit field = no rate limiting
+```
+
+### Behavior
+
+| Configuration | Behavior |
+|--------------|----------|
+| `rate_limit: {requests_per_second: 100, burst_size: 150}` | Rate limiting enabled: 100 req/s with 150 burst |
+| `rate_limit: {requests_per_second: 0, burst_size: 0}` | Rate limiting enabled: blocks all requests |
+| No `rate_limit` field | Rate limiting disabled: unlimited requests |
+
+### Use Cases
+
+- **Production Keys**: Set reasonable rate limits to prevent abuse
+- **Development/Testing Keys**: Omit rate_limit for easier development
+- **Special Purpose Keys**: Configure flexibly based on actual needs
 
 ## Performance Comparison
 

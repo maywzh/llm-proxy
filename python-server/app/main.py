@@ -8,6 +8,7 @@ from app.core.config import get_config
 from app.core.middleware import MetricsMiddleware
 from app.core.metrics import APP_INFO
 from app.core.logging import setup_logging, get_logger
+from app.core.security import init_rate_limiter
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -44,6 +45,9 @@ def create_app() -> FastAPI:
             'title': 'LLM API Proxy'
         })
         
+        # Initialize rate limiter with master keys
+        init_rate_limiter()
+        
         provider_svc = get_provider_service()
         provider_svc.initialize()
         
@@ -56,7 +60,19 @@ def create_app() -> FastAPI:
             weight = weights[i]
             probability = (weight / total_weight) * 100
             logger.info(f"  - {provider.name}: weight={weight} ({probability:.1f}%)")
-        logger.info(f"Master API key: {'Enabled' if config.server.master_api_key else 'Disabled'}")
+        
+        # Log authentication configuration
+        if config.master_keys:
+            logger.info(f"Master keys: {len(config.master_keys)} configured with rate limiting")
+            for key_config in config.master_keys:
+                logger.info(f"  - Key ending in ...{key_config.key[-8:]}: "
+                          f"{key_config.rate_limit.requests_per_second} req/s, "
+                          f"burst={key_config.rate_limit.burst_size}")
+        elif config.master_api_key:
+            logger.info("Master API key: Enabled (legacy mode, no rate limiting)")
+        else:
+            logger.info("Master API key: Disabled")
+        
         logger.info(f"Metrics endpoint: /metrics")
     
     return app

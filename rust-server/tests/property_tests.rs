@@ -34,6 +34,7 @@ fn app_config_strategy() -> impl Strategy<Value = AppConfig> {
         providers,
         server: ServerConfig::default(),
         verify_ssl: true,
+        master_keys: vec![],
     })
 }
 
@@ -100,6 +101,7 @@ proptest! {
             ],
             server: ServerConfig::default(),
             verify_ssl: true,
+            master_keys: vec![],
         };
         
         let service = ProviderService::new(config);
@@ -182,6 +184,7 @@ proptest! {
             ],
             server: ServerConfig::default(),
             verify_ssl: true,
+            master_keys: vec![],
         };
         
         let service = ProviderService::new(config);
@@ -235,6 +238,7 @@ proptest! {
             ],
             server: ServerConfig::default(),
             verify_ssl: true,
+            master_keys: vec![],
         };
         
         let service = ProviderService::new(config);
@@ -319,6 +323,7 @@ mod quickcheck_tests {
             providers,
             server: ServerConfig::default(),
             verify_ssl: true,
+            master_keys: vec![],
         };
 
         let service = ProviderService::new(config);
@@ -348,6 +353,7 @@ mod quickcheck_tests {
             providers,
             server: ServerConfig::default(),
             verify_ssl: true,
+            master_keys: vec![],
         };
 
         let service = ProviderService::new(config);
@@ -432,6 +438,7 @@ mod complex_multi_provider_tests {
             ],
             server: ServerConfig::default(),
             verify_ssl: true,
+            master_keys: vec![],
         };
 
         let service = ProviderService::new(config);

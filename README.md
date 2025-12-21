@@ -95,15 +95,23 @@ providers:
     model_mapping:
       "claude-4.5-sonnet": "actual-provider-model"
 
+# Master API key configuration (top-level)
+master_api_key: "sk-your-master-key"  # Legacy single key
+master_keys:  # New multi-key with rate limiting
+  - name: "Production Key"
+    key: "sk-prod-key"
+    rate_limit:
+      requests_per_second: 100
+      burst_size: 150
+
 server:
   host: 0.0.0.0
   port: 18000
-  master_api_key: "sk-your-master-key"
 
 verify_ssl: false
 ```
 
-Priority: environment variables > .env > YAML values. Use `MASTER_API_KEY` to protect endpoints. Set `verify_ssl=false` if calling providers with custom cert chains (see `cacerts.pem`).
+Priority: environment variables > .env > YAML values. Use `master_api_key` or `master_keys` to protect endpoints with optional per-key rate limiting. Set `verify_ssl=false` if calling providers with custom cert chains (see `cacerts.pem`).
 
 ## Monitoring
 

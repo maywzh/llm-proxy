@@ -199,6 +199,7 @@ mod tests {
             ],
             server: ServerConfig::default(),
             verify_ssl: true,
+            master_keys: vec![],
         }
     }
 
@@ -215,6 +216,7 @@ mod tests {
             ],
             server: ServerConfig::default(),
             verify_ssl: true,
+            master_keys: vec![],
         }
     }
 

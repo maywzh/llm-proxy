@@ -36,6 +36,10 @@ pub enum AppError {
     #[error("Gateway timeout")]
     Timeout,
 
+    /// Rate limit exceeded errors
+    #[error("Rate limit exceeded: {0}")]
+    RateLimitExceeded(String),
+
     /// Generic internal server errors with custom message
     #[error("Internal server error: {0}")]
     Internal(String),
@@ -60,6 +64,7 @@ impl IntoResponse for AppError {
             AppError::Serialization(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             AppError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "Gateway timeout".to_string()),
+            AppError::RateLimitExceeded(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
 

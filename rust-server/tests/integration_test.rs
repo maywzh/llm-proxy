@@ -24,12 +24,16 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 /// Create a test application with the given config
 fn create_test_app(config: AppConfig) -> Router {
+    use llm_proxy_rust::core::RateLimiter;
+    
     init_metrics();
     
     let provider_service = ProviderService::new(config.clone());
+    let rate_limiter = Arc::new(RateLimiter::new());
     let state = Arc::new(AppState {
         config,
         provider_service,
+        rate_limiter,
     });
 
     Router::new()
@@ -82,16 +86,24 @@ fn create_test_config_no_auth() -> AppConfig {
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 18000,
-            master_api_key: None,
         },
         verify_ssl: false,
+        master_keys: vec![],
     }
 }
 
 /// Create a test config with authentication
 fn create_test_config_with_auth() -> AppConfig {
+    use llm_proxy_rust::core::config::MasterKeyConfig;
+    
     let mut config = create_test_config_no_auth();
-    config.server.master_api_key = Some("test_master_key".to_string());
+    config.master_keys = vec![MasterKeyConfig {
+        key: "test_master_key".to_string(),
+        name: "Test Key".to_string(),
+        description: None,
+        rate_limit: None,
+        enabled: true,
+    }];
     config
 }
 

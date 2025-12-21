@@ -7,13 +7,14 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.110.0",
     "uvicorn>=0.27.0",
-    "pyyaml>=6.0.1",
+    "pyyaml>=0.6.1",
     "httpx>=0.27.0",
     "urllib3>=2.6.1",
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0",
     "prometheus-client>=0.20.0",
     "loguru>=0.7.0",
+    "limits>=3.10.0",
 ]
 
 [project.optional-dependencies]

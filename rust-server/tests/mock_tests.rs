@@ -24,6 +24,7 @@ use wiremock::{
 /// Create a test app with mocked provider
 async fn create_test_app_with_mock(mock_server: &MockServer) -> Router {
     use llm_proxy_rust::core::config::{ProviderConfig, ServerConfig};
+    use llm_proxy_rust::core::RateLimiter;
     use std::collections::HashMap;
 
     init_metrics();
@@ -42,15 +43,17 @@ async fn create_test_app_with_mock(mock_server: &MockServer) -> Router {
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 18000,
-            master_api_key: None,
         },
         verify_ssl: false,
+        master_keys: vec![],
     };
 
     let provider_service = ProviderService::new(config.clone());
+    let rate_limiter = Arc::new(RateLimiter::new());
     let state = Arc::new(AppState {
         config,
         provider_service,
+        rate_limiter,
     });
 
     Router::new()

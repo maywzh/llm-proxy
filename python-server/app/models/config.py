@@ -12,11 +12,25 @@ class ProviderConfig(BaseModel):
     model_mapping: Dict[str, str] = Field(default_factory=dict)
 
 
+class RateLimitConfig(BaseModel):
+    """Rate limiting configuration for a master key"""
+    requests_per_second: int = Field(gt=0, description="Maximum requests per second")
+    burst_size: int = Field(default=10, gt=0, description="Maximum burst size")
+
+
+class MasterKeyConfig(BaseModel):
+    """Master API key configuration with optional rate limiting"""
+    key: str = Field(description="The actual API key")
+    name: Optional[str] = Field(default=None, description="Human-readable name for the key")
+    description: Optional[str] = Field(default=None, description="Optional description")
+    rate_limit: Optional[RateLimitConfig] = Field(default=None, description="Optional rate limiting configuration. If None, no rate limiting is applied.")
+    enabled: bool = Field(default=True, description="Whether this key is enabled")
+
+
 class ServerConfig(BaseModel):
     """Server configuration"""
     host: str = "0.0.0.0"
     port: int = 18000
-    master_api_key: Optional[str] = None
 
 
 class AppConfig(BaseModel):
@@ -24,3 +38,4 @@ class AppConfig(BaseModel):
     providers: list[ProviderConfig]
     server: ServerConfig = Field(default_factory=ServerConfig)
     verify_ssl: bool = True
+    master_keys: list[MasterKeyConfig] = Field(default_factory=list, description="List of master keys with optional rate limiting")
