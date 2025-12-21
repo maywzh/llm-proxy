@@ -8,6 +8,7 @@ use crate::api::streaming::{create_sse_stream, rewrite_model_in_response};
 use crate::core::{AppError, Result};
 use crate::core::logging::{PROVIDER_CONTEXT, REQUEST_ID, generate_request_id};
 use crate::core::metrics::get_metrics;
+use crate::core::middleware::{ModelName, ProviderName};
 use crate::services::ProviderService;
 use axum::{
     extract::State,
@@ -166,11 +167,11 @@ pub async fn chat_completions(
                 return Err(AppError::Internal(format!("Backend API error: {}", error_detail)));
             }
 
-            if is_stream {
+            let mut final_response = if is_stream {
                 // For streaming, response is already checked for errors above
                 // Now we can safely create the SSE stream
-                let sse_stream = create_sse_stream(response, original_model, provider.name).await;
-                Ok(sse_stream.into_response())
+                let sse_stream = create_sse_stream(response, original_model.clone(), provider.name.clone()).await;
+                sse_stream.into_response()
             } else {
                 let response_data: serde_json::Value = response.json().await?;
 
@@ -182,8 +183,14 @@ pub async fn chat_completions(
                 }
 
                 let rewritten = rewrite_model_in_response(response_data, &original_model);
-                Ok(Json(rewritten).into_response())
-            }
+                Json(rewritten).into_response()
+            };
+            
+            // Add model and provider info to response extensions for middleware logging
+            final_response.extensions_mut().insert(ModelName(original_model));
+            final_response.extensions_mut().insert(ProviderName(provider.name));
+            
+            Ok(final_response)
         })
         .await
     }).await
@@ -299,7 +306,15 @@ pub async fn completions(
             }
 
             let response_data: serde_json::Value = response.json().await?;
-            Ok(Json(response_data).into_response())
+            let mut final_response = Json(response_data).into_response();
+            
+            // Add model and provider info to response extensions for middleware logging
+            if let Some(model_str) = model_str {
+                final_response.extensions_mut().insert(ModelName(model_str));
+            }
+            final_response.extensions_mut().insert(ProviderName(provider.name));
+            
+            Ok(final_response)
         })
         .await
     }).await

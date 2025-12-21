@@ -17,4 +17,4 @@ pub use config::{AppConfig, ProviderConfig, ServerConfig};
 pub use error::{AppError, Result};
 pub use logging::{get_provider_context, PROVIDER_CONTEXT};
 pub use metrics::{get_metrics, init_metrics, Metrics};
-pub use middleware::MetricsMiddleware;
+pub use middleware::{MetricsMiddleware, ModelName, ProviderName};
