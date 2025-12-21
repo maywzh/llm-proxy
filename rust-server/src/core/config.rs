@@ -15,13 +15,58 @@ pub struct AppConfig {
     /// List of LLM provider configurations
     pub providers: Vec<ProviderConfig>,
     
-    /// Server configuration (host, port, auth)
+    /// Server configuration (host, port)
     #[serde(default)]
     pub server: ServerConfig,
     
     /// Whether to verify SSL certificates for upstream requests
     #[serde(default = "default_verify_ssl")]
     pub verify_ssl: bool,
+    
+    /// List of master keys with optional rate limiting
+    #[serde(default)]
+    pub master_keys: Vec<MasterKeyConfig>,
+}
+
+/// Configuration for a master API key with optional rate limiting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MasterKeyConfig {
+    /// The actual API key
+    pub key: String,
+    
+    /// Human-readable name for the key
+    pub name: String,
+    
+    /// Optional description
+    #[serde(default)]
+    pub description: Option<String>,
+    
+    /// Optional rate limiting configuration
+    #[serde(default)]
+    pub rate_limit: Option<RateLimitConfig>,
+    
+    /// Whether this key is enabled
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+/// Rate limiting configuration for a master key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Maximum requests per second
+    pub requests_per_second: u32,
+    
+    /// Maximum burst size (allows temporary spikes)
+    #[serde(default = "default_burst")]
+    pub burst_size: u32,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn default_burst() -> u32 {
+    10
 }
 
 /// Configuration for a single LLM provider.
@@ -55,9 +100,6 @@ pub struct ServerConfig {
     /// Port to bind to
     #[serde(default = "default_port")]
     pub port: u16,
-    
-    /// Optional master API key for authentication
-    pub master_api_key: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -65,7 +107,6 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
-            master_api_key: None,
         }
     }
 }
@@ -128,23 +169,9 @@ impl AppConfig {
             }
         }
         
-        // Master API key override
-        if let Ok(key) = std::env::var("MASTER_API_KEY") {
-            if !key.trim().is_empty() {
-                config.server.master_api_key = Some(key);
-            }
-        }
-        
         // SSL verification override
         if let Ok(verify_ssl_str) = std::env::var("VERIFY_SSL") {
             config.verify_ssl = str_to_bool(&verify_ssl_str);
-        }
-
-        // Convert empty master_api_key to None
-        if let Some(ref key) = config.server.master_api_key {
-            if key.trim().is_empty() {
-                config.server.master_api_key = None;
-            }
         }
 
         Ok(config)
@@ -331,7 +358,6 @@ mod tests {
         let config = ServerConfig::default();
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 18000);
-        assert!(config.master_api_key.is_none());
     }
 
     #[test]
@@ -351,7 +377,6 @@ mod tests {
         unsafe {
             std::env::remove_var("HOST");
             std::env::remove_var("PORT");
-            std::env::remove_var("MASTER_API_KEY");
             std::env::remove_var("VERIFY_SSL");
         }
         
@@ -368,7 +393,6 @@ providers:
 server:
   host: 127.0.0.1
   port: 8080
-  master_api_key: master_key
 
 verify_ssl: false
 "#;
@@ -386,7 +410,6 @@ verify_ssl: false
         
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 8080);
-        assert_eq!(config.server.master_api_key.as_ref().unwrap(), "master_key");
         
         assert!(!config.verify_ssl);
     }
@@ -441,41 +464,6 @@ verify_ssl: true
         assert!(result.is_err());
     }
 
-    #[test]
-    #[serial]
-    fn test_empty_master_api_key_becomes_none() {
-        // Clear ALL environment variables that might interfere
-        unsafe {
-            std::env::remove_var("HOST");
-            std::env::remove_var("PORT");
-            std::env::remove_var("MASTER_API_KEY");
-            std::env::remove_var("VERIFY_SSL");
-        }
-        
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let config_content = r#"
-providers:
-  - name: TestProvider
-    api_base: http://localhost:8000
-    api_key: test_key
-
-server:
-  host: 127.0.0.1
-  port: 8080
-  master_api_key: "   "
-
-verify_ssl: true
-"#;
-        temp_file.write_all(config_content.as_bytes()).unwrap();
-        temp_file.flush().unwrap();
-
-        let config = AppConfig::load(temp_file.path().to_str().unwrap()).unwrap();
-        assert!(config.server.master_api_key.is_none());
-        
-        // Verify other values are as expected
-        assert_eq!(config.server.host, "127.0.0.1");
-        assert_eq!(config.server.port, 8080);
-    }
     
     #[test]
     #[serial]
@@ -484,7 +472,6 @@ verify_ssl: true
         unsafe {
             std::env::set_var("HOST", "192.168.1.1");
             std::env::set_var("PORT", "9999");
-            std::env::set_var("MASTER_API_KEY", "env-master-key");
             std::env::set_var("VERIFY_SSL", "false");
         }
         
@@ -498,7 +485,6 @@ providers:
 server:
   host: 127.0.0.1
   port: 8080
-  master_api_key: config-master-key
 
 verify_ssl: true
 "#;
@@ -510,13 +496,11 @@ verify_ssl: true
         // Environment variables should override config file
         assert_eq!(config.server.host, "192.168.1.1");
         assert_eq!(config.server.port, 9999);
-        assert_eq!(config.server.master_api_key.as_ref().unwrap(), "env-master-key");
         assert!(!config.verify_ssl);
         
         unsafe {
             std::env::remove_var("HOST");
             std::env::remove_var("PORT");
-            std::env::remove_var("MASTER_API_KEY");
             std::env::remove_var("VERIFY_SSL");
         }
     }
@@ -551,6 +535,7 @@ verify_ssl: true
             }],
             server: ServerConfig::default(),
             verify_ssl: true,
+            master_keys: vec![],
         };
 
         let yaml = serde_yaml::to_string(&config).unwrap();

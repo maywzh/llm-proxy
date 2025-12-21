@@ -351,14 +351,14 @@ class TestWeightDistributionProperties:
 
 @pytest.mark.property
 class TestSecurityProperties:
-    """Property-based tests for security"""
+    """Property-based tests for security with master_keys"""
     
     @given(api_key=st.text(min_size=1, max_size=100))
     @settings(max_examples=50)
     def test_correct_key_always_validates(self, api_key, monkeypatch):
-        """Test that correct API key always validates"""
-        from app.core.security import verify_master_key
-        from app.models.config import AppConfig, ProviderConfig, ServerConfig
+        """Test that correct API key always validates with master_keys"""
+        from app.core.security import verify_master_key, init_rate_limiter
+        from app.models.config import AppConfig, ProviderConfig, MasterKeyConfig, RateLimitConfig
         
         config = AppConfig(
             providers=[
@@ -368,15 +368,22 @@ class TestSecurityProperties:
                     api_key='key'
                 )
             ],
-            server=ServerConfig(master_api_key=api_key),
+            master_keys=[
+                MasterKeyConfig(
+                    key=api_key,
+                    rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20)
+                )
+            ],
             verify_ssl=True
         )
         
-        from app.core import config as config_module
-        monkeypatch.setattr(config_module, 'get_config', lambda: config)
+        from app.core import security as security_module
+        monkeypatch.setattr(security_module, 'get_config', lambda: config)
+        init_rate_limiter()
         
-        result = verify_master_key(f'Bearer {api_key}')
-        assert result is True
+        is_valid, key_id = verify_master_key(f'Bearer {api_key}')
+        assert is_valid is True
+        assert key_id == api_key
     
     @given(
         correct_key=st.text(min_size=1, max_size=50),
@@ -384,13 +391,14 @@ class TestSecurityProperties:
     )
     @settings(max_examples=50)
     def test_wrong_key_never_validates(self, correct_key, wrong_key, monkeypatch):
-        """Test that wrong API key never validates"""
+        """Test that wrong API key never validates with master_keys"""
         # Skip if keys happen to be the same
         if correct_key == wrong_key:
             return
         
-        from app.core.security import verify_master_key
-        from app.models.config import AppConfig, ProviderConfig, ServerConfig
+        from fastapi import HTTPException
+        from app.core.security import verify_master_key, init_rate_limiter
+        from app.models.config import AppConfig, ProviderConfig, MasterKeyConfig, RateLimitConfig
         
         config = AppConfig(
             providers=[
@@ -400,12 +408,19 @@ class TestSecurityProperties:
                     api_key='key'
                 )
             ],
-            server=ServerConfig(master_api_key=correct_key),
+            master_keys=[
+                MasterKeyConfig(
+                    key=correct_key,
+                    rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20)
+                )
+            ],
             verify_ssl=True
         )
         
-        from app.core import config as config_module
-        monkeypatch.setattr(config_module, 'get_config', lambda: config)
+        from app.core import security as security_module
+        monkeypatch.setattr(security_module, 'get_config', lambda: config)
+        init_rate_limiter()
         
-        result = verify_master_key(f'Bearer {wrong_key}')
-        assert result is False
+        with pytest.raises(HTTPException) as exc_info:
+            verify_master_key(f'Bearer {wrong_key}')
+        assert exc_info.value.status_code == 401

@@ -5,7 +5,7 @@
 
 use crate::api::models::*;
 use crate::api::streaming::{create_sse_stream, rewrite_model_in_response};
-use crate::core::{AppError, Result};
+use crate::core::{AppError, Result, RateLimiter};
 use crate::core::logging::{PROVIDER_CONTEXT, REQUEST_ID, generate_request_id};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ModelName, ProviderName};
@@ -26,26 +26,51 @@ use std::time::Instant;
 pub struct AppState {
     pub config: crate::core::config::AppConfig,
     pub provider_service: ProviderService,
+    pub rate_limiter: Arc<RateLimiter>,
 }
 
-/// Verify API key authentication.
+/// Verify API key authentication and check rate limits.
 ///
-/// Checks the Authorization header against the configured master API key.
-fn verify_auth(headers: &HeaderMap, config: &crate::core::config::AppConfig) -> Result<()> {
-    if let Some(master_key) = &config.server.master_api_key {
-        if let Some(auth_header) = headers.get("authorization") {
-            if let Ok(auth_str) = auth_header.to_str() {
-                if auth_str.starts_with("Bearer ") {
-                    let provided_key = &auth_str[7..];
-                    if provided_key == master_key {
-                        return Ok(());
-                    }
-                }
+/// Checks the Authorization header against configured master keys.
+/// If a master key is found, also enforces rate limiting if configured.
+fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<()> {
+    // Extract the provided key from Authorization header
+    let provided_key = if let Some(auth_header) = headers.get("authorization") {
+        if let Ok(auth_str) = auth_header.to_str() {
+            if auth_str.starts_with("Bearer ") {
+                Some(&auth_str[7..])
+            } else {
+                None
             }
+        } else {
+            None
         }
-        return Err(AppError::Unauthorized);
+    } else {
+        None
+    };
+
+    // Check if any authentication is required
+    if state.config.master_keys.is_empty() {
+        return Ok(());
     }
-    Ok(())
+
+    let provided_key = provided_key.ok_or(AppError::Unauthorized)?;
+
+    // Check against master_keys configuration
+    for key_config in &state.config.master_keys {
+        if key_config.enabled && key_config.key == provided_key {
+            // Check rate limit for this key
+            state.rate_limiter.check_rate_limit(&key_config.key)?;
+            
+            tracing::debug!(
+                key_name = %key_config.name,
+                "Request authenticated with master key"
+            );
+            return Ok(());
+        }
+    }
+
+    Err(AppError::Unauthorized)
 }
 
 /// Handle chat completion requests.
@@ -66,7 +91,7 @@ pub async fn chat_completions(
     let request_id = generate_request_id();
     
     REQUEST_ID.scope(request_id.clone(), async move {
-        verify_auth(&headers, &state.config)?;
+        verify_auth(&headers, &state)?;
 
         let original_model = payload.model.clone();
         
@@ -211,7 +236,7 @@ pub async fn completions(
     let request_id = generate_request_id();
     
     REQUEST_ID.scope(request_id.clone(), async move {
-        verify_auth(&headers, &state.config)?;
+        verify_auth(&headers, &state)?;
 
         // Extract model from payload if available
         let model = payload.get("model").and_then(|m| m.as_str());
@@ -329,7 +354,7 @@ pub async fn list_models(
     let request_id = generate_request_id();
     
     REQUEST_ID.scope(request_id.clone(), async move {
-        verify_auth(&headers, &state.config)?;
+        verify_auth(&headers, &state)?;
 
         tracing::debug!(
             request_id = %request_id,

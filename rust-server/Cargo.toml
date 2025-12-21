@@ -46,6 +46,11 @@ regex = "1.10"
 # UUID generation for request tracking
 uuid = { version = "1.11", features = ["v4", "fast-rng"] }
 
+# Rate limiting
+dashmap = "6.1"
+governor = "0.7"
+nonzero_ext = "0.3"
+
 [dev-dependencies]
 # Testing framework
 tokio-test = "0.4"

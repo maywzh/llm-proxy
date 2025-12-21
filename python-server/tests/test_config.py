@@ -346,7 +346,6 @@ class TestConfigModels:
         server = ServerConfig()
         assert server.host == '0.0.0.0'
         assert server.port == 18000
-        assert server.master_api_key is None
     
     def test_app_config_validation(self):
         """Test AppConfig validation"""
