@@ -159,8 +159,107 @@ async fn test_provider_error_response() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should propagate error status
+    // Should return 500 for backend API errors
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    
+    // Should contain error message
+    assert!(json["error"]["message"].as_str().unwrap().contains("Internal server error"));
+}
+
+#[tokio::test]
+async fn test_provider_401_error() {
+    let mock_server = MockServer::start().await;
+
+    // Mock 401 error response
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "error": {
+                "message": "Invalid API key",
+                "type": "authentication_error"
+            }
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let app = create_test_app_with_mock(&mock_server).await;
+
+    let request = Request::builder()
+        .uri("/v1/chat/completions")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "model": "gpt-4",
+                "messages": [
+                    {"role": "user", "content": "Hello"}
+                ]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    // Should return 500 for backend API errors
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    
+    // Should contain error message
+    assert!(json["error"]["message"].as_str().unwrap().contains("Invalid API key"));
+}
+
+#[tokio::test]
+async fn test_provider_error_with_string_error() {
+    let mock_server = MockServer::start().await;
+
+    // Mock error response with string error field
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(503).set_body_json(json!({
+            "error": "Service temporarily unavailable"
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let app = create_test_app_with_mock(&mock_server).await;
+
+    let request = Request::builder()
+        .uri("/v1/chat/completions")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "model": "gpt-4",
+                "messages": [
+                    {"role": "user", "content": "Hello"}
+                ]
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    // Should return 500 for backend API errors
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    
+    // Should contain error message
+    assert!(json["error"]["message"].as_str().unwrap().contains("Service temporarily unavailable"));
 }
 
 #[tokio::test]

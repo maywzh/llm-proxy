@@ -52,13 +52,64 @@ async def proxy_completion_request(
         
         if data.get('stream', False):
             logger.debug(f"Streaming request to {provider.name} for model {original_model}")
-            return create_streaming_response(url, data, headers, original_model, provider.name)
+            # For streaming, we need to check the response status before starting the stream
+            config = get_config()
+            async with httpx.AsyncClient(verify=config.verify_ssl, timeout=300.0) as client:
+                response = await client.post(url, json=data, headers=headers)
+                
+                # Check if backend API returned an error status code
+                if response.status_code >= 400:
+                    error_detail = f"Backend API error: {response.status_code}"
+                    try:
+                        error_body = response.json()
+                        if isinstance(error_body, dict):
+                            error_msg = error_body.get('error', {})
+                            if isinstance(error_msg, dict):
+                                error_detail = error_msg.get('message', error_detail)
+                            elif isinstance(error_msg, str):
+                                error_detail = error_msg
+                            else:
+                                error_detail = str(error_body)
+                    except Exception:
+                        error_detail = response.text or error_detail
+                    
+                    logger.error(
+                        f"Backend API returned error status {response.status_code} "
+                        f"from provider {provider.name} during streaming: {error_detail}"
+                    )
+                    raise HTTPException(status_code=500, detail=error_detail)
+                
+                # If status is OK, create streaming response
+                return create_streaming_response(response, original_model, provider.name)
         else:
             config = get_config()
             logger.debug(f"Non-streaming request to {provider.name} for model {original_model}")
             
             async with httpx.AsyncClient(verify=config.verify_ssl, timeout=300.0) as client:
                 response = await client.post(url, json=data, headers=headers)
+                
+                # Check if backend API returned an error status code
+                if response.status_code >= 400:
+                    error_detail = f"Backend API error: {response.status_code}"
+                    try:
+                        error_body = response.json()
+                        if isinstance(error_body, dict):
+                            error_msg = error_body.get('error', {})
+                            if isinstance(error_msg, dict):
+                                error_detail = error_msg.get('message', error_detail)
+                            elif isinstance(error_msg, str):
+                                error_detail = error_msg
+                            else:
+                                error_detail = str(error_body)
+                    except Exception:
+                        error_detail = response.text or error_detail
+                    
+                    logger.error(
+                        f"Backend API returned error status {response.status_code} "
+                        f"from provider {provider.name}: {error_detail}"
+                    )
+                    raise HTTPException(status_code=500, detail=error_detail)
+                
                 response_data = response.json()
                 
                 # Extract and record token usage

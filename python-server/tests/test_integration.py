@@ -238,7 +238,7 @@ class TestErrorHandling:
     def test_provider_500_error(self, app_client):
         """Test handling of provider 500 error"""
         respx.post("https://api.provider1.com/v1/chat/completions").mock(
-            return_value=httpx.Response(500, json={'error': 'Internal server error'})
+            return_value=httpx.Response(500, json={'error': {'message': 'Internal server error'}})
         )
         
         response = app_client.post(
@@ -248,6 +248,64 @@ class TestErrorHandling:
         )
         
         assert response.status_code == 500
+        data = response.json()
+        assert 'detail' in data
+        assert 'Internal server error' in data['detail']
+    
+    @respx.mock
+    def test_provider_401_error(self, app_client):
+        """Test handling of provider 401 error"""
+        respx.post("https://api.provider1.com/v1/chat/completions").mock(
+            return_value=httpx.Response(401, json={'error': {'message': 'Invalid API key'}})
+        )
+        
+        response = app_client.post(
+            '/v1/chat/completions',
+            json={'model': 'gpt-4', 'messages': []},
+            headers={'Authorization': 'Bearer test-master-key'}
+        )
+        
+        assert response.status_code == 500
+        data = response.json()
+        assert 'detail' in data
+        assert 'Invalid API key' in data['detail']
+    
+    @respx.mock
+    def test_provider_error_with_string_error(self, app_client):
+        """Test handling of provider error with string error field"""
+        respx.post("https://api.provider1.com/v1/chat/completions").mock(
+            return_value=httpx.Response(503, json={'error': 'Service unavailable'})
+        )
+        
+        response = app_client.post(
+            '/v1/chat/completions',
+            json={'model': 'gpt-4', 'messages': []},
+            headers={'Authorization': 'Bearer test-master-key'}
+        )
+        
+        assert response.status_code == 500
+        data = response.json()
+        assert 'detail' in data
+        assert 'Service unavailable' in data['detail']
+    
+    @respx.mock
+    def test_provider_streaming_error(self, app_client):
+        """Test handling of provider error in streaming mode"""
+        respx.post("https://api.provider1.com/v1/chat/completions").mock(
+            return_value=httpx.Response(500, json={'error': {'message': 'Streaming error'}})
+        )
+        
+        response = app_client.post(
+            '/v1/chat/completions',
+            json={'model': 'gpt-4', 'messages': [], 'stream': True},
+            headers={'Authorization': 'Bearer test-master-key'}
+        )
+        
+        # Streaming requests should also return 500 for backend errors
+        assert response.status_code == 500
+        data = response.json()
+        assert 'detail' in data
+        assert 'Streaming error' in data['detail']
     
     @respx.mock
     def test_provider_timeout(self, app_client):
