@@ -12,6 +12,14 @@ use axum::{
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Extension type for storing model name in response
+#[derive(Clone, Debug)]
+pub struct ModelName(pub String);
+
+/// Extension type for storing provider name in response
+#[derive(Clone, Debug)]
+pub struct ProviderName(pub String);
+
 /// Middleware for tracking request metrics.
 pub struct MetricsMiddleware;
 
@@ -58,14 +66,14 @@ impl MetricsMiddleware {
         // Get model and provider from response extensions (set by handlers)
         let model = response
             .extensions()
-            .get::<String>()
-            .cloned()
-            .unwrap_or_else(|| "unknown".to_string());
+            .get::<ModelName>()
+            .map(|m| m.0.as_str())
+            .unwrap_or("unknown");
         let provider = response
             .extensions()
-            .get::<String>()
-            .cloned()
-            .unwrap_or_else(|| "unknown".to_string());
+            .get::<ProviderName>()
+            .map(|p| p.0.as_str())
+            .unwrap_or("unknown");
 
         // Record metrics
         metrics
