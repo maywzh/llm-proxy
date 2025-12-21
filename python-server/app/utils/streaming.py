@@ -39,76 +39,75 @@ async def rewrite_sse_chunk(chunk: bytes, original_model: Optional[str]) -> byte
 
 
 async def stream_response(
-    client: httpx.AsyncClient,
-    url: str,
-    data: dict,
-    headers: dict,
+    response: httpx.Response,
     original_model: Optional[str],
     provider_name: str
 ) -> AsyncIterator[bytes]:
     """Stream response from provider with model rewriting and token tracking"""
+    from app.core.logging import get_logger
+    logger = get_logger()
+    
     try:
         # Set provider context for logging
         set_provider_context(provider_name)
         
-        async with client.stream('POST', url, json=data, headers=headers) as response:
-            async for chunk in response.aiter_bytes():
-                # Track token usage from streaming chunks
-                chunk_str = chunk.decode('utf-8', errors='ignore')
-                if '"usage":' in chunk_str:
-                    try:
-                        lines = chunk_str.split('\n')
-                        for line in lines:
-                            if line.startswith('data: ') and line != 'data: [DONE]':
-                                json_str = line[6:]
-                                json_obj = json.loads(json_str)
-                                if 'usage' in json_obj:
-                                    usage = json_obj['usage']
-                                    model_name = original_model or 'unknown'
-                                    
-                                    if 'prompt_tokens' in usage:
-                                        TOKEN_USAGE.labels(
-                                            model=model_name,
-                                            provider=provider_name,
-                                            token_type='prompt'
-                                        ).inc(usage['prompt_tokens'])
-                                    
-                                    if 'completion_tokens' in usage:
-                                        TOKEN_USAGE.labels(
-                                            model=model_name,
-                                            provider=provider_name,
-                                            token_type='completion'
-                                        ).inc(usage['completion_tokens'])
-                                    
-                                    if 'total_tokens' in usage:
-                                        TOKEN_USAGE.labels(
-                                            model=model_name,
-                                            provider=provider_name,
-                                            token_type='total'
-                                        ).inc(usage['total_tokens'])
-                    except:
-                        pass
-                
-                yield await rewrite_sse_chunk(chunk, original_model)
+        async for chunk in response.aiter_bytes():
+            # Track token usage from streaming chunks
+            chunk_str = chunk.decode('utf-8', errors='ignore')
+            if '"usage":' in chunk_str:
+                try:
+                    lines = chunk_str.split('\n')
+                    for line in lines:
+                        if line.startswith('data: ') and line != 'data: [DONE]':
+                            json_str = line[6:]
+                            json_obj = json.loads(json_str)
+                            if 'usage' in json_obj:
+                                usage = json_obj['usage']
+                                model_name = original_model or 'unknown'
+                                
+                                if 'prompt_tokens' in usage:
+                                    TOKEN_USAGE.labels(
+                                        model=model_name,
+                                        provider=provider_name,
+                                        token_type='prompt'
+                                    ).inc(usage['prompt_tokens'])
+                                
+                                if 'completion_tokens' in usage:
+                                    TOKEN_USAGE.labels(
+                                        model=model_name,
+                                        provider=provider_name,
+                                        token_type='completion'
+                                    ).inc(usage['completion_tokens'])
+                                
+                                if 'total_tokens' in usage:
+                                    TOKEN_USAGE.labels(
+                                        model=model_name,
+                                        provider=provider_name,
+                                        token_type='total'
+                                    ).inc(usage['total_tokens'])
+                except:
+                    pass
+            
+            yield await rewrite_sse_chunk(chunk, original_model)
+    except Exception as e:
+        # Handle any unexpected errors during streaming
+        error_detail = str(e)
+        logger.exception(
+            f"Unexpected error during streaming from provider {provider_name}"
+        )
     finally:
         # Clear provider context after streaming completes
         clear_provider_context()
-        await client.aclose()
 
 
 def create_streaming_response(
-    url: str,
-    data: dict,
-    headers: dict,
+    response: httpx.Response,
     original_model: Optional[str],
     provider_name: str
 ) -> StreamingResponse:
     """Create streaming response with proper cleanup"""
-    config = get_config()
-    client = httpx.AsyncClient(verify=config.verify_ssl, timeout=300.0)
-    
     return StreamingResponse(
-        stream_response(client, url, data, headers, original_model, provider_name),
+        stream_response(response, original_model, provider_name),
         media_type='text/event-stream'
     )
 
