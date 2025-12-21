@@ -18,7 +18,7 @@ build:
 	cargo build --release
 
 run:
-	cargo run --release
+	RUST_LOG=info cargo run --release
 
 test:
 	cargo test
