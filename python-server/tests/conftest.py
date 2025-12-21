@@ -43,8 +43,7 @@ def test_config_dict() -> dict:
         ],
         'server': {
             'host': '0.0.0.0',
-            'port': 18000,
-            'master_api_key': 'test-master-key'
+            'port': 18000
         },
         'verify_ssl': True
     }

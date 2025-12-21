@@ -108,13 +108,11 @@ class TestServerConfig:
         """Test creating ServerConfig with custom values"""
         server = ServerConfig(
             host='127.0.0.1',
-            port=8080,
-            master_api_key='secret-key'
+            port=8080
         )
         
         assert server.host == '127.0.0.1'
         assert server.port == 8080
-        assert server.master_api_key == 'secret-key'
     
     def test_server_config_defaults(self):
         """Test ServerConfig default values"""
@@ -122,7 +120,6 @@ class TestServerConfig:
         
         assert server.host == '0.0.0.0'
         assert server.port == 18000
-        assert server.master_api_key is None
     
     def test_server_config_partial_defaults(self):
         """Test ServerConfig with some defaults"""
@@ -130,7 +127,6 @@ class TestServerConfig:
         
         assert server.host == '0.0.0.0'
         assert server.port == 9000
-        assert server.master_api_key is None
     
     def test_server_config_serialization(self):
         """Test ServerConfig serialization"""
@@ -139,7 +135,6 @@ class TestServerConfig:
         
         assert data['host'] == 'localhost'
         assert data['port'] == 3000
-        assert data['master_api_key'] is None
 
 
 @pytest.mark.unit

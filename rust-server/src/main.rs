@@ -9,7 +9,7 @@ use axum::{
 };
 use llm_proxy_rust::{
     api::{chat_completions, completions, health, health_detailed, list_models, metrics_handler, AppState},
-    core::{init_metrics, AppConfig, MetricsMiddleware},
+    core::{init_metrics, AppConfig, MetricsMiddleware, RateLimiter},
     services::ProviderService,
 };
 use std::net::SocketAddr;
@@ -44,10 +44,32 @@ async fn main() -> Result<()> {
     let provider_service = ProviderService::new(config.clone());
     provider_service.log_providers();
 
+    // Initialize rate limiter and register master keys
+    let rate_limiter = std::sync::Arc::new(RateLimiter::new());
+    for key_config in &config.master_keys {
+        if key_config.enabled {
+            if let Some(rate_limit) = &key_config.rate_limit {
+                rate_limiter.register_key(&key_config.key, rate_limit);
+                tracing::info!(
+                    "Registered rate limit for key '{}': {} req/s (burst: {})",
+                    key_config.name,
+                    rate_limit.requests_per_second,
+                    rate_limit.burst_size
+                );
+            } else {
+                tracing::info!(
+                    "Master key '{}' registered without rate limiting",
+                    key_config.name
+                );
+            }
+        }
+    }
+
     // Create shared state
     let state = std::sync::Arc::new(AppState {
         config: config.clone(),
         provider_service,
+        rate_limiter,
     });
 
     // Build router
@@ -72,14 +94,18 @@ async fn main() -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Starting LLM API Proxy on {}", addr);
     tracing::info!("Using config file: {}", config_path);
-    tracing::info!(
-        "Master API key: {}",
-        if config.server.master_api_key.is_some() {
-            "Enabled"
-        } else {
-            "Disabled"
-        }
-    );
+    
+    // Log authentication status
+    if !config.master_keys.is_empty() {
+        tracing::info!(
+            "Master keys: {} configured ({} enabled)",
+            config.master_keys.len(),
+            config.master_keys.iter().filter(|k| k.enabled).count()
+        );
+    } else {
+        tracing::info!("Authentication: Disabled");
+    }
+    
     tracing::info!("Metrics endpoint: /metrics");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

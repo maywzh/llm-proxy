@@ -24,6 +24,7 @@ fn create_config_with_providers(count: usize) -> AppConfig {
         providers,
         server: ServerConfig::default(),
         verify_ssl: true,
+        master_keys: vec![],
     }
 }
 

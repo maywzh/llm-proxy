@@ -15,6 +15,7 @@ llm-proxy 是一个高性能的 LLM API 代理服务，支持加权负载均衡�
 - ✅ Provider 健康监控
 - ✅ 模块化架构设计
 - ✅ 类型安全（Pydantic）
+- ✅ **可选的 Master Key 速率限制**
 
 ## 快速开始
 
@@ -43,6 +44,20 @@ providers:
   - name: "provider2"
     api_base: "https://api.openai.com/v1"
     api_key: "sk-your-api-key-2"
+
+# Master API key configuration
+master_keys:
+  # Key with rate limiting
+  - name: "Production Key"
+    key: "sk-prod-key"
+    rate_limit:
+      requests_per_second: 100
+      burst_size: 150
+  
+  # Key without rate limiting (unlimited requests)
+  - name: "Unlimited Key"
+    key: "sk-unlimited-key"
+    # No rate_limit field = no rate limiting
 
 server:
   host: "0.0.0.0"
@@ -130,6 +145,44 @@ curl http://localhost:8000/health
 - `/health/detailed` - 详细健康检查（测试所有 provider）
 - `/metrics` - Prometheus 指标端点
 - `/docs` - OpenAPI 文档
+
+## Master Key 速率限制
+
+系统支持为每个 Master Key 配置独立的速率限制，也可以完全禁用速率限制。
+
+### 配置方式
+
+**启用速率限制：**
+```yaml
+master_keys:
+  - name: "Limited Key"
+    key: "sk-limited-key"
+    rate_limit:
+      requests_per_second: 100  # 每秒最多 100 个请求
+      burst_size: 150           # 允许的突发请求数
+```
+
+**禁用速率限制（无限制）：**
+```yaml
+master_keys:
+  - name: "Unlimited Key"
+    key: "sk-unlimited-key"
+    # 不设置 rate_limit 字段 = 无速率限制
+```
+
+### 行为说明
+
+| 配置 | 行为 |
+|------|------|
+| `rate_limit: {requests_per_second: 100, burst_size: 150}` | 启用速率限制：每秒 100 个请求，允许 150 个突发请求 |
+| `rate_limit: {requests_per_second: 0, burst_size: 0}` | 启用速率限制：阻止所有请求 |
+| 不设置 `rate_limit` 字段 | 禁用速率限制：允许无限请求 |
+
+### 使用场景
+
+- **生产环境 Key**：设置合理的速率限制，防止滥用
+- **开发/测试 Key**：可以不设置速率限制，方便开发调试
+- **特殊用途 Key**：根据实际需求灵活配置
 
 ## 监控功能
 
