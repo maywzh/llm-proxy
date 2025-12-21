@@ -1,6 +1,6 @@
-# tvs-llm-proxy
+# llm-proxy
 
-tvs-llm-proxy 是一个高性能的 LLM API 代理服务，支持加权负载均衡、完整的 Prometheus 监控和 Grafana 可视化。
+llm-proxy 是一个高性能的 LLM API 代理服务，支持加权负载均衡、完整的 Prometheus 监控和 Grafana 可视化。
 
 ## 功能特性
 

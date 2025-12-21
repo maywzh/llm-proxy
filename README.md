@@ -1,4 +1,4 @@
-# tvs-llm-proxy
+# llm-proxy
 
 High-performance, OpenAI-compatible LLM API proxy with weighted load balancing, streaming support, and built-in observability. The repository contains two first-class implementations:
 
