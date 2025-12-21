@@ -20,16 +20,10 @@ COPY Cargo.toml Cargo.lock* ./
 # Copy benches directory (needed by Cargo.toml)
 COPY benches ./benches
 
-# Create dummy source to build dependencies first (for better caching)
-RUN mkdir -p src && \
-    echo "fn main() {}" > src/main.rs && \
-    cargo build --release && \
-    rm -rf src target/release/llm-proxy-rust* target/release/deps/llm_proxy_rust*
-
-# Now copy real source code
+# Copy source code
 COPY src ./src
 
-# Build actual application
+# Build release binary
 RUN cargo build --release
 
 # Runtime stage - Use Chainguard Rust image
@@ -49,5 +43,6 @@ EXPOSE 18000
 # Set default config path
 ENV CONFIG_PATH=/app/config.yaml
 
-# Run the application
-CMD ["llm-proxy-rust"]
+# Ensure the container starts by executing the compiled binary directly
+ENTRYPOINT ["/usr/local/bin/llm-proxy-rust"]
+CMD []
