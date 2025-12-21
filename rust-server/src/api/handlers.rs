@@ -121,16 +121,54 @@ pub async fn chat_completions(
                     AppError::from(e)
                 })?;
 
+            let status = response.status();
             tracing::debug!(
                 request_id = %request_id,
                 provider = %provider.name,
                 url = %url,
-                status = %response.status(),
+                status = %status,
                 method = "POST",
                 "HTTP request completed"
             );
 
+            // Check if backend API returned an error status code
+            if status.is_client_error() || status.is_server_error() {
+                let error_detail = match response.text().await {
+                    Ok(body) => {
+                        // Try to parse as JSON to extract error message
+                        if let Ok(json_body) = serde_json::from_str::<serde_json::Value>(&body) {
+                            if let Some(error_obj) = json_body.get("error") {
+                                if let Some(msg) = error_obj.get("message").and_then(|m| m.as_str()) {
+                                    msg.to_string()
+                                } else if let Some(msg) = error_obj.as_str() {
+                                    msg.to_string()
+                                } else {
+                                    body
+                                }
+                            } else {
+                                body
+                            }
+                        } else {
+                            body
+                        }
+                    }
+                    Err(_) => format!("Backend API error: {}", status)
+                };
+                
+                tracing::error!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    status = %status,
+                    error = %error_detail,
+                    "Backend API returned error status"
+                );
+                
+                return Err(AppError::Internal(format!("Backend API error: {}", error_detail)));
+            }
+
             if is_stream {
+                // For streaming, response is already checked for errors above
+                // Now we can safely create the SSE stream
                 let sse_stream = create_sse_stream(response, original_model, provider.name).await;
                 Ok(sse_stream.into_response())
             } else {
@@ -215,14 +253,50 @@ pub async fn completions(
                     AppError::from(e)
                 })?;
 
+            let status = response.status();
             tracing::debug!(
                 request_id = %request_id,
                 provider = %provider.name,
                 url = %url,
-                status = %response.status(),
+                status = %status,
                 method = "POST",
                 "HTTP request completed"
             );
+
+            // Check if backend API returned an error status code
+            if status.is_client_error() || status.is_server_error() {
+                let error_detail = match response.text().await {
+                    Ok(body) => {
+                        // Try to parse as JSON to extract error message
+                        if let Ok(json_body) = serde_json::from_str::<serde_json::Value>(&body) {
+                            if let Some(error_obj) = json_body.get("error") {
+                                if let Some(msg) = error_obj.get("message").and_then(|m| m.as_str()) {
+                                    msg.to_string()
+                                } else if let Some(msg) = error_obj.as_str() {
+                                    msg.to_string()
+                                } else {
+                                    body
+                                }
+                            } else {
+                                body
+                            }
+                        } else {
+                            body
+                        }
+                    }
+                    Err(_) => format!("Backend API error: {}", status)
+                };
+                
+                tracing::error!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    status = %status,
+                    error = %error_detail,
+                    "Backend API returned error status"
+                );
+                
+                return Err(AppError::Internal(format!("Backend API error: {}", error_detail)));
+            }
 
             let response_data: serde_json::Value = response.json().await?;
             Ok(Json(response_data).into_response())
