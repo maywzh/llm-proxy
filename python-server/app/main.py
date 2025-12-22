@@ -63,13 +63,14 @@ def create_app() -> FastAPI:
         
         # Log authentication configuration
         if config.master_keys:
-            logger.info(f"Master keys: {len(config.master_keys)} configured with rate limiting")
+            logger.info(f"Master keys: {len(config.master_keys)} configured")
             for key_config in config.master_keys:
-                logger.info(f"  - Key ending in ...{key_config.key[-8:]}: "
-                          f"{key_config.rate_limit.requests_per_second} req/s, "
-                          f"burst={key_config.rate_limit.burst_size}")
-        elif config.master_api_key:
-            logger.info("Master API key: Enabled (legacy mode, no rate limiting)")
+                if key_config.rate_limit:
+                    logger.info(f"  - Key ending in ...{key_config.key[-8:]}: "
+                              f"{key_config.rate_limit.requests_per_second} req/s, "
+                              f"burst={key_config.rate_limit.burst_size}")
+                else:
+                    logger.info(f"  - Key ending in ...{key_config.key[-8:]}: unlimited")
         else:
             logger.info("Master API key: Disabled")
         
