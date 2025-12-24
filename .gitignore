@@ -2,3 +2,43 @@
 .debug
 .claude
 .kilocode
+
+# Rust
+/target/
+**/*.rs.bk
+# (optional) ignore Cargo.lock for libraries/workspaces; for applications you may want to keep it
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+ENV/
+.venv/
+env.bak/
+venv.bak/
+build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+pip-log.txt
+pip-delete-this-directory.txt
+.ipynb_checkpoints
+.pytest_cache/
+.mypy_cache/
+.python-version
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+*.pyc
+
+# Common editors/IDE
+.vscode/
+.idea/
+*.swp
+*~
