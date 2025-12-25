@@ -54,19 +54,23 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             ).observe(duration)
             
             # Log request details
-            logger.info(
-                f"{method} {endpoint} - model={model} provider={provider} "
-                f"status={status_code} duration={duration:.3f}s"
-            )
+            log_message = f"{method} {endpoint}"
+            if endpoint == '/v1/chat/completions':
+                log_message += f" - model={model} provider={provider}"
+            log_message += f" status={status_code} duration={duration:.3f}s"
+            logger.info(log_message)
             
             return response
             
         except Exception as e:
             duration = time.time() - start_time
-            logger.error(
-                f"{method} {endpoint} - Error: {type(e).__name__}: {str(e)} "
-                f"duration={duration:.3f}s"
-            )
+            log_message = f"{method} {endpoint}"
+            if endpoint == '/v1/chat/completions':
+                model = getattr(request.state, 'model', 'unknown')
+                provider = getattr(request.state, 'provider', 'unknown')
+                log_message += f" - model={model} provider={provider}"
+            log_message += f" - Error: {type(e).__name__}: {str(e)} duration={duration:.3f}s"
+            logger.error(log_message)
             raise
             
         finally:
