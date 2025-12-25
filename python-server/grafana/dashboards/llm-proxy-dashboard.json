@@ -462,7 +462,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (provider) (increase(llm_proxy_requests_total[1h]))",
+          "expr": "sum by (provider) (increase(llm_proxy_requests_total{path=\"/v1/chat/completions\"}[1h]))",
           "legendFormat": "{{provider}}",
           "refId": "A"
         }
