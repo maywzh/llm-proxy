@@ -42,3 +42,19 @@ coverage.xml
 .idea/
 *.swp
 *~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+.env.local
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.lnk
+
+# Linux
+.directory
