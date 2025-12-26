@@ -4,7 +4,10 @@
 //! health checks, model listings, and metrics.
 
 use crate::api::models::*;
-use crate::api::streaming::{create_sse_stream, rewrite_model_in_response};
+use crate::api::streaming::{
+    create_sse_stream, rewrite_model_in_response, TokenCounter,
+    calculate_message_tokens, record_fallback_token_usage
+};
 use crate::core::{AppError, Result, RateLimiter};
 use crate::core::logging::{PROVIDER_CONTEXT, REQUEST_ID, generate_request_id};
 use crate::core::metrics::get_metrics;
@@ -194,8 +197,37 @@ pub async fn chat_completions(
 
             let mut final_response = if is_stream {
                 // For streaming, response is already checked for errors above
-                // Now we can safely create the SSE stream
-                let sse_stream = create_sse_stream(response, original_model.clone(), provider.name.clone()).await;
+                // Calculate input tokens for fallback
+                let input_tokens = calculate_message_tokens(&payload.messages, &original_model);
+                let token_counter = TokenCounter::new(input_tokens);
+                
+                // Create SSE stream with token counter
+                let sse_stream = create_sse_stream(
+                    response,
+                    original_model.clone(),
+                    provider.name.clone(),
+                    Some(token_counter.clone())
+                ).await;
+                
+                // After stream completes, check if we need to record fallback tokens
+                // Note: This happens after the response is sent, so we spawn a task
+                let model_clone = original_model.clone();
+                let provider_clone = provider.name.clone();
+                tokio::spawn(async move {
+                    // Give the stream time to complete
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    
+                    if !*token_counter.usage_found.lock().unwrap() {
+                        let output_tokens = *token_counter.output_tokens.lock().unwrap();
+                        record_fallback_token_usage(
+                            input_tokens,
+                            output_tokens,
+                            &model_clone,
+                            &provider_clone
+                        );
+                    }
+                });
+                
                 sse_stream.into_response()
             } else {
                 let response_data: serde_json::Value = response.json().await?;

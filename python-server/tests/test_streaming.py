@@ -8,7 +8,9 @@ from app.utils.streaming import (
     rewrite_sse_chunk,
     stream_response,
     create_streaming_response,
-    rewrite_model_in_response
+    rewrite_model_in_response,
+    count_tokens,
+    calculate_message_tokens
 )
 
 
@@ -107,48 +109,33 @@ class TestStreamResponse:
     @pytest.mark.asyncio
     async def test_stream_response_basic(self):
         """Test basic streaming response"""
-        mock_client = AsyncMock()
         mock_response = AsyncMock()
         mock_response.aiter_bytes = AsyncMock(return_value=[
             b'data: {"model":"gpt-4-0613","content":"Hello"}\n\n',
             b'data: [DONE]\n\n'
         ])
-        mock_client.stream = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_client.__aexit__ = AsyncMock()
         
         chunks = []
         async for chunk in stream_response(
-            mock_client,
-            'https://api.test.com/chat/completions',
-            {'model': 'gpt-4', 'messages': []},
-            {'Authorization': 'Bearer test'},
+            mock_response,
             'gpt-4',
             'test-provider'
         ):
             chunks.append(chunk)
         
         assert len(chunks) == 2
-        assert mock_client.aclose.called
     
     @pytest.mark.asyncio
     async def test_stream_response_with_usage(self):
         """Test streaming response with usage information"""
         usage_chunk = b'data: {"model":"gpt-4-0613","usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}\n\n'
         
-        mock_client = AsyncMock()
         mock_response = AsyncMock()
         mock_response.aiter_bytes = AsyncMock(return_value=[usage_chunk])
-        mock_client.stream = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_client.__aexit__ = AsyncMock()
         
         chunks = []
         async for chunk in stream_response(
-            mock_client,
-            'https://api.test.com/chat/completions',
-            {'model': 'gpt-4'},
-            {'Authorization': 'Bearer test'},
+            mock_response,
             'gpt-4',
             'test-provider'
         ):
@@ -158,93 +145,171 @@ class TestStreamResponse:
         # Usage should be tracked (tested via metrics)
     
     @pytest.mark.asyncio
-    async def test_stream_response_closes_client(self):
-        """Test that client is closed after streaming"""
-        mock_client = AsyncMock()
+    async def test_stream_response_without_usage_fallback(self):
+        """Test fallback token counting when provider doesn't return usage"""
+        mock_response = AsyncMock()
+        mock_response.aiter_bytes = AsyncMock(return_value=[
+            b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+            b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+            b'data: [DONE]\n\n'
+        ])
+        
+        request_data = {
+            'messages': [
+                {'role': 'user', 'content': 'Test message'}
+            ]
+        }
+        
+        chunks = []
+        async for chunk in stream_response(
+            mock_response,
+            'gpt-4',
+            'test-provider',
+            request_data
+        ):
+            chunks.append(chunk)
+        
+        assert len(chunks) == 3
+        # Fallback token counting should be triggered
+    
+    @pytest.mark.asyncio
+    async def test_stream_response_with_null_usage(self):
+        """Test fallback when usage is null"""
+        mock_response = AsyncMock()
+        mock_response.aiter_bytes = AsyncMock(return_value=[
+            b'data: {"choices":[{"delta":{"content":"Test"}}]}\n\n',
+            b'data: {"usage":null}\n\n',
+            b'data: [DONE]\n\n'
+        ])
+        
+        request_data = {
+            'messages': [
+                {'role': 'user', 'content': 'Hello'}
+            ]
+        }
+        
+        chunks = []
+        async for chunk in stream_response(
+            mock_response,
+            'gpt-4',
+            'test-provider',
+            request_data
+        ):
+            chunks.append(chunk)
+        
+        assert len(chunks) == 3
+    
+    @pytest.mark.asyncio
+    async def test_stream_response_completes(self):
+        """Test that stream completes successfully"""
         mock_response = AsyncMock()
         mock_response.aiter_bytes = AsyncMock(return_value=[b'data: test\n\n'])
-        mock_client.stream = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_client.__aexit__ = AsyncMock()
         
-        async for _ in stream_response(
-            mock_client,
-            'https://api.test.com/chat/completions',
-            {},
-            {},
+        chunks = []
+        async for chunk in stream_response(
+            mock_response,
             None,
             'test-provider'
         ):
-            pass
+            chunks.append(chunk)
         
-        mock_client.aclose.assert_called_once()
+        assert len(chunks) == 1
     
     @pytest.mark.asyncio
     async def test_stream_response_error_handling(self):
         """Test error handling in stream response"""
-        mock_client = AsyncMock()
         mock_response = AsyncMock()
         mock_response.aiter_bytes = AsyncMock(side_effect=Exception("Stream error"))
-        mock_client.stream = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_client.__aexit__ = AsyncMock()
         
-        with pytest.raises(Exception, match="Stream error"):
-            async for _ in stream_response(
-                mock_client,
-                'https://api.test.com/chat/completions',
-                {},
-                {},
-                None,
-                'test-provider'
-            ):
-                pass
+        chunks = []
+        async for chunk in stream_response(
+            mock_response,
+            None,
+            'test-provider'
+        ):
+            chunks.append(chunk)
         
-        # Client should still be closed
-        mock_client.aclose.assert_called_once()
+        # Should handle error gracefully
+        assert len(chunks) == 0
+
+
+@pytest.mark.unit
+class TestTokenCounting:
+    """Test token counting functions"""
+    
+    def test_count_tokens_basic(self):
+        """Test basic token counting"""
+        text = "Hello world"
+        tokens = count_tokens(text, "gpt-3.5-turbo")
+        assert tokens > 0
+        assert isinstance(tokens, int)
+    
+    def test_count_tokens_empty(self):
+        """Test counting tokens in empty string"""
+        tokens = count_tokens("", "gpt-3.5-turbo")
+        assert tokens == 0
+    
+    def test_count_tokens_unicode(self):
+        """Test counting tokens with unicode"""
+        text = "你好世界"
+        tokens = count_tokens(text, "gpt-3.5-turbo")
+        assert tokens > 0
+    
+    def test_calculate_message_tokens(self):
+        """Test calculating tokens for messages"""
+        messages = [
+            {'role': 'user', 'content': 'Hello'},
+            {'role': 'assistant', 'content': 'Hi there'}
+        ]
+        tokens = calculate_message_tokens(messages, "gpt-3.5-turbo")
+        assert tokens > 0
+        # Should include content + role + format overhead
+        assert tokens > len("Hello") + len("Hi there")
+    
+    def test_calculate_message_tokens_with_name(self):
+        """Test calculating tokens with name field"""
+        messages = [
+            {'role': 'user', 'content': 'Test', 'name': 'Alice'}
+        ]
+        tokens = calculate_message_tokens(messages, "gpt-3.5-turbo")
+        assert tokens > 0
+    
+    def test_calculate_message_tokens_empty(self):
+        """Test calculating tokens for empty messages"""
+        tokens = calculate_message_tokens([], "gpt-3.5-turbo")
+        # Should still have conversation overhead
+        assert tokens == 2
 
 
 @pytest.mark.unit
 class TestCreateStreamingResponse:
     """Test create_streaming_response function"""
     
-    def test_create_streaming_response(self, test_config, monkeypatch):
+    def test_create_streaming_response(self):
         """Test creating streaming response"""
-        from app.core import config as config_module
-        monkeypatch.setattr(config_module, 'get_config', lambda: test_config)
+        mock_response = AsyncMock()
         
         response = create_streaming_response(
-            'https://api.test.com/chat/completions',
-            {'model': 'gpt-4', 'messages': []},
-            {'Authorization': 'Bearer test'},
+            mock_response,
             'gpt-4',
             'test-provider'
         )
         
         assert response.media_type == 'text/event-stream'
     
-    def test_create_streaming_response_with_ssl_verification(self, test_config, monkeypatch):
-        """Test streaming response respects SSL verification setting"""
-        from app.core import config as config_module
+    def test_create_streaming_response_with_request_data(self):
+        """Test creating streaming response with request data"""
+        mock_response = AsyncMock()
+        request_data = {'messages': [{'role': 'user', 'content': 'Test'}]}
         
-        # Test with SSL verification disabled
-        test_config.verify_ssl = False
-        monkeypatch.setattr(config_module, 'get_config', lambda: test_config)
+        response = create_streaming_response(
+            mock_response,
+            'gpt-4',
+            'test-provider',
+            request_data
+        )
         
-        with patch('app.utils.streaming.httpx.AsyncClient') as mock_client:
-            create_streaming_response(
-                'https://api.test.com/chat/completions',
-                {},
-                {},
-                None,
-                'test-provider'
-            )
-            
-            # Verify client was created with verify=False
-            mock_client.assert_called_once()
-            call_kwargs = mock_client.call_args[1]
-            assert call_kwargs['verify'] is False
-            assert call_kwargs['timeout'] == 300.0
+        assert response.media_type == 'text/event-stream'
 
 
 @pytest.mark.unit
@@ -334,19 +399,12 @@ class TestStreamingEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_stream(self):
         """Test handling empty stream"""
-        mock_client = AsyncMock()
         mock_response = AsyncMock()
         mock_response.aiter_bytes = AsyncMock(return_value=[])
-        mock_client.stream = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_client.__aexit__ = AsyncMock()
         
         chunks = []
         async for chunk in stream_response(
-            mock_client,
-            'https://api.test.com/chat/completions',
-            {},
-            {},
+            mock_response,
             None,
             'test-provider'
         ):

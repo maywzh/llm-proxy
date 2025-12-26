@@ -51,6 +51,9 @@ dashmap = "6.1"
 governor = "0.7"
 nonzero_ext = "0.3"
 
+# Token counting
+tiktoken-rs = "0.5"
+
 [dev-dependencies]
 # Testing framework
 tokio-test = "0.4"
