@@ -1,13 +1,57 @@
 """Streaming response utilities"""
 import json
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, Dict, Any
 
 import httpx
+import tiktoken
 from fastapi.responses import StreamingResponse
 
 from app.core.config import get_config
 from app.core.metrics import TOKEN_USAGE
-from app.core.logging import set_provider_context, clear_provider_context
+from app.core.logging import set_provider_context, clear_provider_context, get_logger
+
+
+def count_tokens(text: str, model: str) -> int:
+    """Count tokens in text using tiktoken"""
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        # Fallback to cl100k_base for unknown models
+        encoding = tiktoken.get_encoding("cl100k_base")
+    return len(encoding.encode(text))
+
+
+def calculate_message_tokens(messages: list, model: str) -> int:
+    """Calculate tokens for a list of messages including format overhead"""
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        encoding = tiktoken.get_encoding("cl100k_base")
+    
+    total_tokens = 0
+    for message in messages:
+        # Count tokens in content
+        content = message.get('content', '')
+        if isinstance(content, str):
+            total_tokens += len(encoding.encode(content))
+        elif isinstance(content, list):
+            # Handle multi-modal content
+            for item in content:
+                if isinstance(item, dict) and item.get('type') == 'text':
+                    total_tokens += len(encoding.encode(item.get('text', '')))
+        
+        # Add tokens for role and other fields
+        total_tokens += len(encoding.encode(message.get('role', '')))
+        if 'name' in message:
+            total_tokens += len(encoding.encode(message['name']))
+        
+        # Format overhead per message
+        total_tokens += 4
+    
+    # Conversation format overhead
+    total_tokens += 2
+    
+    return total_tokens
 
 
 async def rewrite_sse_chunk(chunk: bytes, original_model: Optional[str]) -> bytes:
@@ -41,11 +85,32 @@ async def rewrite_sse_chunk(chunk: bytes, original_model: Optional[str]) -> byte
 async def stream_response(
     response: httpx.Response,
     original_model: Optional[str],
-    provider_name: str
+    provider_name: str,
+    request_data: Optional[Dict[str, Any]] = None
 ) -> AsyncIterator[bytes]:
-    """Stream response from provider with model rewriting and token tracking"""
-    from app.core.logging import get_logger
+    """Stream response from provider with model rewriting and token tracking
+    
+    Args:
+        response: HTTP response from provider
+        original_model: Original model name from request
+        provider_name: Provider name for metrics
+        request_data: Original request data for fallback token counting
+    """
     logger = get_logger()
+    
+    # Calculate input tokens for fallback
+    input_tokens = 0
+    if request_data:
+        model_for_counting = original_model or 'gpt-3.5-turbo'
+        messages = request_data.get('messages', [])
+        if messages:
+            input_tokens = calculate_message_tokens(messages, model_for_counting)
+            logger.debug(f"Calculated input tokens: {input_tokens}")
+    
+    # Track output tokens and usage status
+    output_tokens = 0
+    usage_found = False
+    model_for_counting = original_model or 'gpt-3.5-turbo'
     
     try:
         # Set provider context for logging
@@ -54,6 +119,8 @@ async def stream_response(
         async for chunk in response.aiter_bytes():
             # Track token usage from streaming chunks
             chunk_str = chunk.decode('utf-8', errors='ignore')
+            
+            # Try to extract usage from provider (preferred method)
             if '"usage":' in chunk_str:
                 try:
                     lines = chunk_str.split('\n')
@@ -61,7 +128,7 @@ async def stream_response(
                         if line.startswith('data: ') and line != 'data: [DONE]':
                             json_str = line[6:]
                             json_obj = json.loads(json_str)
-                            if 'usage' in json_obj:
+                            if 'usage' in json_obj and json_obj['usage']:
                                 usage = json_obj['usage']
                                 model_name = original_model or 'unknown'
                                 
@@ -85,10 +152,65 @@ async def stream_response(
                                         provider=provider_name,
                                         token_type='total'
                                     ).inc(usage['total_tokens'])
-                except:
-                    pass
+                                
+                                usage_found = True
+                                logger.debug(
+                                    f"Token usage from provider - "
+                                    f"model={model_name} provider={provider_name} "
+                                    f"prompt={usage.get('prompt_tokens', 0)} "
+                                    f"completion={usage.get('completion_tokens', 0)} "
+                                    f"total={usage.get('total_tokens', 0)}"
+                                )
+                except Exception as e:
+                    logger.warning(f"Failed to parse usage from chunk: {e}")
+            
+            # Accumulate output tokens for fallback (only if usage not found yet)
+            if not usage_found and request_data:
+                try:
+                    lines = chunk_str.split('\n')
+                    for line in lines:
+                        if line.startswith('data: ') and line != 'data: [DONE]':
+                            json_str = line[6:]
+                            json_obj = json.loads(json_str)
+                            if 'choices' in json_obj:
+                                for choice in json_obj['choices']:
+                                    delta = choice.get('delta', {})
+                                    content = delta.get('content', '')
+                                    if content:
+                                        output_tokens += count_tokens(content, model_for_counting)
+                except Exception as e:
+                    logger.debug(f"Failed to count tokens from content: {e}")
             
             yield await rewrite_sse_chunk(chunk, original_model)
+        
+        # If no usage was provided by provider, use calculated values (fallback)
+        if not usage_found and request_data:
+            model_name = original_model or 'unknown'
+            total_tokens = input_tokens + output_tokens
+            
+            TOKEN_USAGE.labels(
+                model=model_name,
+                provider=provider_name,
+                token_type='prompt'
+            ).inc(input_tokens)
+            
+            TOKEN_USAGE.labels(
+                model=model_name,
+                provider=provider_name,
+                token_type='completion'
+            ).inc(output_tokens)
+            
+            TOKEN_USAGE.labels(
+                model=model_name,
+                provider=provider_name,
+                token_type='total'
+            ).inc(total_tokens)
+            
+            logger.info(
+                f"Token usage calculated (fallback) - "
+                f"model={model_name} provider={provider_name} "
+                f"prompt={input_tokens} completion={output_tokens} total={total_tokens}"
+            )
     except Exception as e:
         # Handle any unexpected errors during streaming
         error_detail = str(e)
@@ -103,11 +225,19 @@ async def stream_response(
 def create_streaming_response(
     response: httpx.Response,
     original_model: Optional[str],
-    provider_name: str
+    provider_name: str,
+    request_data: Optional[Dict[str, Any]] = None
 ) -> StreamingResponse:
-    """Create streaming response with proper cleanup"""
+    """Create streaming response with proper cleanup
+    
+    Args:
+        response: HTTP response from provider
+        original_model: Original model name from request
+        provider_name: Provider name for metrics
+        request_data: Original request data for fallback token counting
+    """
     return StreamingResponse(
-        stream_response(response, original_model, provider_name),
+        stream_response(response, original_model, provider_name, request_data),
         media_type='text/event-stream'
     )
 
