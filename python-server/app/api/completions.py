@@ -79,8 +79,8 @@ async def proxy_completion_request(
                     )
                     raise HTTPException(status_code=500, detail=error_detail)
                 
-                # If status is OK, create streaming response
-                return create_streaming_response(response, original_model, provider.name)
+                # If status is OK, create streaming response with request data for fallback token counting
+                return create_streaming_response(response, original_model, provider.name, data)
         else:
             config = get_config()
             logger.debug(f"Non-streaming request to {provider.name} for model {original_model}")

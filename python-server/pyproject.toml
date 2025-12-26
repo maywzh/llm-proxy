@@ -15,6 +15,7 @@ dependencies = [
     "prometheus-client>=0.20.0",
     "loguru>=0.7.0",
     "limits>=3.10.0",
+    "tiktoken>=0.5.0",
 ]
 
 [project.optional-dependencies]
