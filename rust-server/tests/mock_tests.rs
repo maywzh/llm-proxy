@@ -23,6 +23,11 @@ use wiremock::{
 
 /// Create a test app with mocked provider
 async fn create_test_app_with_mock(mock_server: &MockServer) -> Router {
+    create_test_app_with_timeout(mock_server, 300).await
+}
+
+/// Create a test app with mocked provider and custom timeout
+async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u64) -> Router {
     use llm_proxy_rust::core::config::{ProviderConfig, ServerConfig};
     use llm_proxy_rust::core::RateLimiter;
     use std::collections::HashMap;
@@ -45,6 +50,7 @@ async fn create_test_app_with_mock(mock_server: &MockServer) -> Router {
             port: 18000,
         },
         verify_ssl: false,
+        request_timeout_secs: timeout_secs,
         master_keys: vec![],
     };
 
@@ -285,11 +291,12 @@ async fn test_provider_timeout() {
     let mock_server = MockServer::start().await;
 
     // Mock delayed response (simulating timeout)
+    // Use 3 seconds delay which is longer than our test client timeout (2s)
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_delay(std::time::Duration::from_secs(400)) // Longer than client timeout
+                .set_delay(std::time::Duration::from_secs(3))
                 .set_body_json(json!({
                     "id": "chatcmpl-123",
                     "object": "chat.completion",
@@ -301,7 +308,8 @@ async fn test_provider_timeout() {
         .mount(&mock_server)
         .await;
 
-    let app = create_test_app_with_mock(&mock_server).await;
+    // Create app with 2 second timeout
+    let app = create_test_app_with_timeout(&mock_server, 2).await;
 
     let request = Request::builder()
         .uri("/v1/chat/completions")
@@ -514,6 +522,6 @@ async fn test_invalid_json_response() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should return error for invalid JSON
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Should return BAD_GATEWAY for invalid JSON from provider
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }

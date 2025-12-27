@@ -23,6 +23,10 @@ pub struct AppConfig {
     #[serde(default = "default_verify_ssl")]
     pub verify_ssl: bool,
 
+    /// Request timeout in seconds for upstream providers
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout_secs: u64,
+
     /// List of master keys with optional rate limiting
     #[serde(default)]
     pub master_keys: Vec<MasterKeyConfig>,
@@ -127,6 +131,10 @@ fn default_verify_ssl() -> bool {
     true
 }
 
+fn default_request_timeout() -> u64 {
+    300
+}
+
 impl AppConfig {
     /// Load configuration from a YAML file.
     ///
@@ -172,6 +180,13 @@ impl AppConfig {
         // SSL verification override
         if let Ok(verify_ssl_str) = std::env::var("VERIFY_SSL") {
             config.verify_ssl = str_to_bool(&verify_ssl_str);
+        }
+
+        // Request timeout override
+        if let Ok(timeout_str) = std::env::var("REQUEST_TIMEOUT_SECS") {
+            if let Ok(timeout) = timeout_str.parse::<u64>() {
+                config.request_timeout_secs = timeout;
+            }
         }
 
         Ok(config)
@@ -534,6 +549,7 @@ verify_ssl: true
             }],
             server: ServerConfig::default(),
             verify_ssl: true,
+            request_timeout_secs: 300,
             master_keys: vec![],
         };
 
@@ -542,3 +558,4 @@ verify_ssl: true
         assert!(yaml.contains("http://test"));
     }
 }
+

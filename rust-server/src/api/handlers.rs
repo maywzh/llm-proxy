@@ -167,7 +167,7 @@ pub async fn chat_completions(
 
                     let client = reqwest::Client::builder()
                         .danger_accept_invalid_certs(!state.config.verify_ssl)
-                        .timeout(std::time::Duration::from_secs(300))
+                        .timeout(std::time::Duration::from_secs(state.config.request_timeout_secs))
                         .build()
                         .map_err(|e| {
                             AppError::Internal(format!("Failed to build HTTP client: {}", e))
@@ -343,7 +343,7 @@ pub async fn completions(
 
                     let client = reqwest::Client::builder()
                         .danger_accept_invalid_certs(!state.config.verify_ssl)
-                        .timeout(std::time::Duration::from_secs(300))
+                        .timeout(std::time::Duration::from_secs(state.config.request_timeout_secs))
                         .build()
                         .map_err(|e| {
                             AppError::Internal(format!("Failed to build HTTP client: {}", e))

@@ -21,22 +21,25 @@
 //!
 //! ```no_run
 //! use llm_proxy_rust::{core::AppConfig, services::ProviderService, api::AppState};
+//! use llm_proxy_rust::core::RateLimiter;
 //! use std::sync::Arc;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     // Load configuration
 //!     let config = AppConfig::load("config.yaml")?;
-//!     
+//!
 //!     // Initialize services
 //!     let provider_service = ProviderService::new(config.clone());
-//!     
+//!     let rate_limiter = Arc::new(RateLimiter::new());
+//!
 //!     // Create application state
 //!     let state = Arc::new(AppState {
 //!         config,
 //!         provider_service,
+//!         rate_limiter,
 //!     });
-//!     
+//!
 //!     // Build and run server...
 //!     Ok(())
 //! }
