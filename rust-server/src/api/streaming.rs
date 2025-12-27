@@ -98,7 +98,7 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
 /// - Converts the provider's byte stream to raw SSE format
 /// - Rewrites model names to match the original request
 /// - Tracks token usage from streaming responses
-/// - Accumulates output tokens for fallback calculation
+/// - Accumulates output tokens for fallback calculation (synchronously)
 /// - Maintains OpenAI-compatible SSE format (data: prefix, double newlines, [DONE] message)
 ///
 /// # Arguments
@@ -114,6 +114,11 @@ pub async fn create_sse_stream(
     token_counter: Option<TokenCounter>,
 ) -> AxumResponse {
     let stream = response.bytes_stream();
+    
+    // Track if this is the last chunk to record fallback tokens synchronously
+    let token_counter_for_final = token_counter.clone();
+    let model_for_final = original_model.clone();
+    let provider_for_final = provider_name.clone();
 
     let byte_stream = stream.filter_map(move |chunk_result| {
         let original_model = original_model.clone();
@@ -132,6 +137,7 @@ pub async fn create_sse_stream(
                             if let Ok(mut json_obj) =
                                 serde_json::from_str::<serde_json::Value>(json_str)
                             {
+                                // Check for usage in chunk (preferred method)
                                 if let Some(usage_value) = json_obj.get("usage") {
                                     if let Ok(usage) =
                                         serde_json::from_value::<Usage>(usage_value.clone())
@@ -143,9 +149,11 @@ pub async fn create_sse_stream(
                                     }
                                 }
 
+                                // Accumulate tokens for fallback (only if usage not found yet)
                                 if let Some(ref counter) = token_counter {
                                     let usage_found = *counter.usage_found.lock().unwrap();
                                     if !usage_found {
+                                        // Extract content from ALL choices, not just the first
                                         let contents = extract_stream_text(&json_obj);
                                         if !contents.is_empty() {
                                             let mut output_guard =
@@ -158,6 +166,7 @@ pub async fn create_sse_stream(
                                     }
                                 }
 
+                                // Rewrite model field to preserve original model name
                                 if let Some(obj) = json_obj.as_object_mut() {
                                     obj.insert(
                                         "model".to_string(),
@@ -185,8 +194,29 @@ pub async fn create_sse_stream(
         }
     });
 
+    // Wrap the stream to record fallback tokens after completion
+    let byte_stream_with_cleanup = futures::stream::StreamExt::chain(
+        byte_stream,
+        futures::stream::once(async move {
+            // Record fallback tokens synchronously after stream completes
+            if let Some(counter) = token_counter_for_final {
+                if !*counter.usage_found.lock().unwrap() {
+                    let output_tokens = *counter.output_tokens.lock().unwrap();
+                    record_fallback_token_usage(
+                        counter.input_tokens,
+                        output_tokens,
+                        &model_for_final,
+                        &provider_for_final,
+                    );
+                }
+            }
+            // Return empty chunk to signal end
+            Ok::<Vec<u8>, std::io::Error>(vec![])
+        }),
+    );
+
     // Convert to Body and create response with proper SSE headers
-    let body = Body::from_stream(byte_stream);
+    let body = Body::from_stream(byte_stream_with_cleanup);
 
     AxumResponse::builder()
         .status(200)
