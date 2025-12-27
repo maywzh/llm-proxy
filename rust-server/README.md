@@ -20,7 +20,7 @@ A high-performance Rust implementation of the LLM API proxy with weighted round-
 
 ## Project Structure
 
-```
+```text
 rust-server/
 ├── Cargo.toml              # Dependencies and project metadata
 ├── Dockerfile              # Multi-stage Docker build
@@ -82,18 +82,21 @@ The server supports flexible configuration through environment variables and YAM
 ### Quick Start
 
 1. **Copy example files:**
+
    ```bash
    cp .env.example .env
    cp config.example.yaml config.yaml
    ```
 
 2. **Edit `.env` with your values:**
+
    ```bash
    # Edit API keys and sensitive data
    nano .env
    ```
 
 3. **Run the server:**
+
    ```bash
    cargo run
    # Or with a specific config file
@@ -120,6 +123,7 @@ The server supports three configuration methods with the following priority (hig
 ### Example Configuration
 
 **`.env` file:**
+
 ```bash
 API_KEY_1=your-api-key-1
 API_KEY_2=your-api-key-2
@@ -129,6 +133,7 @@ VERIFY_SSL=false
 ```
 
 **`config.yaml` file:**
+
 ```yaml
 providers:
   - name: "Provider-1"
@@ -240,9 +245,10 @@ GET /metrics
 
 The system supports optional per-key rate limiting. Each master key can have independent rate limits, or no rate limiting at all.
 
-### Configuration
+### Rate Limit Configuration
 
 **Enable Rate Limiting:**
+
 ```yaml
 master_keys:
   - name: "Limited Key"
@@ -253,6 +259,7 @@ master_keys:
 ```
 
 **Disable Rate Limiting (Unlimited):**
+
 ```yaml
 master_keys:
   - name: "Unlimited Key"
@@ -284,7 +291,7 @@ The Rust implementation offers significant performance improvements over the Pyt
 - **Lower Latency**: ~50% reduction in p99 latency
 - **Better Concurrency**: Native async/await with Tokio runtime
 
-## Metrics
+## Prometheus Metrics
 
 Prometheus metrics available at `/metrics`:
 
