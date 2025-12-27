@@ -5,8 +5,7 @@
 
 use crate::api::models::*;
 use crate::api::streaming::{
-    calculate_message_tokens, create_sse_stream, record_fallback_token_usage,
-    rewrite_model_in_response, TokenCounter,
+    calculate_message_tokens, create_sse_stream, rewrite_model_in_response, TokenCounter,
 };
 use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
@@ -106,6 +105,7 @@ pub async fn chat_completions(
                 .unwrap_or_else(|| "unknown".to_string());
 
             // Select provider based on the requested model
+            // Return 400 (Bad Request) if no provider available, not 500
             let provider = match state
                 .provider_service
                 .get_next_provider(original_model.as_deref())
@@ -115,7 +115,8 @@ pub async fn chat_completions(
                     tracing::error!(
                         request_id = %request_id,
                         error = %err,
-                        "Provider selection failed"
+                        model = %model_label,
+                        "Provider selection failed - no available provider for model"
                     );
                     return Err(AppError::BadRequest(err));
                 }
@@ -158,6 +159,12 @@ pub async fn chat_completions(
                         "Processing chat completion request"
                     );
 
+                    // Create a response builder that will be used for all error cases
+                    // This ensures model and provider are always set for metrics
+                    let create_error_response = |status: StatusCode, message: String| -> Response {
+                        build_error_response(status, message, &model_label, &provider.name)
+                    };
+
                     let client = reqwest::Client::builder()
                         .danger_accept_invalid_certs(!state.config.verify_ssl)
                         .timeout(std::time::Duration::from_secs(300))
@@ -191,11 +198,9 @@ pub async fn chat_completions(
                             } else {
                                 StatusCode::BAD_GATEWAY
                             };
-                            return Ok(build_error_response(
+                            return Ok(create_error_response(
                                 status,
                                 format!("Upstream request failed: {}", e),
-                                &model_label,
-                                &provider.name,
                             ));
                         }
                     };
@@ -225,11 +230,9 @@ pub async fn chat_completions(
                             "Backend API returned error status"
                         );
 
-                        return Ok(build_error_response(
+                        return Ok(create_error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             error_detail,
-                            &model_label,
-                            &provider.name,
                         ));
                     }
 
@@ -239,32 +242,14 @@ pub async fn chat_completions(
                         let token_counter = prompt_tokens_for_fallback.map(TokenCounter::new);
 
                         // Create SSE stream with token counter
+                        // The stream will handle token counting synchronously during streaming
                         let sse_stream = create_sse_stream(
                             response,
                             model_label.clone(),
                             provider.name.clone(),
-                            token_counter.clone(),
+                            token_counter,
                         )
                         .await;
-
-                        // After stream completes, check if we need to record fallback tokens
-                        // Note: This happens after the response is sent, so we spawn a task
-                        if let Some(counter) = token_counter {
-                            let model_clone = model_label.clone();
-                            let provider_clone = provider.name.clone();
-                            tokio::spawn(async move {
-                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                                if !*counter.usage_found.lock().unwrap() {
-                                    let output_tokens = *counter.output_tokens.lock().unwrap();
-                                    record_fallback_token_usage(
-                                        counter.input_tokens,
-                                        output_tokens,
-                                        &model_clone,
-                                        &provider_clone,
-                                    );
-                                }
-                            });
-                        }
 
                         sse_stream.into_response()
                     } else {
@@ -277,11 +262,9 @@ pub async fn chat_completions(
                                     error = %e,
                                     "Failed to parse provider response JSON"
                                 );
-                                return Ok(build_error_response(
+                                return Ok(create_error_response(
                                     StatusCode::BAD_GATEWAY,
                                     format!("Invalid JSON from provider: {}", e),
-                                    &model_label,
-                                    &provider.name,
                                 ));
                             }
                         };

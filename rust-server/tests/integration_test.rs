@@ -205,6 +205,19 @@ async fn test_list_models_endpoint() {
 async fn test_metrics_endpoint() {
     let app = create_test_app(create_test_config_no_auth());
 
+    // Make a request first to ensure metrics are populated
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Now check the metrics endpoint
     let response = app
         .oneshot(
             Request::builder()
@@ -223,9 +236,20 @@ async fn test_metrics_endpoint() {
     let text = String::from_utf8(body.to_vec()).unwrap();
 
     // Check for Prometheus metrics format
-    assert!(text.contains("llm_proxy_requests_total"));
-    assert!(text.contains("llm_proxy_request_duration_seconds"));
-    assert!(text.contains("llm_proxy_active_requests"));
+    // Metrics should be present after making at least one request
+    assert!(
+        text.contains("llm_proxy_requests_total") || text.contains("# HELP llm_proxy_requests_total"),
+        "Expected metrics to contain llm_proxy_requests_total, got: {}",
+        text
+    );
+    assert!(
+        text.contains("llm_proxy_request_duration_seconds") || text.contains("# HELP llm_proxy_request_duration_seconds"),
+        "Expected metrics to contain llm_proxy_request_duration_seconds"
+    );
+    assert!(
+        text.contains("llm_proxy_active_requests") || text.contains("# HELP llm_proxy_active_requests"),
+        "Expected metrics to contain llm_proxy_active_requests"
+    );
 }
 
 #[tokio::test]
