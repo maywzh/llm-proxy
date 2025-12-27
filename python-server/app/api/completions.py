@@ -54,7 +54,7 @@ async def proxy_completion_request(
             logger.debug(f"Streaming request to {provider.name} for model {original_model}")
             # For streaming, we need to check the response status before starting the stream
             config = get_config()
-            async with httpx.AsyncClient(verify=config.verify_ssl, timeout=300.0) as client:
+            async with httpx.AsyncClient(verify=config.verify_ssl, timeout=float(config.request_timeout_secs)) as client:
                 response = await client.post(url, json=data, headers=headers)
                 
                 # Check if backend API returned an error status code
@@ -85,7 +85,7 @@ async def proxy_completion_request(
             config = get_config()
             logger.debug(f"Non-streaming request to {provider.name} for model {original_model}")
             
-            async with httpx.AsyncClient(verify=config.verify_ssl, timeout=300.0) as client:
+            async with httpx.AsyncClient(verify=config.verify_ssl, timeout=float(config.request_timeout_secs)) as client:
                 response = await client.post(url, json=data, headers=headers)
                 
                 # Check if backend API returned an error status code

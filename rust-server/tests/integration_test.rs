@@ -94,6 +94,7 @@ fn create_test_config_no_auth() -> AppConfig {
             port: 18000,
         },
         verify_ssl: false,
+        request_timeout_secs: 300,
         master_keys: vec![],
     }
 }
