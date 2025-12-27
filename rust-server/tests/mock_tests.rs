@@ -57,7 +57,10 @@ async fn create_test_app_with_mock(mock_server: &MockServer) -> Router {
     });
 
     Router::new()
-        .route("/v1/chat/completions", axum::routing::post(chat_completions))
+        .route(
+            "/v1/chat/completions",
+            axum::routing::post(chat_completions),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             MetricsMiddleware::track_metrics,
@@ -123,7 +126,10 @@ async fn test_successful_chat_completion() {
 
     // Model should be rewritten to original
     assert_eq!(json["model"], "gpt-4");
-    assert_eq!(json["choices"][0]["message"]["content"], "Hello! How can I help you?");
+    assert_eq!(
+        json["choices"][0]["message"]["content"],
+        "Hello! How can I help you?"
+    );
 }
 
 #[tokio::test]
@@ -164,14 +170,17 @@ async fn test_provider_error_response() {
 
     // Should return 500 for backend API errors
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    
+
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    
+
     // Should contain error message
-    assert!(json["error"]["message"].as_str().unwrap().contains("Internal server error"));
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Internal server error"));
 }
 
 #[tokio::test]
@@ -211,14 +220,17 @@ async fn test_provider_401_error() {
 
     // Should return 500 for backend API errors
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    
+
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    
+
     // Should contain error message
-    assert!(json["error"]["message"].as_str().unwrap().contains("Invalid API key"));
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Invalid API key"));
 }
 
 #[tokio::test]
@@ -255,14 +267,17 @@ async fn test_provider_error_with_string_error() {
 
     // Should return 500 for backend API errors
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    
+
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    
+
     // Should contain error message
-    assert!(json["error"]["message"].as_str().unwrap().contains("Service temporarily unavailable"));
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Service temporarily unavailable"));
 }
 
 #[tokio::test]

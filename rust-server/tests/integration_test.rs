@@ -13,7 +13,10 @@ use axum::{
     Router,
 };
 use llm_proxy_rust::{
-    api::{chat_completions, completions, health, health_detailed, list_models, metrics_handler, AppState},
+    api::{
+        chat_completions, completions, health, health_detailed, list_models, metrics_handler,
+        AppState,
+    },
     core::{init_metrics, AppConfig, MetricsMiddleware},
     services::ProviderService,
 };
@@ -25,9 +28,9 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 /// Create a test application with the given config
 fn create_test_app(config: AppConfig) -> Router {
     use llm_proxy_rust::core::RateLimiter;
-    
+
     init_metrics();
-    
+
     let provider_service = ProviderService::new(config.clone());
     let rate_limiter = Arc::new(RateLimiter::new());
     let state = Arc::new(AppState {
@@ -37,7 +40,10 @@ fn create_test_app(config: AppConfig) -> Router {
     });
 
     Router::new()
-        .route("/v1/chat/completions", axum::routing::post(chat_completions))
+        .route(
+            "/v1/chat/completions",
+            axum::routing::post(chat_completions),
+        )
         .route("/v1/completions", axum::routing::post(completions))
         .route("/v1/models", axum::routing::get(list_models))
         .route("/health", axum::routing::get(health))
@@ -95,7 +101,7 @@ fn create_test_config_no_auth() -> AppConfig {
 /// Create a test config with authentication
 fn create_test_config_with_auth() -> AppConfig {
     use llm_proxy_rust::core::config::MasterKeyConfig;
-    
+
     let mut config = create_test_config_no_auth();
     config.master_keys = vec![MasterKeyConfig {
         key: "test_master_key".to_string(),
@@ -182,14 +188,14 @@ async fn test_list_models_endpoint() {
 
     assert_eq!(json["object"], "list");
     assert!(json["data"].is_array());
-    
+
     let models: Vec<String> = json["data"]
         .as_array()
         .unwrap()
         .iter()
         .map(|m| m["id"].as_str().unwrap().to_string())
         .collect();
-    
+
     assert!(models.contains(&"gpt-4".to_string()));
     assert!(models.contains(&"gpt-3.5-turbo".to_string()));
     assert!(models.contains(&"claude-3".to_string()));
@@ -309,7 +315,7 @@ async fn test_cors_headers() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    
+
     // CORS headers should be present
     let headers = response.headers();
     assert!(headers.contains_key("access-control-allow-origin"));
@@ -466,11 +472,6 @@ async fn test_multiple_sequential_requests() {
             .await
             .unwrap();
 
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "Request {} failed",
-            i
-        );
+        assert_eq!(response.status(), StatusCode::OK, "Request {} failed", i);
     }
 }

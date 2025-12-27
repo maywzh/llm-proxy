@@ -3,12 +3,13 @@
 //! This module handles streaming responses from LLM providers, including
 //! model name rewriting and token usage tracking.
 
-use crate::api::models::{StreamChunk, Usage, Message};
+use crate::api::models::Usage;
 use crate::core::metrics::get_metrics;
 use axum::body::Body;
 use axum::response::Response as AxumResponse;
 use futures::stream::StreamExt;
 use reqwest::Response;
+use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
 /// Token counter for fallback calculation
@@ -30,31 +31,47 @@ impl TokenCounter {
 }
 
 /// Calculate tokens for messages using tiktoken
-pub fn calculate_message_tokens(messages: &[Message], model: &str) -> usize {
-    match tiktoken_rs::get_bpe_from_model(model) {
-        Ok(bpe) => {
-            let mut total_tokens = 0;
-            for message in messages {
-                // Count tokens in content
-                total_tokens += bpe.encode_with_special_tokens(&message.content).len();
-                // Count tokens in role
-                total_tokens += bpe.encode_with_special_tokens(&message.role).len();
-                // Format overhead per message
-                total_tokens += 4;
+pub fn calculate_message_tokens(messages: &[Value], model: &str) -> usize {
+    fn count_with_encoder(messages: &[Value], encoder: &tiktoken_rs::CoreBPE) -> usize {
+        let mut total_tokens = 0;
+        for message in messages {
+            if let Some(content) = message.get("content") {
+                total_tokens += match content {
+                    Value::String(text) => encoder.encode_with_special_tokens(text).len(),
+                    Value::Array(parts) => parts
+                        .iter()
+                        .flat_map(extract_text_segments)
+                        .map(|text| encoder.encode_with_special_tokens(&text).len())
+                        .sum::<usize>(),
+                    Value::Object(_) => extract_text_segments(content)
+                        .into_iter()
+                        .map(|text| encoder.encode_with_special_tokens(&text).len())
+                        .sum::<usize>(),
+                    _ => 0,
+                };
             }
-            // Conversation format overhead
-            total_tokens + 2
+
+            if let Some(role) = message.get("role").and_then(|r| r.as_str()) {
+                total_tokens += encoder.encode_with_special_tokens(role).len();
+            }
+
+            if let Some(name) = message.get("name").and_then(|n| n.as_str()) {
+                total_tokens += encoder.encode_with_special_tokens(name).len();
+            }
+
+            // Format overhead per message
+            total_tokens += 4;
         }
+
+        // Conversation format overhead
+        total_tokens + 2
+    }
+
+    match tiktoken_rs::get_bpe_from_model(model) {
+        Ok(bpe) => count_with_encoder(messages, &bpe),
         Err(_) => {
-            // Fallback to cl100k_base
             if let Ok(bpe) = tiktoken_rs::cl100k_base() {
-                let mut total_tokens = 0;
-                for message in messages {
-                    total_tokens += bpe.encode_with_special_tokens(&message.content).len();
-                    total_tokens += bpe.encode_with_special_tokens(&message.role).len();
-                    total_tokens += 4;
-                }
-                total_tokens + 2
+                count_with_encoder(messages, &bpe)
             } else {
                 0
             }
@@ -107,30 +124,58 @@ pub async fn create_sse_stream(
             match chunk_result {
                 Ok(bytes) => {
                     let chunk_str = String::from_utf8_lossy(&bytes);
+                    let mut rewritten_lines = Vec::new();
 
-                    // Track token usage if present
-                    if chunk_str.contains("\"usage\":") {
-                        if let Some(usage) = extract_usage_from_chunk(&chunk_str) {
-                            record_token_usage(&usage, &original_model, &provider_name);
-                            if let Some(ref counter) = token_counter {
-                                *counter.usage_found.lock().unwrap() = true;
+                    for line in chunk_str.split('\n') {
+                        if line.starts_with("data: ") && line != "data: [DONE]" {
+                            let json_str = &line[6..];
+                            if let Ok(mut json_obj) =
+                                serde_json::from_str::<serde_json::Value>(json_str)
+                            {
+                                if let Some(usage_value) = json_obj.get("usage") {
+                                    if let Ok(usage) =
+                                        serde_json::from_value::<Usage>(usage_value.clone())
+                                    {
+                                        record_token_usage(&usage, &original_model, &provider_name);
+                                        if let Some(ref counter) = token_counter {
+                                            *counter.usage_found.lock().unwrap() = true;
+                                        }
+                                    }
+                                }
+
+                                if let Some(ref counter) = token_counter {
+                                    let usage_found = *counter.usage_found.lock().unwrap();
+                                    if !usage_found {
+                                        let contents = extract_stream_text(&json_obj);
+                                        if !contents.is_empty() {
+                                            let mut output_guard =
+                                                counter.output_tokens.lock().unwrap();
+                                            for content in contents {
+                                                *output_guard +=
+                                                    count_tokens(&content, &original_model);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if let Some(obj) = json_obj.as_object_mut() {
+                                    obj.insert(
+                                        "model".to_string(),
+                                        serde_json::Value::String(original_model.clone()),
+                                    );
+                                }
+
+                                if let Ok(rewritten_json) = serde_json::to_string(&json_obj) {
+                                    rewritten_lines.push(format!("data: {}", rewritten_json));
+                                    continue;
+                                }
                             }
                         }
+                        rewritten_lines.push(line.to_string());
                     }
 
-                    // Accumulate output tokens for fallback (only if usage not found yet)
-                    if let Some(ref counter) = token_counter {
-                        if !*counter.usage_found.lock().unwrap() {
-                            if let Some(content) = extract_content_from_chunk(&chunk_str) {
-                                let tokens = count_tokens(&content, &original_model);
-                                *counter.output_tokens.lock().unwrap() += tokens;
-                            }
-                        }
-                    }
-
-                    // Rewrite model in chunk and return as bytes
-                    let rewritten = rewrite_model_in_chunk(&chunk_str, &original_model);
-                    Some(Ok::<Vec<u8>, std::io::Error>(rewritten.into_bytes()))
+                    let rewritten_chunk = rewritten_lines.join("\n");
+                    Some(Ok::<Vec<u8>, std::io::Error>(rewritten_chunk.into_bytes()))
                 }
                 Err(e) => {
                     tracing::error!("Stream error: {}", e);
@@ -142,7 +187,7 @@ pub async fn create_sse_stream(
 
     // Convert to Body and create response with proper SSE headers
     let body = Body::from_stream(byte_stream);
-    
+
     AxumResponse::builder()
         .status(200)
         .header("Content-Type", "text/event-stream")
@@ -152,75 +197,53 @@ pub async fn create_sse_stream(
         .unwrap()
 }
 
-/// Rewrite model name in a streaming chunk.
-///
-/// Parses SSE data lines and replaces the model field with the original model name.
-fn rewrite_model_in_chunk(chunk: &str, original_model: &str) -> String {
-    if !chunk.contains("\"model\":") {
-        return chunk.to_string();
-    }
-
-    let lines: Vec<&str> = chunk.split('\n').collect();
-    let mut rewritten_lines = Vec::new();
-
-    for line in lines {
-        if line.starts_with("data: ") && line != "data: [DONE]" {
-            let json_str = &line[6..];
-            if let Ok(mut json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
-                if let Some(obj) = json_obj.as_object_mut() {
-                    obj.insert(
-                        "model".to_string(),
-                        serde_json::Value::String(original_model.to_string()),
-                    );
+fn extract_text_segments(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(text) => vec![text.clone()],
+        Value::Array(items) => items.iter().flat_map(extract_text_segments).collect(),
+        Value::Object(obj) => {
+            if obj
+                .get("type")
+                .and_then(|t| t.as_str())
+                .map(|t| t == "text")
+                .unwrap_or(false)
+            {
+                if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
+                    vec![text.to_string()]
+                } else {
+                    vec![]
                 }
-                if let Ok(rewritten_json) = serde_json::to_string(&json_obj) {
-                    rewritten_lines.push(format!("data: {}", rewritten_json));
-                    continue;
-                }
+            } else {
+                vec![]
             }
         }
-        rewritten_lines.push(line.to_string());
+        _ => vec![],
     }
-
-    rewritten_lines.join("\n")
 }
 
-/// Extract token usage from a streaming chunk.
-fn extract_usage_from_chunk(chunk: &str) -> Option<Usage> {
-    let lines: Vec<&str> = chunk.split('\n').collect();
-
-    for line in lines {
-        if line.starts_with("data: ") && line != "data: [DONE]" {
-            let json_str = &line[6..];
-            if let Ok(chunk_obj) = serde_json::from_str::<StreamChunk>(json_str) {
-                if chunk_obj.usage.is_some() {
-                    return chunk_obj.usage;
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Extract content from a streaming chunk for token counting.
-fn extract_content_from_chunk(chunk: &str) -> Option<String> {
-    let lines: Vec<&str> = chunk.split('\n').collect();
-
-    for line in lines {
-        if line.starts_with("data: ") && line != "data: [DONE]" {
-            let json_str = &line[6..];
-            if let Ok(chunk_obj) = serde_json::from_str::<StreamChunk>(json_str) {
-                for choice in chunk_obj.choices {
-                    if let Some(content) = choice.delta.content {
-                        return Some(content);
+fn extract_stream_text(chunk_obj: &Value) -> Vec<String> {
+    let mut contents = Vec::new();
+    if let Some(choices) = chunk_obj.get("choices").and_then(|c| c.as_array()) {
+        for choice in choices {
+            if let Some(delta) = choice.get("delta") {
+                if let Some(content_field) = delta.get("content") {
+                    match content_field {
+                        Value::String(text) => contents.push(text.clone()),
+                        Value::Array(parts) => {
+                            for part in parts {
+                                contents.extend(extract_text_segments(part));
+                            }
+                        }
+                        Value::Object(_) => {
+                            contents.extend(extract_text_segments(content_field));
+                        }
+                        _ => {}
                     }
                 }
             }
         }
     }
-
-    None
+    contents
 }
 
 /// Record token usage metrics.
@@ -304,21 +327,6 @@ pub fn rewrite_model_in_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::metrics::init_metrics;
-
-    #[test]
-    fn test_rewrite_model_in_chunk() {
-        let chunk = r#"data: {"id":"123","model":"old-model","choices":[]}"#;
-        let rewritten = rewrite_model_in_chunk(chunk, "new-model");
-        assert!(rewritten.contains("\"model\":\"new-model\""));
-    }
-
-    #[test]
-    fn test_rewrite_model_preserves_done() {
-        let chunk = "data: [DONE]";
-        let rewritten = rewrite_model_in_chunk(chunk, "new-model");
-        assert_eq!(rewritten, "data: [DONE]");
-    }
 
     #[test]
     fn test_rewrite_model_in_response() {
@@ -327,44 +335,9 @@ mod tests {
             "model": "old-model",
             "choices": []
         });
-        
+
         let rewritten = rewrite_model_in_response(response, "new-model");
         assert_eq!(rewritten["model"], "new-model");
-    }
-
-    #[test]
-    fn test_extract_usage_from_chunk_with_usage() {
-        init_metrics();
-        
-        let chunk = r#"data: {"id":"123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}"#;
-        let usage = extract_usage_from_chunk(chunk);
-        
-        assert!(usage.is_some());
-        let usage = usage.unwrap();
-        assert_eq!(usage.prompt_tokens, 10);
-        assert_eq!(usage.completion_tokens, 20);
-        assert_eq!(usage.total_tokens, 30);
-    }
-
-    #[test]
-    fn test_extract_usage_from_chunk_without_usage() {
-        let chunk = r#"data: {"id":"123","model":"gpt-4","choices":[]}"#;
-        let usage = extract_usage_from_chunk(chunk);
-        assert!(usage.is_none());
-    }
-
-    #[test]
-    fn test_extract_content_from_chunk() {
-        let chunk = r#"data: {"id":"123","object":"chat.completion.chunk","created":1234567890,"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#;
-        let content = extract_content_from_chunk(chunk);
-        assert_eq!(content, Some("Hello".to_string()));
-    }
-
-    #[test]
-    fn test_extract_content_from_chunk_no_content() {
-        let chunk = r#"data: {"id":"123","model":"gpt-4","choices":[]}"#;
-        let content = extract_content_from_chunk(chunk);
-        assert!(content.is_none());
     }
 
     #[test]
@@ -377,14 +350,8 @@ mod tests {
     #[test]
     fn test_calculate_message_tokens() {
         let messages = vec![
-            Message {
-                role: "user".to_string(),
-                content: "Hello".to_string(),
-            },
-            Message {
-                role: "assistant".to_string(),
-                content: "Hi there".to_string(),
-            },
+            serde_json::json!({"role": "user", "content": "Hello"}),
+            serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "Hi there"}]}),
         ];
         let tokens = calculate_message_tokens(&messages, "gpt-3.5-turbo");
         assert!(tokens > 0);
@@ -398,7 +365,7 @@ mod tests {
         assert_eq!(counter.input_tokens, 100);
         assert_eq!(*counter.output_tokens.lock().unwrap(), 0);
         assert_eq!(*counter.usage_found.lock().unwrap(), false);
-        
+
         *counter.output_tokens.lock().unwrap() = 50;
         assert_eq!(*counter.output_tokens.lock().unwrap(), 50);
     }

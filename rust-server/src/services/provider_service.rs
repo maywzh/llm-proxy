@@ -55,8 +55,7 @@ impl ProviderService {
             .collect();
 
         let weights: Vec<u32> = providers.iter().map(|p| p.weight).collect();
-        let weighted_index =
-            WeightedIndex::new(&weights).expect("Failed to create weighted index");
+        let weighted_index = WeightedIndex::new(&weights).expect("Failed to create weighted index");
 
         Self {
             providers: Arc::new(providers),
@@ -83,35 +82,35 @@ impl ProviderService {
     /// Returns error if model is specified but no provider supports it
     pub fn get_next_provider(&self, model: Option<&str>) -> Result<Provider, String> {
         let mut rng = thread_rng();
-        
+
         // If no model specified, use all providers with original weights
         if model.is_none() {
             let index = self.weighted_index.sample(&mut rng);
             return Ok(self.providers[index].clone());
         }
-        
+
         let model_name = model.unwrap();
-        
+
         // Filter providers that have the requested model
         let mut available_providers = Vec::new();
         let mut available_weights = Vec::new();
-        
+
         for (provider, &weight) in self.providers.iter().zip(self.weights.iter()) {
             if provider.model_mapping.contains_key(model_name) {
                 available_providers.push(provider.clone());
                 available_weights.push(weight);
             }
         }
-        
+
         // If no provider has the model, return error
         if available_providers.is_empty() {
             return Err(format!("No provider supports model: {}", model_name));
         }
-        
+
         // Create weighted index for available providers
         let weighted_index = WeightedIndex::new(&available_weights)
             .map_err(|e| format!("Failed to create weighted index: {}", e))?;
-        
+
         let index = weighted_index.sample(&mut rng);
         Ok(available_providers[index].clone())
     }
@@ -205,15 +204,13 @@ mod tests {
 
     fn create_single_provider_config() -> AppConfig {
         AppConfig {
-            providers: vec![
-                ProviderConfig {
-                    name: "OnlyProvider".to_string(),
-                    api_base: "http://localhost:8000".to_string(),
-                    api_key: "key".to_string(),
-                    weight: 1,
-                    model_mapping: HashMap::new(),
-                },
-            ],
+            providers: vec![ProviderConfig {
+                name: "OnlyProvider".to_string(),
+                api_base: "http://localhost:8000".to_string(),
+                api_key: "key".to_string(),
+                weight: 1,
+                model_mapping: HashMap::new(),
+            }],
             server: ServerConfig::default(),
             verify_ssl: true,
             master_keys: vec![],
@@ -224,7 +221,7 @@ mod tests {
     fn test_provider_service_creation() {
         let config = create_test_config();
         let service = ProviderService::new(config);
-        
+
         assert_eq!(service.get_all_providers().len(), 2);
         assert_eq!(service.get_provider_weights(), vec![2, 1]);
     }
@@ -299,12 +296,16 @@ mod tests {
     fn test_get_all_models_with_duplicates() {
         let mut config = create_test_config();
         // Add same model to both providers
-        config.providers[0].model_mapping.insert("shared-model".to_string(), "provider1-shared".to_string());
-        config.providers[1].model_mapping.insert("shared-model".to_string(), "provider2-shared".to_string());
-        
+        config.providers[0]
+            .model_mapping
+            .insert("shared-model".to_string(), "provider1-shared".to_string());
+        config.providers[1]
+            .model_mapping
+            .insert("shared-model".to_string(), "provider2-shared".to_string());
+
         let service = ProviderService::new(config);
         let models = service.get_all_models();
-        
+
         // Should only have 3 unique models (model1, model2, shared-model)
         assert_eq!(models.len(), 3);
         assert!(models.contains("shared-model"));
@@ -329,7 +330,7 @@ mod tests {
         let service = ProviderService::new(config);
 
         let providers = service.get_all_providers();
-        
+
         for provider in providers {
             assert!(!provider.name.is_empty());
             assert!(!provider.api_base.is_empty());
@@ -388,7 +389,7 @@ mod tests {
         let mut config = create_test_config();
         config.providers[0].weight = 1;
         config.providers[1].weight = 1;
-        
+
         let service = ProviderService::new(config);
 
         let mut provider1_count = 0;
@@ -413,7 +414,7 @@ mod tests {
         let mut config = create_test_config();
         config.providers[0].weight = 10;
         config.providers[1].weight = 1;
-        
+
         let service = ProviderService::new(config);
 
         let mut provider1_count = 0;
@@ -427,7 +428,11 @@ mod tests {
 
         // Provider1 should be selected roughly 90% of the time
         let percentage = (provider1_count as f64 / 1000.0) * 100.0;
-        assert!(percentage > 80.0 && percentage < 95.0, "Percentage was {}", percentage);
+        assert!(
+            percentage > 80.0 && percentage < 95.0,
+            "Percentage was {}",
+            percentage
+        );
     }
 
     #[test]
@@ -436,12 +441,18 @@ mod tests {
         let service = ProviderService::new(config);
 
         let providers = service.get_all_providers();
-        
+
         let provider1 = providers.iter().find(|p| p.name == "Provider1").unwrap();
-        assert_eq!(provider1.model_mapping.get("model1").unwrap(), "provider1-model1");
-        
+        assert_eq!(
+            provider1.model_mapping.get("model1").unwrap(),
+            "provider1-model1"
+        );
+
         let provider2 = providers.iter().find(|p| p.name == "Provider2").unwrap();
-        assert_eq!(provider2.model_mapping.get("model2").unwrap(), "provider2-model2");
+        assert_eq!(
+            provider2.model_mapping.get("model2").unwrap(),
+            "provider2-model2"
+        );
     }
 
     #[test]
@@ -498,9 +509,13 @@ mod tests {
     fn test_get_next_provider_with_shared_model() {
         // Create config where both providers have the same model
         let mut config = create_test_config();
-        config.providers[0].model_mapping.insert("shared-model".to_string(), "provider1-shared".to_string());
-        config.providers[1].model_mapping.insert("shared-model".to_string(), "provider2-shared".to_string());
-        
+        config.providers[0]
+            .model_mapping
+            .insert("shared-model".to_string(), "provider1-shared".to_string());
+        config.providers[1]
+            .model_mapping
+            .insert("shared-model".to_string(), "provider2-shared".to_string());
+
         let service = ProviderService::new(config);
 
         let mut provider1_count = 0;

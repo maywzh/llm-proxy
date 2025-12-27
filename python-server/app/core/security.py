@@ -17,6 +17,8 @@ def init_rate_limiter() -> None:
     if config.master_keys:
         _rate_limiter = RateLimiter()
         for key_config in config.master_keys:
+            if not key_config.enabled:
+                continue
             # Only register keys that have rate limiting configured
             if key_config.rate_limit is not None:
                 _rate_limiter.register_key(
@@ -61,10 +63,16 @@ def verify_master_key(authorization: Optional[str] = None) -> Tuple[bool, Option
             detail="Missing or invalid authorization header"
         )
     
-    # Find matching master key
+    # Find matching master key - MUST check enabled field
     matching_key = None
     for key_config in config.master_keys:
         if key_config.key == provided_key:
+            # Check if key is enabled before accepting it
+            if not key_config.enabled:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Master key is disabled"
+                )
             matching_key = key_config
             break
     
