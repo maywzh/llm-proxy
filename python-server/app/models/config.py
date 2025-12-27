@@ -38,4 +38,5 @@ class AppConfig(BaseModel):
     providers: list[ProviderConfig]
     server: ServerConfig = Field(default_factory=ServerConfig)
     verify_ssl: bool = True
+    request_timeout_secs: int = Field(default=300, gt=0, description="Request timeout in seconds for upstream providers")
     master_keys: list[MasterKeyConfig] = Field(default_factory=list, description="List of master keys with optional rate limiting")

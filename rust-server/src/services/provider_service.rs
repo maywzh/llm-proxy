@@ -198,6 +198,7 @@ mod tests {
             ],
             server: ServerConfig::default(),
             verify_ssl: true,
+            request_timeout_secs: 300,
             master_keys: vec![],
         }
     }
@@ -213,6 +214,7 @@ mod tests {
             }],
             server: ServerConfig::default(),
             verify_ssl: true,
+            request_timeout_secs: 300,
             master_keys: vec![],
         }
     }
