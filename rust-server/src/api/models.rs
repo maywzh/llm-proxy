@@ -21,22 +21,22 @@ pub struct Provider {
 pub struct ChatCompletionRequest {
     /// Model identifier
     pub model: String,
-    
+
     /// Conversation messages
     pub messages: Vec<Message>,
-    
+
     /// Sampling temperature (0.0 to 2.0)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    
+
     /// Maximum tokens to generate
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    
+
     /// Whether to stream the response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
-    
+
     /// Additional provider-specific parameters
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -47,7 +47,7 @@ pub struct ChatCompletionRequest {
 pub struct Message {
     /// Role: "system", "user", or "assistant"
     pub role: String,
-    
+
     /// Message content
     pub content: String,
 }
@@ -60,7 +60,7 @@ pub struct ChatCompletionResponse {
     pub created: i64,
     pub model: String,
     pub choices: Vec<Choice>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
 }
@@ -89,7 +89,7 @@ pub struct StreamChunk {
     pub created: i64,
     pub model: String,
     pub choices: Vec<StreamChoice>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
 }
@@ -107,7 +107,7 @@ pub struct StreamChoice {
 pub struct Delta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
 }
@@ -155,10 +155,10 @@ pub struct DetailedHealthResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderHealth {
     pub status: String,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    
+
     pub models: Vec<ModelHealth>,
 }
 
@@ -168,7 +168,7 @@ pub struct ModelHealth {
     pub model: String,
     pub status: String,
     pub latency: String,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -183,7 +183,7 @@ mod tests {
             role: "user".to_string(),
             content: "Hello".to_string(),
         };
-        
+
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"user\""));
         assert!(json.contains("\"content\":\"Hello\""));
@@ -204,26 +204,27 @@ mod tests {
             completion_tokens: 20,
             total_tokens: 30,
         };
-        
-        assert_eq!(usage.total_tokens, usage.prompt_tokens + usage.completion_tokens);
+
+        assert_eq!(
+            usage.total_tokens,
+            usage.prompt_tokens + usage.completion_tokens
+        );
     }
 
     #[test]
     fn test_chat_completion_request_serialization() {
         let request = ChatCompletionRequest {
             model: "gpt-4".to_string(),
-            messages: vec![
-                Message {
-                    role: "user".to_string(),
-                    content: "Hello".to_string(),
-                },
-            ],
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            }],
             temperature: Some(0.7),
             max_tokens: Some(100),
             stream: Some(false),
             extra: HashMap::new(),
         };
-        
+
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"model\":\"gpt-4\""));
         assert!(json.contains("\"temperature\":0.7"));
@@ -240,7 +241,7 @@ mod tests {
             stream: None,
             extra: HashMap::new(),
         };
-        
+
         let json = serde_json::to_string(&request).unwrap();
         assert!(!json.contains("temperature"));
         assert!(!json.contains("max_tokens"));
@@ -252,7 +253,7 @@ mod tests {
         let mut extra = HashMap::new();
         extra.insert("top_p".to_string(), serde_json::json!(0.9));
         extra.insert("frequency_penalty".to_string(), serde_json::json!(0.5));
-        
+
         let request = ChatCompletionRequest {
             model: "gpt-4".to_string(),
             messages: vec![],
@@ -261,7 +262,7 @@ mod tests {
             stream: None,
             extra,
         };
-        
+
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"top_p\":0.9"));
         assert!(json.contains("\"frequency_penalty\":0.5"));
@@ -277,7 +278,7 @@ mod tests {
             },
             finish_reason: Some("stop".to_string()),
         };
-        
+
         let json = serde_json::to_string(&choice).unwrap();
         assert!(json.contains("\"index\":0"));
         assert!(json.contains("\"finish_reason\":\"stop\""));
@@ -293,7 +294,7 @@ mod tests {
             choices: vec![],
             usage: None,
         };
-        
+
         let json = serde_json::to_string(&chunk).unwrap();
         assert!(json.contains("\"id\":\"chunk-1\""));
         assert!(json.contains("\"object\":\"chat.completion.chunk\""));
@@ -305,7 +306,7 @@ mod tests {
             role: Some("assistant".to_string()),
             content: None,
         };
-        
+
         let json = serde_json::to_string(&delta).unwrap();
         assert!(json.contains("\"role\":\"assistant\""));
         assert!(!json.contains("content"));
@@ -317,7 +318,7 @@ mod tests {
             role: None,
             content: Some("Hello".to_string()),
         };
-        
+
         let json = serde_json::to_string(&delta).unwrap();
         assert!(json.contains("\"content\":\"Hello\""));
         assert!(!json.contains("role"));
@@ -327,16 +328,14 @@ mod tests {
     fn test_model_list_serialization() {
         let model_list = ModelList {
             object: "list".to_string(),
-            data: vec![
-                ModelInfo {
-                    id: "gpt-4".to_string(),
-                    object: "model".to_string(),
-                    created: 1234567890,
-                    owned_by: "openai".to_string(),
-                },
-            ],
+            data: vec![ModelInfo {
+                id: "gpt-4".to_string(),
+                object: "model".to_string(),
+                created: 1234567890,
+                owned_by: "openai".to_string(),
+            }],
         };
-        
+
         let json = serde_json::to_string(&model_list).unwrap();
         assert!(json.contains("\"object\":\"list\""));
         assert!(json.contains("\"id\":\"gpt-4\""));
@@ -347,15 +346,13 @@ mod tests {
         let response = HealthResponse {
             status: "ok".to_string(),
             providers: 2,
-            provider_info: vec![
-                ProviderInfo {
-                    name: "Provider1".to_string(),
-                    weight: 2,
-                    probability: "66.7%".to_string(),
-                },
-            ],
+            provider_info: vec![ProviderInfo {
+                name: "Provider1".to_string(),
+                weight: 2,
+                probability: "66.7%".to_string(),
+            }],
         };
-        
+
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"providers\":2"));
@@ -366,16 +363,14 @@ mod tests {
         let health = ProviderHealth {
             status: "ok".to_string(),
             error: None,
-            models: vec![
-                ModelHealth {
-                    model: "gpt-4".to_string(),
-                    status: "ok".to_string(),
-                    latency: "100ms".to_string(),
-                    error: None,
-                },
-            ],
+            models: vec![ModelHealth {
+                model: "gpt-4".to_string(),
+                status: "ok".to_string(),
+                latency: "100ms".to_string(),
+                error: None,
+            }],
         };
-        
+
         let json = serde_json::to_string(&health).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"models\""));
@@ -389,7 +384,7 @@ mod tests {
             error: Some("Connection refused".to_string()),
             models: vec![],
         };
-        
+
         let json = serde_json::to_string(&health).unwrap();
         assert!(json.contains("\"status\":\"error\""));
         assert!(json.contains("\"error\":\"Connection refused\""));
@@ -404,7 +399,7 @@ mod tests {
             weight: 1,
             model_mapping: HashMap::new(),
         };
-        
+
         let cloned = provider.clone();
         assert_eq!(cloned.name, provider.name);
         assert_eq!(cloned.api_base, provider.api_base);
@@ -419,20 +414,18 @@ mod tests {
             ProviderHealth {
                 status: "ok".to_string(),
                 error: None,
-                models: vec![
-                    ModelHealth {
-                        model: "gpt-4".to_string(),
-                        status: "ok".to_string(),
-                        latency: "100ms".to_string(),
-                        error: None,
-                    },
-                ],
+                models: vec![ModelHealth {
+                    model: "gpt-4".to_string(),
+                    status: "ok".to_string(),
+                    latency: "100ms".to_string(),
+                    error: None,
+                }],
             },
         );
-        
+
         let response = DetailedHealthResponse { providers };
         let json = serde_json::to_string(&response).unwrap();
-        
+
         // With flatten, provider name should be at top level
         assert!(json.contains("\"provider1\""));
         assert!(json.contains("\"status\":\"ok\""));
@@ -458,7 +451,7 @@ mod tests {
             },
             finish_reason: Some("stop".to_string()),
         };
-        
+
         let json = serde_json::to_string(&choice).unwrap();
         assert!(json.contains("\"finish_reason\":\"stop\""));
     }

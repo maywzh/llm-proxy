@@ -41,7 +41,11 @@ fn bench_provider_selection(c: &mut Criterion) {
             provider_count,
             |b, _| {
                 b.iter(|| {
-                    black_box(service.get_next_provider(None).expect("get_next_provider failed"));
+                    black_box(
+                        service
+                            .get_next_provider(None)
+                            .expect("get_next_provider failed"),
+                    );
                 });
             },
         );
@@ -67,7 +71,11 @@ fn bench_provider_selection_concurrent(c: &mut Criterion) {
                     for _ in 0..thread_count {
                         let service_clone = std::sync::Arc::clone(&service);
                         let handle = std::thread::spawn(move || {
-                            black_box(service_clone.get_next_provider(None).expect("get_next_provider failed"));
+                            black_box(
+                                service_clone
+                                    .get_next_provider(None)
+                                    .expect("get_next_provider failed"),
+                            );
                         });
                         handles.push(handle);
                     }
@@ -109,14 +117,13 @@ fn bench_get_all_models(c: &mut Criterion) {
 
     for provider_count in [2, 5, 10, 20].iter() {
         let mut config = create_config_with_providers(*provider_count);
-        
+
         // Add model mappings
         for (i, provider) in config.providers.iter_mut().enumerate() {
             for j in 0..5 {
-                provider.model_mapping.insert(
-                    format!("model-{}-{}", i, j),
-                    format!("mapped-{}-{}", i, j),
-                );
+                provider
+                    .model_mapping
+                    .insert(format!("model-{}-{}", i, j), format!("mapped-{}-{}", i, j));
             }
         }
 
@@ -147,7 +154,11 @@ fn bench_weighted_distribution(c: &mut Criterion) {
     group.bench_function("1000_selections", |b| {
         b.iter(|| {
             for _ in 0..1000 {
-                black_box(service.get_next_provider(None).expect("get_next_provider failed"));
+                black_box(
+                    service
+                        .get_next_provider(None)
+                        .expect("get_next_provider failed"),
+                );
             }
         });
     });

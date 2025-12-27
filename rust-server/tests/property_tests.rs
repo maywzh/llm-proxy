@@ -12,14 +12,12 @@ use std::collections::HashMap;
 
 /// Generate a valid provider config with random weight
 fn provider_config_strategy() -> impl Strategy<Value = ProviderConfig> {
-    (1u32..=100u32, "[a-z]{5,10}", "[a-z]{5,10}").prop_map(|(weight, name, key)| {
-        ProviderConfig {
-            name: format!("Provider_{}", name),
-            api_base: format!("http://localhost:{}", 8000 + weight % 100),
-            api_key: format!("key_{}", key),
-            weight,
-            model_mapping: HashMap::new(),
-        }
+    (1u32..=100u32, "[a-z]{5,10}", "[a-z]{5,10}").prop_map(|(weight, name, key)| ProviderConfig {
+        name: format!("Provider_{}", name),
+        api_base: format!("http://localhost:{}", 8000 + weight % 100),
+        api_key: format!("key_{}", key),
+        weight,
+        model_mapping: HashMap::new(),
     })
 }
 
@@ -44,12 +42,12 @@ proptest! {
     fn prop_provider_selection_returns_valid_provider(config in app_config_strategy()) {
         let service = ProviderService::new(config.clone());
         let provider = service.get_next_provider(None).unwrap();
-        
+
         // Provider name should match one of the configured providers
         let valid_names: Vec<String> = config.providers.iter()
             .map(|p| p.name.clone())
             .collect();
-        
+
         prop_assert!(valid_names.contains(&provider.name));
     }
 
@@ -58,14 +56,14 @@ proptest! {
     fn prop_all_providers_eventually_selected(config in app_config_strategy()) {
         let service = ProviderService::new(config.clone());
         let mut selected_providers = std::collections::HashSet::new();
-        
+
         // Sample many times to ensure all providers are selected
         let iterations = config.providers.len() * 1000;
         for _ in 0..iterations {
             let provider = service.get_next_provider(None).unwrap();
             selected_providers.insert(provider.name);
         }
-        
+
         // All providers should have been selected at least once
         for provider_config in &config.providers {
             prop_assert!(
@@ -103,11 +101,11 @@ proptest! {
             verify_ssl: true,
             master_keys: vec![],
         };
-        
+
         let service = ProviderService::new(config);
         let mut provider1_count = 0;
         let mut provider2_count = 0;
-        
+
         let iterations = 10000;
         for _ in 0..iterations {
             let provider = service.get_next_provider(None).unwrap();
@@ -117,15 +115,15 @@ proptest! {
                 provider2_count += 1;
             }
         }
-        
+
         // Calculate expected ratio
         let expected_ratio = weight1 as f64 / weight2 as f64;
         let actual_ratio = provider1_count as f64 / provider2_count as f64;
-        
+
         // Allow 30% variance due to randomness
         let lower_bound = expected_ratio * 0.7;
         let upper_bound = expected_ratio * 1.3;
-        
+
         prop_assert!(
             actual_ratio >= lower_bound && actual_ratio <= upper_bound,
             "Ratio {} not in expected range [{}, {}]",
@@ -140,9 +138,9 @@ proptest! {
     fn prop_get_all_providers_returns_all(config in app_config_strategy()) {
         let service = ProviderService::new(config.clone());
         let all_providers = service.get_all_providers();
-        
+
         prop_assert_eq!(all_providers.len(), config.providers.len());
-        
+
         for provider_config in &config.providers {
             let found = all_providers.iter()
                 .any(|p| p.name == provider_config.name);
@@ -155,9 +153,9 @@ proptest! {
     fn prop_get_provider_weights_matches_config(config in app_config_strategy()) {
         let service = ProviderService::new(config.clone());
         let weights = service.get_provider_weights();
-        
+
         prop_assert_eq!(weights.len(), config.providers.len());
-        
+
         for (i, provider_config) in config.providers.iter().enumerate() {
             prop_assert_eq!(weights[i], provider_config.weight);
         }
@@ -171,7 +169,7 @@ proptest! {
     ) {
         let mut model_mapping = HashMap::new();
         model_mapping.insert(model_name.clone(), mapped_name.clone());
-        
+
         let config = AppConfig {
             providers: vec![
                 ProviderConfig {
@@ -186,13 +184,13 @@ proptest! {
             verify_ssl: true,
             master_keys: vec![],
         };
-        
+
         let service = ProviderService::new(config);
         let providers = service.get_all_providers();
-        
+
         prop_assert_eq!(providers.len(), 1);
         let provider = &providers[0];
-        
+
         prop_assert_eq!(
             provider.model_mapping.get(&model_name),
             Some(&mapped_name)
@@ -204,10 +202,10 @@ proptest! {
     fn prop_thread_safe_concurrent_access(config in app_config_strategy()) {
         use std::sync::Arc;
         use std::thread;
-        
+
         let service = Arc::new(ProviderService::new(config.clone()));
         let mut handles = vec![];
-        
+
         for _ in 0..10 {
             let service_clone = Arc::clone(&service);
             let handle = thread::spawn(move || {
@@ -217,7 +215,7 @@ proptest! {
             });
             handles.push(handle);
         }
-        
+
         for handle in handles {
             prop_assert!(handle.join().is_ok());
         }
@@ -240,9 +238,9 @@ proptest! {
             verify_ssl: true,
             master_keys: vec![],
         };
-        
+
         let service = ProviderService::new(config);
-        
+
         for _ in 0..100 {
             let provider = service.get_next_provider(None).unwrap();
             prop_assert_eq!(provider.name, "OnlyProvider");
@@ -254,11 +252,11 @@ proptest! {
     fn prop_get_all_models_unique(config in app_config_strategy()) {
         let service = ProviderService::new(config);
         let models = service.get_all_models();
-        
+
         // Convert to vec to check for duplicates
         let models_vec: Vec<String> = models.iter().cloned().collect();
         let unique_count = models.len();
-        
+
         prop_assert_eq!(models_vec.len(), unique_count);
     }
 
@@ -266,19 +264,19 @@ proptest! {
     #[test]
     fn prop_selection_uses_randomness(config in app_config_strategy()) {
         prop_assume!(config.providers.len() > 1);
-        
+
         let service = ProviderService::new(config);
-        
+
         // Collect 100 selections
         let mut selections = vec![];
         for _ in 0..100 {
             selections.push(service.get_next_provider(None).unwrap().name);
         }
-        
+
         // Should have some variation (not all the same)
-        let unique_selections: std::collections::HashSet<_> = 
+        let unique_selections: std::collections::HashSet<_> =
             selections.iter().collect();
-        
+
         prop_assert!(
             unique_selections.len() > 1,
             "All selections were the same, expected variation"
@@ -295,12 +293,11 @@ mod quickcheck_tests {
     #[quickcheck]
     fn qc_provider_weights_positive(weights: Vec<u32>) -> TestResult {
         // Discard if empty, has zeros, or weights are too large (to avoid overflow)
-        if weights.is_empty()
-            || weights.iter().any(|&w| w == 0 || w > 10000)
-            || weights.len() > 100 {
+        if weights.is_empty() || weights.iter().any(|&w| w == 0 || w > 10000) || weights.len() > 100
+        {
             return TestResult::discard();
         }
-        
+
         // Check if sum would overflow
         let sum: u64 = weights.iter().map(|&w| w as u64).sum();
         if sum > u32::MAX as u64 {

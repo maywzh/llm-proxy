@@ -13,19 +13,19 @@ use std::sync::OnceLock;
 pub struct Metrics {
     /// Total number of requests by method, endpoint, model, provider, and status
     pub request_count: IntCounterVec,
-    
+
     /// Request duration histogram in seconds
     pub request_duration: HistogramVec,
-    
+
     /// Number of currently active requests by endpoint
     pub active_requests: GaugeVec,
-    
+
     /// Total token usage by model, provider, and token type
     pub token_usage: IntCounterVec,
-    
+
     /// Provider health status (1=healthy, 0=unhealthy)
     pub provider_health: GaugeVec,
-    
+
     /// Provider response latency histogram in seconds
     pub provider_latency: HistogramVec,
 }
@@ -118,12 +118,13 @@ mod tests {
     #[test]
     fn test_metrics_initialization() {
         let metrics = init_metrics();
-        
+
         // Test that we can access metrics
-        metrics.request_count
+        metrics
+            .request_count
             .with_label_values(&["GET", "/test", "model", "provider", "200"])
             .inc();
-        
+
         // Verify the same instance is returned
         let metrics2 = get_metrics();
         assert!(std::ptr::eq(metrics, metrics2));
@@ -132,44 +133,47 @@ mod tests {
     #[test]
     fn test_request_count_metric() {
         let metrics = init_metrics();
-        
+
         let initial = metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
             .get();
-        
+
         metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
             .inc();
-        
+
         let after = metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
             .get();
-        
+
         assert_eq!(after, initial + 1);
     }
 
     #[test]
     fn test_request_duration_metric() {
         let metrics = init_metrics();
-        
+
         metrics
             .request_duration
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai"])
             .observe(1.5);
-        
+
         metrics
             .request_duration
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai"])
             .observe(2.3);
-        
+
         // Verify metric was recorded (count should be 2)
-        let metric = metrics
-            .request_duration
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai"]);
-        
+        let metric = metrics.request_duration.with_label_values(&[
+            "POST",
+            "/v1/chat/completions",
+            "gpt-4",
+            "openai",
+        ]);
+
         // Just verify we can access it without panicking
         let _ = metric.get_sample_count();
     }
@@ -177,134 +181,126 @@ mod tests {
     #[test]
     fn test_active_requests_metric() {
         let metrics = init_metrics();
-        
+
         let initial = metrics
             .active_requests
             .with_label_values(&["/v1/chat/completions"])
             .get();
-        
+
         metrics
             .active_requests
             .with_label_values(&["/v1/chat/completions"])
             .inc();
-        
+
         let after_inc = metrics
             .active_requests
             .with_label_values(&["/v1/chat/completions"])
             .get();
-        
+
         assert_eq!(after_inc, initial + 1.0);
-        
+
         metrics
             .active_requests
             .with_label_values(&["/v1/chat/completions"])
             .dec();
-        
+
         let after_dec = metrics
             .active_requests
             .with_label_values(&["/v1/chat/completions"])
             .get();
-        
+
         assert_eq!(after_dec, initial);
     }
 
     #[test]
     fn test_token_usage_metric() {
         let metrics = init_metrics();
-        
+
         let initial = metrics
             .token_usage
             .with_label_values(&["gpt-4", "openai", "prompt"])
             .get();
-        
+
         metrics
             .token_usage
             .with_label_values(&["gpt-4", "openai", "prompt"])
             .inc_by(100);
-        
+
         let after = metrics
             .token_usage
             .with_label_values(&["gpt-4", "openai", "prompt"])
             .get();
-        
+
         assert_eq!(after, initial + 100);
     }
 
     #[test]
     fn test_provider_health_metric() {
         let metrics = init_metrics();
-        
+
         metrics
             .provider_health
             .with_label_values(&["openai"])
             .set(1.0);
-        
-        let health = metrics
-            .provider_health
-            .with_label_values(&["openai"])
-            .get();
-        
+
+        let health = metrics.provider_health.with_label_values(&["openai"]).get();
+
         assert_eq!(health, 1.0);
-        
+
         metrics
             .provider_health
             .with_label_values(&["openai"])
             .set(0.0);
-        
-        let health = metrics
-            .provider_health
-            .with_label_values(&["openai"])
-            .get();
-        
+
+        let health = metrics.provider_health.with_label_values(&["openai"]).get();
+
         assert_eq!(health, 0.0);
     }
 
     #[test]
     fn test_provider_latency_metric() {
         let metrics = init_metrics();
-        
+
         metrics
             .provider_latency
             .with_label_values(&["openai"])
             .observe(0.5);
-        
+
         metrics
             .provider_latency
             .with_label_values(&["openai"])
             .observe(1.2);
-        
+
         // Verify metric was recorded
-        let metric = metrics
-            .provider_latency
-            .with_label_values(&["openai"]);
-        
+        let metric = metrics.provider_latency.with_label_values(&["openai"]);
+
         let _ = metric.get_sample_count();
     }
 
     #[test]
     fn test_multiple_providers_metrics() {
         let metrics = init_metrics();
-        
+
         metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
             .inc();
-        
+
         metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "anthropic", "200"])
             .inc();
-        
+
         let openai_count = metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
             .get();
-        
+
         let anthropic_count = metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "anthropic", "200"])
             .get();
-        
+
         assert!(openai_count >= 1);
         assert!(anthropic_count >= 1);
     }
@@ -312,27 +308,27 @@ mod tests {
     #[test]
     fn test_metrics_with_different_status_codes() {
         let metrics = init_metrics();
-        
+
         metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
             .inc();
-        
+
         metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "500"])
             .inc();
-        
+
         let success_count = metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
             .get();
-        
+
         let error_count = metrics
             .request_count
             .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "500"])
             .get();
-        
+
         assert!(success_count >= 1);
         assert!(error_count >= 1);
     }

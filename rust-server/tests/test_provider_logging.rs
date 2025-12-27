@@ -80,7 +80,7 @@ async fn test_provider_logging_simulation() {
 async fn test_concurrent_provider_requests() {
     // Simulate multiple concurrent requests to different providers
     let providers = vec!["OpenAI", "Anthropic", "Google", "Azure"];
-    
+
     let tasks: Vec<_> = providers
         .into_iter()
         .map(|provider| {
@@ -89,10 +89,10 @@ async fn test_concurrent_provider_requests() {
                     .scope(provider.to_string(), async move {
                         // Simulate some work
                         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                        
+
                         let context = get_provider_context();
                         assert_eq!(context, provider);
-                        
+
                         provider
                     })
                     .await

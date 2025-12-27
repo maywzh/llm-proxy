@@ -32,6 +32,10 @@ pub enum AppError {
     #[error("Unauthorized")]
     Unauthorized,
 
+    /// Client provided invalid data
+    #[error("Bad request: {0}")]
+    BadRequest(String),
+
     /// Request timeout errors
     #[error("Gateway timeout")]
     Timeout,
@@ -63,6 +67,7 @@ impl IntoResponse for AppError {
             }
             AppError::Serialization(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "Gateway timeout".to_string()),
             AppError::RateLimitExceeded(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
@@ -136,8 +141,7 @@ mod tests {
 
     #[test]
     fn test_serialization_error_response() {
-        let json_err = serde_json::from_str::<serde_json::Value>("invalid json")
-            .unwrap_err();
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
         let err = AppError::Serialization(json_err);
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);

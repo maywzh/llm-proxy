@@ -32,9 +32,7 @@ pub fn get_provider_context() -> String {
 ///
 /// Returns an empty string if no request ID is set.
 pub fn get_request_id() -> String {
-    REQUEST_ID
-        .try_with(|id| id.clone())
-        .unwrap_or_default()
+    REQUEST_ID.try_with(|id| id.clone()).unwrap_or_default()
 }
 
 /// Generate a new unique request ID using UUID v4.
@@ -69,26 +67,32 @@ mod tests {
 
     #[tokio::test]
     async fn test_provider_context_get() {
-        PROVIDER_CONTEXT.scope("TestProvider".to_string(), async {
-            assert_eq!(get_provider_context(), "TestProvider");
-        }).await;
+        PROVIDER_CONTEXT
+            .scope("TestProvider".to_string(), async {
+                assert_eq!(get_provider_context(), "TestProvider");
+            })
+            .await;
     }
 
     #[tokio::test]
     async fn test_provider_context_isolation() {
         // Test that contexts are isolated between tasks
         let task1 = tokio::spawn(async {
-            PROVIDER_CONTEXT.scope("Provider1".to_string(), async {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                get_provider_context()
-            }).await
+            PROVIDER_CONTEXT
+                .scope("Provider1".to_string(), async {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    get_provider_context()
+                })
+                .await
         });
 
         let task2 = tokio::spawn(async {
-            PROVIDER_CONTEXT.scope("Provider2".to_string(), async {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                get_provider_context()
-            }).await
+            PROVIDER_CONTEXT
+                .scope("Provider2".to_string(), async {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    get_provider_context()
+                })
+                .await
         });
 
         let result1 = task1.await.unwrap();
@@ -107,26 +111,32 @@ mod tests {
     #[tokio::test]
     async fn test_request_id_get() {
         let request_id = "test-request-123".to_string();
-        REQUEST_ID.scope(request_id.clone(), async {
-            assert_eq!(get_request_id(), "test-request-123");
-        }).await;
+        REQUEST_ID
+            .scope(request_id.clone(), async {
+                assert_eq!(get_request_id(), "test-request-123");
+            })
+            .await;
     }
 
     #[tokio::test]
     async fn test_request_id_isolation() {
         // Test that request IDs are isolated between tasks
         let task1 = tokio::spawn(async {
-            REQUEST_ID.scope("request-1".to_string(), async {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                get_request_id()
-            }).await
+            REQUEST_ID
+                .scope("request-1".to_string(), async {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    get_request_id()
+                })
+                .await
         });
 
         let task2 = tokio::spawn(async {
-            REQUEST_ID.scope("request-2".to_string(), async {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                get_request_id()
-            }).await
+            REQUEST_ID
+                .scope("request-2".to_string(), async {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    get_request_id()
+                })
+                .await
         });
 
         let result1 = task1.await.unwrap();
@@ -147,14 +157,14 @@ mod tests {
         // Test that generate_request_id creates valid UUIDs
         let id1 = generate_request_id();
         let id2 = generate_request_id();
-        
+
         // UUIDs should be 36 characters (including hyphens)
         assert_eq!(id1.len(), 36);
         assert_eq!(id2.len(), 36);
-        
+
         // Each generated ID should be unique
         assert_ne!(id1, id2);
-        
+
         // Should be valid UUID format (8-4-4-4-12)
         let parts: Vec<&str> = id1.split('-').collect();
         assert_eq!(parts.len(), 5);
@@ -170,12 +180,16 @@ mod tests {
         // Test that both provider and request ID contexts work together
         let request_id = "test-request-456".to_string();
         let provider = "TestProvider".to_string();
-        
-        REQUEST_ID.scope(request_id.clone(), async {
-            PROVIDER_CONTEXT.scope(provider.clone(), async {
-                assert_eq!(get_request_id(), "test-request-456");
-                assert_eq!(get_provider_context(), "TestProvider");
-            }).await
-        }).await;
+
+        REQUEST_ID
+            .scope(request_id.clone(), async {
+                PROVIDER_CONTEXT
+                    .scope(provider.clone(), async {
+                        assert_eq!(get_request_id(), "test-request-456");
+                        assert_eq!(get_provider_context(), "TestProvider");
+                    })
+                    .await
+            })
+            .await;
     }
 }

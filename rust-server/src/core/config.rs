@@ -14,15 +14,15 @@ use std::fs;
 pub struct AppConfig {
     /// List of LLM provider configurations
     pub providers: Vec<ProviderConfig>,
-    
+
     /// Server configuration (host, port)
     #[serde(default)]
     pub server: ServerConfig,
-    
+
     /// Whether to verify SSL certificates for upstream requests
     #[serde(default = "default_verify_ssl")]
     pub verify_ssl: bool,
-    
+
     /// List of master keys with optional rate limiting
     #[serde(default)]
     pub master_keys: Vec<MasterKeyConfig>,
@@ -33,18 +33,18 @@ pub struct AppConfig {
 pub struct MasterKeyConfig {
     /// The actual API key
     pub key: String,
-    
+
     /// Human-readable name for the key
     pub name: String,
-    
+
     /// Optional description
     #[serde(default)]
     pub description: Option<String>,
-    
+
     /// Optional rate limiting configuration
     #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
-    
+
     /// Whether this key is enabled
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -55,7 +55,7 @@ pub struct MasterKeyConfig {
 pub struct RateLimitConfig {
     /// Maximum requests per second
     pub requests_per_second: u32,
-    
+
     /// Maximum burst size (allows temporary spikes)
     #[serde(default = "default_burst")]
     pub burst_size: u32,
@@ -74,17 +74,17 @@ fn default_burst() -> u32 {
 pub struct ProviderConfig {
     /// Provider name (for logging and metrics)
     pub name: String,
-    
+
     /// Base URL for the provider's API
     pub api_base: String,
-    
+
     /// API key for authentication
     pub api_key: String,
-    
+
     /// Weight for round-robin selection (higher = more likely to be selected)
     #[serde(default = "default_weight")]
     pub weight: u32,
-    
+
     /// Model name mappings (client model -> provider model)
     #[serde(default)]
     pub model_mapping: HashMap<String, String>,
@@ -96,7 +96,7 @@ pub struct ServerConfig {
     /// Host to bind to
     #[serde(default = "default_host")]
     pub host: String,
-    
+
     /// Port to bind to
     #[serde(default = "default_port")]
     pub port: u16,
@@ -156,19 +156,19 @@ impl AppConfig {
             .with_context(|| format!("Failed to parse config file: {}", path))?;
 
         // Override with environment variables (env vars take precedence)
-        
+
         // Server host override
         if let Ok(host) = std::env::var("HOST") {
             config.server.host = host;
         }
-        
+
         // Server port override
         if let Ok(port_str) = std::env::var("PORT") {
             if let Ok(port) = port_str.parse::<u16>() {
                 config.server.port = port;
             }
         }
-        
+
         // SSL verification override
         if let Ok(verify_ssl_str) = std::env::var("VERIFY_SSL") {
             config.verify_ssl = str_to_bool(&verify_ssl_str);
@@ -192,7 +192,7 @@ fn expand_env_vars(content: &str) -> String {
         let default_value = caps.get(2).map(|m| m.as_str()).unwrap_or("");
 
         let expanded = std::env::var(var_name).unwrap_or_else(|_| default_value.to_string());
-        
+
         // If the expanded value looks like a number or boolean, don't quote it
         // This allows YAML to parse it as the correct type
         if is_numeric_or_bool(&expanded) {
@@ -211,7 +211,7 @@ fn is_numeric_or_bool(s: &str) -> bool {
     if s.parse::<f64>().is_ok() {
         return true;
     }
-    
+
     // Check if it's a boolean
     matches!(s.to_lowercase().as_str(), "true" | "false")
 }
@@ -220,10 +220,7 @@ fn is_numeric_or_bool(s: &str) -> bool {
 ///
 /// Accepts: "true", "1", "yes", "on" (case-insensitive)
 fn str_to_bool(value: &str) -> bool {
-    matches!(
-        value.to_lowercase().as_str(),
-        "true" | "1" | "yes" | "on"
-    )
+    matches!(value.to_lowercase().as_str(), "true" | "1" | "yes" | "on")
 }
 
 #[cfg(test)]
@@ -264,13 +261,13 @@ mod tests {
     #[test]
     fn test_expand_env_vars_numeric() {
         unsafe {
-            std::env::set_var("TEST_PORT", "18000");
+            std::env::set_var("TEST_NUMERIC_PORT", "18000");
         }
-        let input = "port: ${TEST_PORT}";
+        let input = "port: ${TEST_NUMERIC_PORT}";
         let output = expand_env_vars(input);
         assert_eq!(output, "port: 18000");
         unsafe {
-            std::env::remove_var("TEST_PORT");
+            std::env::remove_var("TEST_NUMERIC_PORT");
         }
     }
 
@@ -379,7 +376,7 @@ mod tests {
             std::env::remove_var("PORT");
             std::env::remove_var("VERIFY_SSL");
         }
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
 providers:
@@ -400,17 +397,20 @@ verify_ssl: false
         temp_file.flush().unwrap();
 
         let config = AppConfig::load(temp_file.path().to_str().unwrap()).unwrap();
-        
+
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.providers[0].name, "TestProvider");
         assert_eq!(config.providers[0].api_base, "http://localhost:8000");
         assert_eq!(config.providers[0].api_key, "test_key");
         assert_eq!(config.providers[0].weight, 2);
-        assert_eq!(config.providers[0].model_mapping.get("gpt-4").unwrap(), "test-model-4");
-        
+        assert_eq!(
+            config.providers[0].model_mapping.get("gpt-4").unwrap(),
+            "test-model-4"
+        );
+
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 8080);
-        
+
         assert!(!config.verify_ssl);
     }
 
@@ -420,7 +420,7 @@ verify_ssl: false
             std::env::set_var("TEST_API_KEY", "env_api_key");
             std::env::set_var("TEST_PORT", "9000");
         }
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
 providers:
@@ -439,9 +439,9 @@ verify_ssl: true
         temp_file.flush().unwrap();
 
         let config = AppConfig::load(temp_file.path().to_str().unwrap()).unwrap();
-        
+
         assert_eq!(config.providers[0].api_key, "env_api_key");
-        
+
         unsafe {
             std::env::remove_var("TEST_API_KEY");
             std::env::remove_var("TEST_PORT");
@@ -464,7 +464,6 @@ verify_ssl: true
         assert!(result.is_err());
     }
 
-    
     #[test]
     #[serial]
     fn test_env_var_overrides() {
@@ -474,7 +473,7 @@ verify_ssl: true
             std::env::set_var("PORT", "9999");
             std::env::set_var("VERIFY_SSL", "false");
         }
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         let config_content = r#"
 providers:
@@ -492,12 +491,12 @@ verify_ssl: true
         temp_file.flush().unwrap();
 
         let config = AppConfig::load(temp_file.path().to_str().unwrap()).unwrap();
-        
+
         // Environment variables should override config file
         assert_eq!(config.server.host, "192.168.1.1");
         assert_eq!(config.server.port, 9999);
         assert!(!config.verify_ssl);
-        
+
         unsafe {
             std::env::remove_var("HOST");
             std::env::remove_var("PORT");

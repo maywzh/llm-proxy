@@ -8,7 +8,10 @@ use axum::{
     Router,
 };
 use llm_proxy_rust::{
-    api::{chat_completions, completions, health, health_detailed, list_models, metrics_handler, AppState},
+    api::{
+        chat_completions, completions, health, health_detailed, list_models, metrics_handler,
+        AppState,
+    },
     core::{init_metrics, AppConfig, MetricsMiddleware, RateLimiter},
     services::ProviderService,
 };
@@ -94,7 +97,7 @@ async fn main() -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Starting LLM API Proxy on {}", addr);
     tracing::info!("Using config file: {}", config_path);
-    
+
     // Log authentication status
     if !config.master_keys.is_empty() {
         tracing::info!(
@@ -105,7 +108,7 @@ async fn main() -> Result<()> {
     } else {
         tracing::info!("Authentication: Disabled");
     }
-    
+
     tracing::info!("Metrics endpoint: /metrics");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
