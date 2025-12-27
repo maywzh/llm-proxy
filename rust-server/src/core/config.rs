@@ -538,6 +538,40 @@ verify_ssl: true
     }
 
     #[test]
+    fn test_request_timeout_with_env_var_and_default() {
+        unsafe {
+            std::env::remove_var("TEST_TIMEOUT");
+        }
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let config_content = r#"
+providers:
+  - name: TestProvider
+    api_base: http://localhost:8000
+    api_key: test_key
+
+request_timeout_secs: ${TEST_TIMEOUT:-60}
+"#;
+        temp_file.write_all(config_content.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        let config = AppConfig::load(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.request_timeout_secs, 60);
+
+        // Now test with environment variable set
+        unsafe {
+            std::env::set_var("TEST_TIMEOUT", "120");
+        }
+
+        let config = AppConfig::load(temp_file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.request_timeout_secs, 120);
+
+        unsafe {
+            std::env::remove_var("TEST_TIMEOUT");
+        }
+    }
+
+    #[test]
     fn test_config_serialization() {
         let config = AppConfig {
             providers: vec![ProviderConfig {
