@@ -89,16 +89,26 @@ impl MetricsMiddleware {
             .with_label_values(&[&method, &endpoint, &model, &provider])
             .observe(duration);
 
-        // Log request
-        tracing::info!(
-            "{} {} - model={} provider={} status={} duration={:.3}s",
-            method,
-            endpoint,
-            model,
-            provider,
-            status_code,
-            duration
-        );
+        // Log request - only show model and provider for /v1/chat/completions
+        if endpoint == "/v1/chat/completions" {
+            tracing::info!(
+                "{} {} - model={} provider={} status={} duration={:.3}s",
+                method,
+                endpoint,
+                model,
+                provider,
+                status_code,
+                duration
+            );
+        } else {
+            tracing::info!(
+                "{} {} - status={} duration={:.3}s",
+                method,
+                endpoint,
+                status_code,
+                duration
+            );
+        }
 
         // Decrement active requests
         metrics
