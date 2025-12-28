@@ -42,5 +42,22 @@ PROVIDER_LATENCY = Histogram(
     buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, float('inf'))
 )
 
+# Performance metrics for streaming requests
+TTFT = Histogram(
+    'llm_proxy_ttft_seconds',
+    'Time to first token (TTFT) in seconds for streaming requests. '
+    'source=provider measures upstream latency, source=proxy measures end-to-end latency',
+    ['source', 'model', 'provider'],
+    buckets=(0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)
+)
+
+TOKENS_PER_SECOND = Histogram(
+    'llm_proxy_tokens_per_second',
+    'Tokens per second (TPS) throughput for streaming requests. '
+    'source=provider measures upstream throughput, source=proxy measures end-to-end throughput',
+    ['source', 'model', 'provider'],
+    buckets=(1.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0)
+)
+
 # Application info
 APP_INFO = Info('llm_proxy_app', 'Application information')
