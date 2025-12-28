@@ -1,0 +1,5 @@
+[registry]
+default = "tesla-mirrors"
+
+[registries.tesla-mirrors]
+index = "sparse+https://mirrors.tesla.cn/cargo/index/"

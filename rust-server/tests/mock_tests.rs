@@ -224,8 +224,8 @@ async fn test_provider_401_error() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should return 500 for backend API errors
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Should faithfully return the backend's 401 status code
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -271,19 +271,25 @@ async fn test_provider_error_with_string_error() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should return 500 for backend API errors
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Should faithfully return the backend's 503 status code
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    // Should contain error message
-    assert!(json["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Service temporarily unavailable"));
+    // The backend returns {"error": "Service temporarily unavailable"}
+    // which gets passed through as-is
+    let error_msg = if let Some(msg) = json["error"]["message"].as_str() {
+        msg
+    } else if let Some(msg) = json["error"].as_str() {
+        msg
+    } else {
+        panic!("Expected error message in response");
+    };
+    
+    assert!(error_msg.contains("Service temporarily unavailable"));
 }
 
 #[tokio::test]

@@ -56,7 +56,7 @@ check-image:
 		exit 1; \
 	fi
 
-build-docker-image:
+docker-build:
 	@echo "Building Docker image..."
 	@BUILD_ARGS=""; \
 	if [ -n "$(ARGS_JSON)" ] && [ -f "$(ARGS_JSON)" ]; then \
