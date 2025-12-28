@@ -44,6 +44,11 @@ pub enum AppError {
     #[error("Rate limit exceeded: {0}")]
     RateLimitExceeded(String),
 
+    /// Client disconnected before request completed
+    /// This is a normal scenario (user cancelled request, timeout, etc.)
+    #[error("Client closed request")]
+    ClientDisconnect,
+
     /// Generic internal server errors with custom message
     #[error("Internal server error: {0}")]
     Internal(String),
@@ -70,6 +75,15 @@ impl IntoResponse for AppError {
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "Gateway timeout".to_string()),
             AppError::RateLimitExceeded(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
+            AppError::ClientDisconnect => {
+                // HTTP 499 is a non-standard status code used by nginx for "Client Closed Request"
+                // Log at info level since this is expected behavior
+                tracing::info!("Client disconnected before request completed");
+                (
+                    StatusCode::from_u16(499).unwrap_or(StatusCode::BAD_REQUEST),
+                    "Client closed request".to_string(),
+                )
+            }
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
 

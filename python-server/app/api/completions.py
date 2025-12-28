@@ -4,6 +4,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from starlette.requests import ClientDisconnect
 
 from app.api.dependencies import verify_auth, get_provider_svc
 from app.services.provider_service import ProviderService
@@ -22,7 +23,12 @@ async def proxy_completion_request(
     provider_svc: ProviderService
 ):
     """Common logic for proxying completion requests"""
-    data = await request.json()
+    try:
+        data = await request.json()
+    except ClientDisconnect:
+        logger.info("Client disconnected before request body was read")
+        raise HTTPException(status_code=499, detail="Client closed request")
+    
     original_model = data.get('model')
     
     # Select provider based on the requested model
@@ -58,26 +64,19 @@ async def proxy_completion_request(
                 response = await client.post(url, json=data, headers=headers)
                 
                 # Check if backend API returned an error status code
+                # Faithfully pass through the backend error
                 if response.status_code >= 400:
-                    error_detail = f"Backend API error: {response.status_code}"
                     try:
                         error_body = response.json()
-                        if isinstance(error_body, dict):
-                            error_msg = error_body.get('error', {})
-                            if isinstance(error_msg, dict):
-                                error_detail = error_msg.get('message', error_detail)
-                            elif isinstance(error_msg, str):
-                                error_detail = error_msg
-                            else:
-                                error_detail = str(error_body)
                     except Exception:
-                        error_detail = response.text or error_detail
+                        error_body = {"error": {"message": response.text or f"HTTP {response.status_code}"}}
                     
                     logger.error(
                         f"Backend API returned error status {response.status_code} "
-                        f"from provider {provider.name} during streaming: {error_detail}"
+                        f"from provider {provider.name} during streaming"
                     )
-                    raise HTTPException(status_code=500, detail=error_detail)
+                    # Faithfully return the backend's status code and error body
+                    return JSONResponse(content=error_body, status_code=response.status_code)
                 
                 # If status is OK, create streaming response with request data for fallback token counting
                 return create_streaming_response(response, original_model, provider.name, data)
@@ -89,26 +88,19 @@ async def proxy_completion_request(
                 response = await client.post(url, json=data, headers=headers)
                 
                 # Check if backend API returned an error status code
+                # Faithfully pass through the backend error
                 if response.status_code >= 400:
-                    error_detail = f"Backend API error: {response.status_code}"
                     try:
                         error_body = response.json()
-                        if isinstance(error_body, dict):
-                            error_msg = error_body.get('error', {})
-                            if isinstance(error_msg, dict):
-                                error_detail = error_msg.get('message', error_detail)
-                            elif isinstance(error_msg, str):
-                                error_detail = error_msg
-                            else:
-                                error_detail = str(error_body)
                     except Exception:
-                        error_detail = response.text or error_detail
+                        error_body = {"error": {"message": response.text or f"HTTP {response.status_code}"}}
                     
                     logger.error(
                         f"Backend API returned error status {response.status_code} "
-                        f"from provider {provider.name}: {error_detail}"
+                        f"from provider {provider.name}"
                     )
-                    raise HTTPException(status_code=500, detail=error_detail)
+                    # Faithfully return the backend's status code and error body
+                    return JSONResponse(content=error_body, status_code=response.status_code)
                 
                 response_data = response.json()
                 
@@ -148,12 +140,24 @@ async def proxy_completion_request(
                 response_data = rewrite_model_in_response(response_data, original_model)
                 return JSONResponse(content=response_data, status_code=response.status_code)
                 
+    except httpx.RemoteProtocolError as e:
+        logger.error(
+            f"Remote protocol error for provider {provider.name}: {str(e)} - "
+            f"Provider closed connection unexpectedly during request"
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Provider {provider.name} connection closed unexpectedly"
+        )
     except httpx.TimeoutException as e:
         logger.error(f"Timeout error for provider {provider.name}: {str(e)}")
         raise HTTPException(status_code=504, detail="Gateway timeout")
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error for provider {provider.name}: {e.response.status_code} - {str(e)}")
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    except httpx.RequestError as e:
+        logger.error(f"Network request error for provider {provider.name}: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Provider {provider.name} network error")
     except Exception as e:
         logger.exception(f"Unexpected error for provider {provider.name}")
         raise HTTPException(status_code=500, detail="Internal server error")
