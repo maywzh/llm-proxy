@@ -211,6 +211,14 @@ async def stream_response(
                 f"model={model_name} provider={provider_name} "
                 f"prompt={input_tokens} completion={output_tokens} total={total_tokens}"
             )
+    except httpx.RemoteProtocolError as e:
+        # Handle connection closed by remote server during streaming
+        logger.error(
+            f"Remote protocol error during streaming from provider {provider_name}: {str(e)} - "
+            f"Provider closed connection unexpectedly"
+        )
+        # Note: We can't send error to client here as the stream may already be partially sent
+        # The client will see an incomplete stream
     except Exception as e:
         # Handle any unexpected errors during streaming
         error_detail = str(e)

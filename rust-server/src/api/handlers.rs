@@ -216,24 +216,48 @@ pub async fn chat_completions(
                     );
 
                     // Check if backend API returned an error status code
+                    // Faithfully pass through the backend error
                     if status.is_client_error() || status.is_server_error() {
-                        let error_detail = match response.text().await {
-                            Ok(body) => extract_backend_error(&body),
-                            Err(_) => format!("Backend API error: {}", status),
+                        let error_body = match response.bytes().await {
+                            Ok(bytes) => {
+                                // Try to parse as JSON first
+                                match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                    Ok(body) => body,
+                                    Err(_) => {
+                                        // If can't parse as JSON, create error object with text
+                                        let text = String::from_utf8_lossy(&bytes).to_string();
+                                        json!({
+                                            "error": {
+                                                "message": text,
+                                                "type": "error",
+                                                "code": status.as_u16()
+                                            }
+                                        })
+                                    }
+                                }
+                            }
+                            Err(_) => json!({
+                                "error": {
+                                    "message": format!("HTTP {}", status),
+                                    "type": "error",
+                                    "code": status.as_u16()
+                                }
+                            }),
                         };
 
                         tracing::error!(
                             request_id = %request_id,
                             provider = %provider.name,
                             status = %status,
-                            error = %error_detail,
                             "Backend API returned error status"
                         );
 
-                        return Ok(create_error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            error_detail,
-                        ));
+                        // Faithfully return the backend's status code and error body
+                        let mut response = Json(error_body).into_response();
+                        *response.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                        response.extensions_mut().insert(ModelName(model_label.clone()));
+                        response.extensions_mut().insert(ProviderName(provider.name.clone()));
+                        return Ok(response);
                     }
 
                     let mut final_response = if is_stream {
@@ -394,26 +418,48 @@ pub async fn completions(
                     );
 
                     // Check if backend API returned an error status code
+                    // Faithfully pass through the backend error
                     if status.is_client_error() || status.is_server_error() {
-                        let error_detail = match response.text().await {
-                            Ok(body) => extract_backend_error(&body),
-                            Err(_) => format!("Backend API error: {}", status),
+                        let error_body = match response.bytes().await {
+                            Ok(bytes) => {
+                                // Try to parse as JSON first
+                                match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                    Ok(body) => body,
+                                    Err(_) => {
+                                        // If can't parse as JSON, create error object with text
+                                        let text = String::from_utf8_lossy(&bytes).to_string();
+                                        json!({
+                                            "error": {
+                                                "message": text,
+                                                "type": "error",
+                                                "code": status.as_u16()
+                                            }
+                                        })
+                                    }
+                                }
+                            }
+                            Err(_) => json!({
+                                "error": {
+                                    "message": format!("HTTP {}", status),
+                                    "type": "error",
+                                    "code": status.as_u16()
+                                }
+                            }),
                         };
 
                         tracing::error!(
                             request_id = %request_id,
                             provider = %provider.name,
                             status = %status,
-                            error = %error_detail,
                             "Backend API returned error status"
                         );
 
-                        return Ok(build_error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            error_detail,
-                            &model_label,
-                            &provider.name,
-                        ));
+                        // Faithfully return the backend's status code and error body
+                        let mut response = Json(error_body).into_response();
+                        *response.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                        response.extensions_mut().insert(ModelName(model_label.clone()));
+                        response.extensions_mut().insert(ProviderName(provider.name.clone()));
+                        return Ok(response);
                     }
 
                     let response_data: serde_json::Value = match response.json().await {
@@ -752,15 +798,3 @@ fn build_error_response(
     response
 }
 
-fn extract_backend_error(body: &str) -> String {
-    if let Ok(json_body) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(error_obj) = json_body.get("error") {
-            if let Some(msg) = error_obj.get("message").and_then(|m| m.as_str()) {
-                return msg.to_string();
-            } else if let Some(msg) = error_obj.as_str() {
-                return msg.to_string();
-            }
-        }
-    }
-    body.to_string()
-}
