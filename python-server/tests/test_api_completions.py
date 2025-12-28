@@ -1,12 +1,13 @@
 """Tests for completion API endpoints"""
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock, MagicMock, patch
 
 import pytest
 import httpx
 import respx
 from fastapi import HTTPException
 
-from app.api.completions import proxy_completion_request
+from app.api.completions import proxy_completion_request, _attach_response_metadata
+from starlette.responses import JSONResponse
 
 
 @pytest.mark.unit
@@ -107,6 +108,46 @@ class TestChatCompletionsEndpoint:
         
         assert response.status_code == 200
         assert 'text/event-stream' in response.headers.get('content-type', '')
+    
+    def test_chat_completions_streaming_uses_client_stream(self, app_client):
+        """Ensure streaming path relies on httpx.AsyncClient.stream"""
+        with patch('app.api.completions.httpx.AsyncClient') as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.aclose = AsyncMock()
+            mock_client.post = AsyncMock(side_effect=AssertionError("stream path should not call post"))
+            mock_client_class.return_value = mock_client
+            
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.headers = {'content-type': 'text/event-stream'}
+            
+            async def iter_bytes():
+                yield b'data: {"model":"gpt-4-0613","choices":[{"delta":{"content":"Hi"}}]}\n\n'
+                yield b'data: [DONE]\n\n'
+            
+            mock_response.aiter_bytes = iter_bytes
+            
+            mock_stream_ctx = MagicMock()
+            
+            async def enter():
+                return mock_response
+            
+            mock_stream_ctx.__aenter__.side_effect = enter
+            mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_client.stream.return_value = mock_stream_ctx
+            
+            response = app_client.post(
+                '/v1/chat/completions',
+                json={
+                    'model': 'gpt-4',
+                    'messages': [{'role': 'user', 'content': 'Hi'}],
+                    'stream': True
+                },
+                headers={'Authorization': 'Bearer test-master-key'}
+            )
+            
+            assert response.status_code == 200
+            mock_client.stream.assert_called_once()
     
     @respx.mock
     def test_chat_completions_provider_error(self, app_client, sample_chat_request):
@@ -377,6 +418,30 @@ class TestAPIEdgeCases:
         )
         
         assert response.status_code == 200
+
+
+@pytest.mark.unit
+class TestResponseMetadata:
+    """Test response metadata helper"""
+    
+    def test_attach_response_metadata_creates_extensions(self):
+        """Ensure metadata populates response extensions"""
+        response = JSONResponse({'ok': True})
+        result = _attach_response_metadata(response, 'gpt-4', 'provider1')
+        
+        assert result.extensions['model'] == 'gpt-4'
+        assert result.extensions['provider'] == 'provider1'
+    
+    def test_attach_response_metadata_updates_existing(self):
+        """Ensure metadata updates existing extensions dict"""
+        response = JSONResponse({'ok': True})
+        response.extensions['model'] = 'old'
+        response.extensions['provider'] = 'old-provider'
+        
+        result = _attach_response_metadata(response, 'gpt-3.5-turbo', 'provider2')
+        
+        assert result.extensions['model'] == 'gpt-3.5-turbo'
+        assert result.extensions['provider'] == 'provider2'
     
     @respx.mock
     def test_special_characters_in_content(self, app_client):
