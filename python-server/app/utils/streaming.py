@@ -1,5 +1,6 @@
 """Streaming response utilities"""
 import json
+import time
 from typing import AsyncIterator, Optional, Dict, Any
 
 import httpx
@@ -7,7 +8,7 @@ import tiktoken
 from fastapi.responses import StreamingResponse
 
 from app.core.config import get_config
-from app.core.metrics import TOKEN_USAGE
+from app.core.metrics import TOKEN_USAGE, TTFT, TOKENS_PER_SECOND
 from app.core.logging import set_provider_context, clear_provider_context, get_logger
 
 
@@ -112,13 +113,32 @@ async def stream_response(
     usage_found = False
     model_for_counting = original_model or 'gpt-3.5-turbo'
     
+    # Performance tracking
+    start_time = time.time()
+    provider_first_token_time: Optional[float] = None
+    proxy_first_token_time: Optional[float] = None
+    token_count = 0
+    
     try:
         # Set provider context for logging
         set_provider_context(provider_name)
         
         async for chunk in response.aiter_bytes():
+            now = time.time()
+            
             # Track token usage from streaming chunks
             chunk_str = chunk.decode('utf-8', errors='ignore')
+            
+            # Record provider TTFT on first token from provider
+            if provider_first_token_time is None:
+                provider_first_token_time = now
+                provider_ttft = now - start_time
+                TTFT.labels(
+                    source='provider',
+                    model=original_model or 'unknown',
+                    provider=provider_name
+                ).observe(provider_ttft)
+                logger.debug(f"Provider TTFT: {provider_ttft:.3f}s")
             
             # Try to extract usage from provider (preferred method)
             if '"usage":' in chunk_str:
@@ -181,6 +201,33 @@ async def stream_response(
                 except Exception as e:
                     logger.debug(f"Failed to count tokens from content: {e}")
             
+            # Count tokens in this chunk for TPS calculation
+            try:
+                lines = chunk_str.split('\n')
+                for line in lines:
+                    if line.startswith('data: ') and line != 'data: [DONE]':
+                        json_str = line[6:]
+                        json_obj = json.loads(json_str)
+                        if 'choices' in json_obj:
+                            for choice in json_obj['choices']:
+                                delta = choice.get('delta', {})
+                                content = delta.get('content', '')
+                                if content:
+                                    token_count += count_tokens(content, model_for_counting)
+            except Exception as e:
+                logger.debug(f"Failed to count tokens for TPS: {e}")
+            
+            # Record proxy TTFT on first token sent to client
+            if proxy_first_token_time is None:
+                proxy_first_token_time = now
+                proxy_ttft = now - start_time
+                TTFT.labels(
+                    source='proxy',
+                    model=original_model or 'unknown',
+                    provider=provider_name
+                ).observe(proxy_ttft)
+                logger.debug(f"Proxy TTFT: {proxy_ttft:.3f}s")
+            
             yield await rewrite_sse_chunk(chunk, original_model)
         
         # If no usage was provided by provider, use calculated values (fallback)
@@ -211,6 +258,32 @@ async def stream_response(
                 f"model={model_name} provider={provider_name} "
                 f"prompt={input_tokens} completion={output_tokens} total={total_tokens}"
             )
+        
+        # Calculate and record TPS metrics
+        end_time = time.time()
+        if token_count > 0:
+            # Provider TPS: from first token to last token
+            if provider_first_token_time is not None:
+                provider_duration = end_time - provider_first_token_time
+                if provider_duration > 0:
+                    provider_tps = token_count / provider_duration
+                    TOKENS_PER_SECOND.labels(
+                        source='provider',
+                        model=original_model or 'unknown',
+                        provider=provider_name
+                    ).observe(provider_tps)
+                    logger.debug(f"Provider TPS: {provider_tps:.2f} tokens/s")
+            
+            # Proxy TPS: from request start to completion
+            proxy_duration = end_time - start_time
+            if proxy_duration > 0:
+                proxy_tps = token_count / proxy_duration
+                TOKENS_PER_SECOND.labels(
+                    source='proxy',
+                    model=original_model or 'unknown',
+                    provider=provider_name
+                ).observe(proxy_tps)
+                logger.debug(f"Proxy TPS: {proxy_tps:.2f} tokens/s")
     except httpx.RemoteProtocolError as e:
         # Handle connection closed by remote server during streaming
         logger.error(
