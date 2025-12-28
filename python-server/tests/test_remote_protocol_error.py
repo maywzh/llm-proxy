@@ -37,8 +37,9 @@ async def test_remote_protocol_error_streaming():
     """Test that RemoteProtocolError is logged during streaming"""
     
     with patch('app.api.completions.httpx.AsyncClient') as mock_client_class:
-        mock_client = AsyncMock()
-        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client = MagicMock()
+        mock_client.aclose = AsyncMock()
+        mock_client_class.return_value = mock_client
         
         # Create a mock response that raises RemoteProtocolError during iteration
         mock_response = MagicMock()
@@ -49,7 +50,13 @@ async def test_remote_protocol_error_streaming():
             raise httpx.RemoteProtocolError("Connection closed during streaming")
         
         mock_response.aiter_bytes = failing_iter
-        mock_client.post.return_value = mock_response
+        
+        mock_stream_ctx = MagicMock()
+        async def enter():
+            return mock_response
+        mock_stream_ctx.__aenter__.side_effect = enter
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=None)
+        mock_client.stream.return_value = mock_stream_ctx
         
         client = TestClient(app)
         

@@ -1,9 +1,11 @@
 """Completions API endpoints"""
 from typing import Optional
+import json
 
 import httpx
 from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
 
 from app.api.dependencies import verify_auth, get_provider_svc
@@ -15,6 +17,46 @@ from app.core.logging import get_logger, set_provider_context, clear_provider_co
 
 router = APIRouter()
 logger = get_logger()
+
+
+def _attach_response_metadata(response, model_name: str, provider_name: str):
+    """Store model/provider info on response for downstream middleware."""
+    extensions = getattr(response, 'extensions', None)
+    if not isinstance(extensions, dict):
+        extensions = {}
+        setattr(response, 'extensions', extensions)
+    extensions['model'] = model_name
+    extensions['provider'] = provider_name
+    return response
+
+
+async def _close_stream_resources(stream_ctx, client: httpx.AsyncClient):
+    try:
+        await stream_ctx.__aexit__(None, None, None)
+    finally:
+        await client.aclose()
+
+
+def _parse_non_stream_error(response: httpx.Response) -> dict:
+    try:
+        return response.json()
+    except Exception:
+        message = response.text or f"HTTP {response.status_code}"
+        return {"error": {"message": message}}
+
+
+async def _parse_stream_error(response: httpx.Response) -> dict:
+    try:
+        body = await response.aread()
+    except Exception:
+        body = b''
+    if body:
+        try:
+            return json.loads(body.decode('utf-8'))
+        except Exception:
+            text = body.decode('utf-8', errors='replace')
+            return {"error": {"message": text or f"HTTP {response.status_code}"}}
+    return {"error": {"message": f"HTTP {response.status_code}"}}
 
 
 async def proxy_completion_request(
@@ -58,28 +100,55 @@ async def proxy_completion_request(
         
         if data.get('stream', False):
             logger.debug(f"Streaming request to {provider.name} for model {original_model}")
-            # For streaming, we need to check the response status before starting the stream
             config = get_config()
-            async with httpx.AsyncClient(verify=config.verify_ssl, timeout=float(config.request_timeout_secs)) as client:
-                response = await client.post(url, json=data, headers=headers)
-                
-                # Check if backend API returned an error status code
-                # Faithfully pass through the backend error
+            client = httpx.AsyncClient(
+                verify=config.verify_ssl,
+                timeout=float(config.request_timeout_secs)
+            )
+            stream_ctx = client.stream('POST', url, json=data, headers=headers)
+            try:
+                response = await stream_ctx.__aenter__()
+            except Exception:
+                await client.aclose()
+                raise
+
+            try:
                 if response.status_code >= 400:
-                    try:
-                        error_body = response.json()
-                    except Exception:
-                        error_body = {"error": {"message": response.text or f"HTTP {response.status_code}"}}
-                    
+                    error_body = await _parse_stream_error(response)
                     logger.error(
                         f"Backend API returned error status {response.status_code} "
                         f"from provider {provider.name} during streaming"
                     )
-                    # Faithfully return the backend's status code and error body
-                    return JSONResponse(content=error_body, status_code=response.status_code)
-                
-                # If status is OK, create streaming response with request data for fallback token counting
-                return create_streaming_response(response, original_model, provider.name, data)
+                    await _close_stream_resources(stream_ctx, client)
+                    error_response = JSONResponse(
+                        content=error_body,
+                        status_code=response.status_code
+                    )
+                    return _attach_response_metadata(
+                        error_response,
+                        request.state.model,
+                        provider.name
+                    )
+
+                streaming_response = create_streaming_response(
+                    response,
+                    original_model,
+                    provider.name,
+                    data
+                )
+                streaming_response.background = BackgroundTask(
+                    _close_stream_resources,
+                    stream_ctx,
+                    client
+                )
+                return _attach_response_metadata(
+                    streaming_response,
+                    request.state.model,
+                    provider.name
+                )
+            except Exception:
+                await _close_stream_resources(stream_ctx, client)
+                raise
         else:
             config = get_config()
             logger.debug(f"Non-streaming request to {provider.name} for model {original_model}")
@@ -90,17 +159,19 @@ async def proxy_completion_request(
                 # Check if backend API returned an error status code
                 # Faithfully pass through the backend error
                 if response.status_code >= 400:
-                    try:
-                        error_body = response.json()
-                    except Exception:
-                        error_body = {"error": {"message": response.text or f"HTTP {response.status_code}"}}
+                    error_body = _parse_non_stream_error(response)
                     
                     logger.error(
                         f"Backend API returned error status {response.status_code} "
                         f"from provider {provider.name}"
                     )
                     # Faithfully return the backend's status code and error body
-                    return JSONResponse(content=error_body, status_code=response.status_code)
+                    error_response = JSONResponse(content=error_body, status_code=response.status_code)
+                    return _attach_response_metadata(
+                        error_response,
+                        request.state.model,
+                        provider.name
+                    )
                 
                 response_data = response.json()
                 
@@ -138,7 +209,12 @@ async def proxy_completion_request(
                         )
                 
                 response_data = rewrite_model_in_response(response_data, original_model)
-                return JSONResponse(content=response_data, status_code=response.status_code)
+                success_response = JSONResponse(content=response_data, status_code=response.status_code)
+                return _attach_response_metadata(
+                    success_response,
+                    request.state.model,
+                    provider.name
+                )
                 
     except httpx.RemoteProtocolError as e:
         logger.error(

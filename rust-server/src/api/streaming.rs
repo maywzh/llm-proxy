@@ -9,7 +9,7 @@ use axum::body::Body;
 use axum::response::Response as AxumResponse;
 use futures::stream::StreamExt;
 use reqwest::Response;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -140,7 +140,14 @@ pub async fn create_sse_stream(
 
                     for line in chunk_str.split('\n') {
                         if line.starts_with("data: ") && line != "data: [DONE]" {
-                            let json_str = &line[6..];
+                            let json_str = line[6..].trim();
+                            
+                            // Skip incomplete JSON lines (don't end with closing brace)
+                            if json_str.is_empty() || !json_str.ends_with('}') {
+                                rewritten_lines.push(line.to_string());
+                                continue;
+                            }
+                            
                             if let Ok(mut json_obj) =
                                 serde_json::from_str::<serde_json::Value>(json_str)
                             {
@@ -239,7 +246,16 @@ pub async fn create_sse_stream(
                 }
                 Err(e) => {
                     tracing::error!("Stream error: {}", e);
-                    None
+                    // Send error event to client using SSE format
+                    let error_event = json!({
+                        "error": {
+                            "message": e.to_string(),
+                            "type": "stream_error",
+                            "code": "provider_error"
+                        }
+                    });
+                    let error_message = format!("event: error\ndata: {}\n\n", error_event);
+                    Some(Ok::<Vec<u8>, std::io::Error>(error_message.into_bytes()))
                 }
             }
         }
