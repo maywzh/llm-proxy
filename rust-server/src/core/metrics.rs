@@ -28,6 +28,14 @@ pub struct Metrics {
 
     /// Provider response latency histogram in seconds
     pub provider_latency: HistogramVec,
+
+    /// Time to first token (TTFT) histogram in seconds for streaming requests
+    /// source: "provider" (upstream) or "proxy" (end-to-end)
+    pub ttft: HistogramVec,
+
+    /// Tokens per second (TPS) histogram for streaming requests
+    /// source: "provider" (upstream) or "proxy" (end-to-end)
+    pub tokens_per_second: HistogramVec,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -91,6 +99,22 @@ pub fn init_metrics() -> &'static Metrics {
         )
         .expect("Failed to register provider_latency metric");
 
+        let ttft = register_histogram_vec!(
+            "llm_proxy_ttft_seconds",
+            "Time to first token (TTFT) in seconds for streaming requests. source=provider measures upstream latency, source=proxy measures end-to-end latency",
+            &["source", "model", "provider"],
+            vec![0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+        )
+        .expect("Failed to register ttft metric");
+
+        let tokens_per_second = register_histogram_vec!(
+            "llm_proxy_tokens_per_second",
+            "Tokens generated per second for streaming requests. source=provider measures upstream throughput, source=proxy measures end-to-end throughput",
+            &["source", "model", "provider"],
+            vec![1.0, 5.0, 10.0, 20.0, 30.0, 50.0, 75.0, 100.0, 150.0, 200.0]
+        )
+        .expect("Failed to register tokens_per_second metric");
+
         Metrics {
             request_count,
             request_duration,
@@ -98,6 +122,8 @@ pub fn init_metrics() -> &'static Metrics {
             token_usage,
             provider_health,
             provider_latency,
+            ttft,
+            tokens_per_second,
         }
     })
 }

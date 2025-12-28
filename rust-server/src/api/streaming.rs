@@ -11,13 +11,17 @@ use futures::stream::StreamExt;
 use reqwest::Response;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-/// Token counter for fallback calculation
+/// Token counter for fallback calculation and performance tracking
 #[derive(Clone)]
 pub struct TokenCounter {
     pub input_tokens: usize,
     pub output_tokens: Arc<Mutex<usize>>,
     pub usage_found: Arc<Mutex<bool>>,
+    pub start_time: Instant,
+    pub first_token_time: Arc<Mutex<Option<Instant>>>,
+    pub provider_first_token_time: Arc<Mutex<Option<Instant>>>,
 }
 
 impl TokenCounter {
@@ -26,6 +30,9 @@ impl TokenCounter {
             input_tokens,
             output_tokens: Arc::new(Mutex::new(0)),
             usage_found: Arc::new(Mutex::new(false)),
+            start_time: Instant::now(),
+            first_token_time: Arc::new(Mutex::new(None)),
+            provider_first_token_time: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -156,6 +163,50 @@ pub async fn create_sse_stream(
                                         // Extract content from ALL choices, not just the first
                                         let contents = extract_stream_text(&json_obj);
                                         if !contents.is_empty() {
+                                            let now = Instant::now();
+                                            
+                                            // Record provider TTFT on first token from provider
+                                            let mut provider_first_token_guard = counter.provider_first_token_time.lock().unwrap();
+                                            if provider_first_token_guard.is_none() {
+                                                *provider_first_token_guard = Some(now);
+                                                let provider_ttft = (now - counter.start_time).as_secs_f64();
+                                                
+                                                // Record provider TTFT metric
+                                                let metrics = get_metrics();
+                                                metrics
+                                                    .ttft
+                                                    .with_label_values(&["provider", &original_model, &provider_name])
+                                                    .observe(provider_ttft);
+                                                
+                                                tracing::debug!(
+                                                    "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
+                                                    original_model,
+                                                    provider_name,
+                                                    provider_ttft
+                                                );
+                                            }
+                                            
+                                            // Record proxy TTFT on first token to client
+                                            let mut first_token_guard = counter.first_token_time.lock().unwrap();
+                                            if first_token_guard.is_none() {
+                                                *first_token_guard = Some(now);
+                                                let proxy_ttft = (now - counter.start_time).as_secs_f64();
+                                                
+                                                // Record proxy TTFT metric
+                                                let metrics = get_metrics();
+                                                metrics
+                                                    .ttft
+                                                    .with_label_values(&["proxy", &original_model, &provider_name])
+                                                    .observe(proxy_ttft);
+                                                
+                                                tracing::debug!(
+                                                    "Proxy TTFT recorded - model={} provider={} ttft={:.3}s",
+                                                    original_model,
+                                                    provider_name,
+                                                    proxy_ttft
+                                                );
+                                            }
+                                            
                                             let mut output_guard =
                                                 counter.output_tokens.lock().unwrap();
                                             for content in contents {
@@ -198,7 +249,7 @@ pub async fn create_sse_stream(
     let byte_stream_with_cleanup = futures::stream::StreamExt::chain(
         byte_stream,
         futures::stream::once(async move {
-            // Record fallback tokens synchronously after stream completes
+            // Record fallback tokens and TPS synchronously after stream completes
             if let Some(counter) = token_counter_for_final {
                 if !*counter.usage_found.lock().unwrap() {
                     let output_tokens = *counter.output_tokens.lock().unwrap();
@@ -208,6 +259,49 @@ pub async fn create_sse_stream(
                         &model_for_final,
                         &provider_for_final,
                     );
+                    
+                    // Calculate and record TPS for both provider and proxy
+                    let total_duration = counter.start_time.elapsed().as_secs_f64();
+                    if total_duration > 0.0 && output_tokens > 0 {
+                        let metrics = get_metrics();
+                        
+                        // Provider TPS (from provider's first token to last token)
+                        if let Some(provider_first_time) = *counter.provider_first_token_time.lock().unwrap() {
+                            let provider_duration = provider_first_time.elapsed().as_secs_f64();
+                            if provider_duration > 0.0 {
+                                let provider_tps = output_tokens as f64 / provider_duration;
+                                metrics
+                                    .tokens_per_second
+                                    .with_label_values(&["provider", &model_for_final, &provider_for_final])
+                                    .observe(provider_tps);
+                                
+                                tracing::info!(
+                                    "Provider TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
+                                    model_for_final,
+                                    provider_for_final,
+                                    output_tokens,
+                                    provider_duration,
+                                    provider_tps
+                                );
+                            }
+                        }
+                        
+                        // Proxy TPS (end-to-end from client request to last token)
+                        let proxy_tps = output_tokens as f64 / total_duration;
+                        metrics
+                            .tokens_per_second
+                            .with_label_values(&["proxy", &model_for_final, &provider_for_final])
+                            .observe(proxy_tps);
+                        
+                        tracing::info!(
+                            "Proxy TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
+                            model_for_final,
+                            provider_for_final,
+                            output_tokens,
+                            total_duration,
+                            proxy_tps
+                        );
+                    }
                 }
             }
             // Return empty chunk to signal end
@@ -395,6 +489,8 @@ mod tests {
         assert_eq!(counter.input_tokens, 100);
         assert_eq!(*counter.output_tokens.lock().unwrap(), 0);
         assert_eq!(*counter.usage_found.lock().unwrap(), false);
+        assert!(counter.first_token_time.lock().unwrap().is_none());
+        assert!(counter.provider_first_token_time.lock().unwrap().is_none());
 
         *counter.output_tokens.lock().unwrap() = 50;
         assert_eq!(*counter.output_tokens.lock().unwrap(), 50);
