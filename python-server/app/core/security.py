@@ -1,4 +1,5 @@
 """Security utilities"""
+import hmac
 from typing import Optional, Tuple
 from fastapi import HTTPException, status
 
@@ -64,9 +65,10 @@ def verify_master_key(authorization: Optional[str] = None) -> Tuple[bool, Option
         )
     
     # Find matching master key - MUST check enabled field
+    # Use constant-time comparison to prevent timing attacks
     matching_key = None
     for key_config in config.master_keys:
-        if key_config.key == provided_key:
+        if hmac.compare_digest(key_config.key, provided_key):
             # Check if key is enabled before accepting it
             if not key_config.enabled:
                 raise HTTPException(

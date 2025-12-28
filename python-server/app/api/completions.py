@@ -12,6 +12,7 @@ from app.api.dependencies import verify_auth, get_provider_svc
 from app.services.provider_service import ProviderService
 from app.utils.streaming import create_streaming_response, rewrite_model_in_response
 from app.core.config import get_config
+from app.core.http_client import get_http_client
 from app.core.metrics import TOKEN_USAGE
 from app.core.logging import get_logger, set_provider_context, clear_provider_context
 
@@ -30,11 +31,9 @@ def _attach_response_metadata(response, model_name: str, provider_name: str):
     return response
 
 
-async def _close_stream_resources(stream_ctx, client: httpx.AsyncClient):
-    try:
-        await stream_ctx.__aexit__(None, None, None)
-    finally:
-        await client.aclose()
+async def _close_stream_resources(stream_ctx):
+    """Close streaming context (client is shared, don't close it)"""
+    await stream_ctx.__aexit__(None, None, None)
 
 
 def _parse_non_stream_error(response: httpx.Response) -> dict:
@@ -100,16 +99,14 @@ async def proxy_completion_request(
         
         if data.get('stream', False):
             logger.debug(f"Streaming request to {provider.name} for model {original_model}")
-            config = get_config()
-            client = httpx.AsyncClient(
-                verify=config.verify_ssl,
-                timeout=float(config.request_timeout_secs)
-            )
+            # Use shared HTTP client for streaming
+            client = get_http_client()
             stream_ctx = client.stream('POST', url, json=data, headers=headers)
             try:
                 response = await stream_ctx.__aenter__()
             except Exception:
-                await client.aclose()
+                # Don't close shared client, just exit stream context
+                await stream_ctx.__aexit__(None, None, None)
                 raise
 
             try:
@@ -119,7 +116,7 @@ async def proxy_completion_request(
                         f"Backend API returned error status {response.status_code} "
                         f"from provider {provider.name} during streaming"
                     )
-                    await _close_stream_resources(stream_ctx, client)
+                    await _close_stream_resources(stream_ctx)
                     error_response = JSONResponse(
                         content=error_body,
                         status_code=response.status_code
@@ -138,8 +135,7 @@ async def proxy_completion_request(
                 )
                 streaming_response.background = BackgroundTask(
                     _close_stream_resources,
-                    stream_ctx,
-                    client
+                    stream_ctx
                 )
                 return _attach_response_metadata(
                     streaming_response,
@@ -147,74 +143,73 @@ async def proxy_completion_request(
                     provider.name
                 )
             except Exception:
-                await _close_stream_resources(stream_ctx, client)
+                await _close_stream_resources(stream_ctx)
                 raise
         else:
-            config = get_config()
             logger.debug(f"Non-streaming request to {provider.name} for model {original_model}")
-            
-            async with httpx.AsyncClient(verify=config.verify_ssl, timeout=float(config.request_timeout_secs)) as client:
-                response = await client.post(url, json=data, headers=headers)
+            # Use shared HTTP client for non-streaming requests
+            client = get_http_client()
+            response = await client.post(url, json=data, headers=headers)
                 
-                # Check if backend API returned an error status code
-                # Faithfully pass through the backend error
-                if response.status_code >= 400:
-                    error_body = _parse_non_stream_error(response)
-                    
-                    logger.error(
-                        f"Backend API returned error status {response.status_code} "
-                        f"from provider {provider.name}"
-                    )
-                    # Faithfully return the backend's status code and error body
-                    error_response = JSONResponse(content=error_body, status_code=response.status_code)
-                    return _attach_response_metadata(
-                        error_response,
-                        request.state.model,
-                        provider.name
-                    )
+            # Check if backend API returned an error status code
+            # Faithfully pass through the backend error
+            if response.status_code >= 400:
+                error_body = _parse_non_stream_error(response)
                 
-                response_data = response.json()
-                
-                # Extract and record token usage
-                if 'usage' in response_data:
-                    usage = response_data['usage']
-                    model_name = original_model or 'unknown'
-                    
-                    if 'prompt_tokens' in usage:
-                        TOKEN_USAGE.labels(
-                            model=model_name,
-                            provider=provider.name,
-                            token_type='prompt'
-                        ).inc(usage['prompt_tokens'])
-                    
-                    if 'completion_tokens' in usage:
-                        TOKEN_USAGE.labels(
-                            model=model_name,
-                            provider=provider.name,
-                            token_type='completion'
-                        ).inc(usage['completion_tokens'])
-                    
-                    if 'total_tokens' in usage:
-                        TOKEN_USAGE.labels(
-                            model=model_name,
-                            provider=provider.name,
-                            token_type='total'
-                        ).inc(usage['total_tokens'])
-                        
-                        logger.debug(
-                            f"Token usage - model={model_name} provider={provider.name} "
-                            f"prompt={usage.get('prompt_tokens', 0)} "
-                            f"completion={usage.get('completion_tokens', 0)} "
-                            f"total={usage.get('total_tokens', 0)}"
-                        )
-                
-                response_data = rewrite_model_in_response(response_data, original_model)
-                success_response = JSONResponse(content=response_data, status_code=response.status_code)
+                logger.error(
+                    f"Backend API returned error status {response.status_code} "
+                    f"from provider {provider.name}"
+                )
+                # Faithfully return the backend's status code and error body
+                error_response = JSONResponse(content=error_body, status_code=response.status_code)
                 return _attach_response_metadata(
-                    success_response,
+                    error_response,
                     request.state.model,
                     provider.name
                 )
+            
+            response_data = response.json()
+            
+            # Extract and record token usage
+            if 'usage' in response_data:
+                usage = response_data['usage']
+                model_name = original_model or 'unknown'
+                
+                if 'prompt_tokens' in usage:
+                    TOKEN_USAGE.labels(
+                        model=model_name,
+                        provider=provider.name,
+                        token_type='prompt'
+                    ).inc(usage['prompt_tokens'])
+                
+                if 'completion_tokens' in usage:
+                    TOKEN_USAGE.labels(
+                        model=model_name,
+                        provider=provider.name,
+                        token_type='completion'
+                    ).inc(usage['completion_tokens'])
+                
+                if 'total_tokens' in usage:
+                    TOKEN_USAGE.labels(
+                        model=model_name,
+                        provider=provider.name,
+                        token_type='total'
+                    ).inc(usage['total_tokens'])
+                    
+                    logger.debug(
+                        f"Token usage - model={model_name} provider={provider.name} "
+                        f"prompt={usage.get('prompt_tokens', 0)} "
+                        f"completion={usage.get('completion_tokens', 0)} "
+                        f"total={usage.get('total_tokens', 0)}"
+                    )
+            
+            response_data = rewrite_model_in_response(response_data, original_model)
+            success_response = JSONResponse(content=response_data, status_code=response.status_code)
+            return _attach_response_metadata(
+                success_response,
+                request.state.model,
+                provider.name
+            )
                 
     except httpx.RemoteProtocolError as e:
         logger.error(

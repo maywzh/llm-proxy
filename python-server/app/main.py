@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.api.router import api_router, health_router, metrics_router
 from app.services.provider_service import get_provider_service
 from app.core.config import get_config
+from app.core.http_client import get_http_client, close_http_client
 from app.core.middleware import MetricsMiddleware
 from app.core.metrics import APP_INFO
 from app.core.logging import setup_logging, get_logger
@@ -45,6 +46,10 @@ def create_app() -> FastAPI:
             'title': 'LLM API Proxy'
         })
         
+        # Initialize shared HTTP client
+        get_http_client()
+        logger.info("Shared HTTP client initialized")
+        
         # Initialize rate limiter with master keys
         init_rate_limiter()
         
@@ -75,6 +80,13 @@ def create_app() -> FastAPI:
             logger.info("Master API key: Disabled")
         
         logger.info(f"Metrics endpoint: /metrics")
+    
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        """Cleanup on shutdown"""
+        logger.info("Shutting down LLM API Proxy")
+        await close_http_client()
+        logger.info("Shared HTTP client closed")
     
     return app
 
