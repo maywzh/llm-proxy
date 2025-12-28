@@ -58,9 +58,10 @@ class RateLimiter:
             True if the request is allowed, False if rate limit is exceeded
         """
         if key not in self._limiters:
-            # No rate limit configured for this key - deny access
-            logger.warning(f"Rate limit check for unregistered key")
-            return False
+            # No rate limit configured for this key - allow access
+            # This is correct behavior: keys without rate limits should pass through
+            logger.debug(f"Rate limit check for unregistered key - allowing (no limit configured)")
+            return True
         
         rate_limit = self._limiters[key]
         # Use the key itself as the identifier for the rate limiter
