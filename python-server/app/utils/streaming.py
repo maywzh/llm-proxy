@@ -141,48 +141,59 @@ async def stream_response(
                 logger.debug(f"Provider TTFT: {provider_ttft:.3f}s")
             
             # Try to extract usage from provider (preferred method)
-            if '"usage":' in chunk_str:
+            # Only process complete lines to avoid parsing incomplete JSON
+            if '"usage":' in chunk_str and '\n' in chunk_str:
                 try:
                     lines = chunk_str.split('\n')
                     for line in lines:
+                        # Only process complete SSE data lines
                         if line.startswith('data: ') and line != 'data: [DONE]':
-                            json_str = line[6:]
-                            json_obj = json.loads(json_str)
-                            if 'usage' in json_obj and json_obj['usage']:
-                                usage = json_obj['usage']
-                                model_name = original_model or 'unknown'
-                                
-                                if 'prompt_tokens' in usage:
-                                    TOKEN_USAGE.labels(
-                                        model=model_name,
-                                        provider=provider_name,
-                                        token_type='prompt'
-                                    ).inc(usage['prompt_tokens'])
-                                
-                                if 'completion_tokens' in usage:
-                                    TOKEN_USAGE.labels(
-                                        model=model_name,
-                                        provider=provider_name,
-                                        token_type='completion'
-                                    ).inc(usage['completion_tokens'])
-                                
-                                if 'total_tokens' in usage:
-                                    TOKEN_USAGE.labels(
-                                        model=model_name,
-                                        provider=provider_name,
-                                        token_type='total'
-                                    ).inc(usage['total_tokens'])
-                                
-                                usage_found = True
-                                logger.debug(
-                                    f"Token usage from provider - "
-                                    f"model={model_name} provider={provider_name} "
-                                    f"prompt={usage.get('prompt_tokens', 0)} "
-                                    f"completion={usage.get('completion_tokens', 0)} "
-                                    f"total={usage.get('total_tokens', 0)}"
-                                )
+                            json_str = line[6:].strip()
+                            # Skip if line appears incomplete (no closing brace)
+                            if not json_str or not json_str.endswith('}'):
+                                continue
+                            
+                            try:
+                                json_obj = json.loads(json_str)
+                                if 'usage' in json_obj and json_obj['usage']:
+                                    usage = json_obj['usage']
+                                    model_name = original_model or 'unknown'
+                                    
+                                    if 'prompt_tokens' in usage:
+                                        TOKEN_USAGE.labels(
+                                            model=model_name,
+                                            provider=provider_name,
+                                            token_type='prompt'
+                                        ).inc(usage['prompt_tokens'])
+                                    
+                                    if 'completion_tokens' in usage:
+                                        TOKEN_USAGE.labels(
+                                            model=model_name,
+                                            provider=provider_name,
+                                            token_type='completion'
+                                        ).inc(usage['completion_tokens'])
+                                    
+                                    if 'total_tokens' in usage:
+                                        TOKEN_USAGE.labels(
+                                            model=model_name,
+                                            provider=provider_name,
+                                            token_type='total'
+                                        ).inc(usage['total_tokens'])
+                                    
+                                    usage_found = True
+                                    logger.debug(
+                                        f"Token usage from provider - "
+                                        f"model={model_name} provider={provider_name} "
+                                        f"prompt={usage.get('prompt_tokens', 0)} "
+                                        f"completion={usage.get('completion_tokens', 0)} "
+                                        f"total={usage.get('total_tokens', 0)}"
+                                    )
+                            except json.JSONDecodeError:
+                                # Skip incomplete JSON lines silently
+                                pass
                 except Exception as e:
-                    logger.warning(f"Failed to parse usage from chunk: {e}")
+                    # Log unexpected errors only
+                    logger.debug(f"Error processing usage chunk: {e}")
             
             # Accumulate output tokens for fallback (only if usage not found yet)
             if not usage_found and request_data:
@@ -290,14 +301,31 @@ async def stream_response(
             f"Remote protocol error during streaming from provider {provider_name}: {str(e)} - "
             f"Provider closed connection unexpectedly"
         )
-        # Note: We can't send error to client here as the stream may already be partially sent
-        # The client will see an incomplete stream
+        # Send error event to client using SSE format
+        error_message = f"Provider {provider_name} closed connection unexpectedly"
+        error_event = json.dumps({
+            "error": {
+                "message": error_message,
+                "type": "provider_disconnected",
+                "code": "remote_protocol_error"
+            }
+        })
+        yield f"event: error\ndata: {error_event}\n\n".encode('utf-8')
     except Exception as e:
         # Handle any unexpected errors during streaming
         error_detail = str(e)
         logger.exception(
             f"Unexpected error during streaming from provider {provider_name}"
         )
+        # Send error event to client using SSE format
+        error_event = json.dumps({
+            "error": {
+                "message": error_detail,
+                "type": "stream_error",
+                "code": "internal_error"
+            }
+        })
+        yield f"event: error\ndata: {error_event}\n\n".encode('utf-8')
     finally:
         # Clear provider context after streaming completes
         clear_provider_context()
