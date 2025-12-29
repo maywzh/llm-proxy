@@ -68,11 +68,23 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Create shared HTTP client with connection pooling
+    let http_client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(!config.verify_ssl)
+        .timeout(std::time::Duration::from_secs(config.request_timeout_secs))
+        .pool_max_idle_per_host(20)
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("Failed to build HTTP client");
+
+    tracing::info!("HTTP client initialized with connection pooling (max_idle=20, timeout=30s)");
+
     // Create shared state
     let state = std::sync::Arc::new(AppState {
         config: config.clone(),
         provider_service,
         rate_limiter,
+        http_client,
     });
 
     // Build router
