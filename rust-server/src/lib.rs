@@ -33,11 +33,17 @@
 //!     let provider_service = ProviderService::new(config.clone());
 //!     let rate_limiter = Arc::new(RateLimiter::new());
 //!
+//!     // Create shared HTTP client with connection pooling
+//!     let http_client = reqwest::Client::builder()
+//!         .pool_max_idle_per_host(20)
+//!         .build()?;
+//!
 //!     // Create application state
 //!     let state = Arc::new(AppState {
 //!         config,
 //!         provider_service,
 //!         rate_limiter,
+//!         http_client,
 //!     });
 //!
 //!     // Build and run server...

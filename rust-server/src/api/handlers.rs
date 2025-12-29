@@ -29,6 +29,7 @@ pub struct AppState {
     pub config: crate::core::config::AppConfig,
     pub provider_service: ProviderService,
     pub rate_limiter: Arc<RateLimiter>,
+    pub http_client: reqwest::Client,
 }
 
 /// Verify API key authentication and check rate limits.
@@ -165,15 +166,7 @@ pub async fn chat_completions(
                         build_error_response(status, message, &model_label, &provider.name)
                     };
 
-                    let client = reqwest::Client::builder()
-                        .danger_accept_invalid_certs(!state.config.verify_ssl)
-                        .timeout(std::time::Duration::from_secs(state.config.request_timeout_secs))
-                        .build()
-                        .map_err(|e| {
-                            AppError::Internal(format!("Failed to build HTTP client: {}", e))
-                        })?;
-
-                    let response = match client
+                    let response = match state.http_client
                         .post(&url)
                         .header("Authorization", format!("Bearer {}", provider.api_key))
                         .header("Content-Type", "application/json")
@@ -365,15 +358,7 @@ pub async fn completions(
                         "Processing completions request"
                     );
 
-                    let client = reqwest::Client::builder()
-                        .danger_accept_invalid_certs(!state.config.verify_ssl)
-                        .timeout(std::time::Duration::from_secs(state.config.request_timeout_secs))
-                        .build()
-                        .map_err(|e| {
-                            AppError::Internal(format!("Failed to build HTTP client: {}", e))
-                        })?;
-
-                    let response = match client
+                    let response = match state.http_client
                         .post(&url)
                         .header("Authorization", format!("Bearer {}", provider.api_key))
                         .header("Content-Type", "application/json")
@@ -636,9 +621,12 @@ async fn test_provider(
         );
     }
 
+    // Create a dedicated client for health checks with shorter timeout
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(!config.verify_ssl)
         .timeout(std::time::Duration::from_secs(30))
+        .pool_max_idle_per_host(5)
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap();
 
