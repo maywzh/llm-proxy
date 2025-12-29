@@ -33,10 +33,21 @@ fn create_test_app(config: AppConfig) -> Router {
 
     let provider_service = ProviderService::new(config.clone());
     let rate_limiter = Arc::new(RateLimiter::new());
+    
+    // Create shared HTTP client for tests
+    let http_client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(!config.verify_ssl)
+        .timeout(std::time::Duration::from_secs(config.request_timeout_secs))
+        .pool_max_idle_per_host(20)
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("Failed to build HTTP client");
+    
     let state = Arc::new(AppState {
         config,
         provider_service,
         rate_limiter,
+        http_client,
     });
 
     Router::new()
