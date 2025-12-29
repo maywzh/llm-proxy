@@ -126,141 +126,59 @@ pub async fn create_sse_stream(
     let token_counter_for_final = token_counter.clone();
     let model_for_final = original_model.clone();
     let provider_for_final = provider_name.clone();
-    
-    // Track provider's model name for fast string replacement (learned from first chunk)
-    let provider_model = Arc::new(Mutex::new(None::<String>));
 
     let byte_stream = stream.filter_map(move |chunk_result| {
         let original_model = original_model.clone();
         let provider_name = provider_name.clone();
         let token_counter = token_counter.clone();
-        let provider_model = provider_model.clone();
 
         async move {
             match chunk_result {
                 Ok(bytes) => {
-                    let chunk_str = String::from_utf8_lossy(&bytes);
-                    
                     // Check if we need token counting
                     let needs_token_count = token_counter.as_ref()
                         .map(|c| !*c.usage_found.lock().unwrap())
                         .unwrap_or(false);
                     
-                    // Fast path: Use string replacement for model rewriting if we know provider's model
-                    let provider_model_name = provider_model.lock().unwrap().clone();
-                    if let Some(ref prov_model) = provider_model_name {
-                        // Fast string replacement - no JSON parsing for model rewrite!
-                        let search_pattern = format!("\"model\":\"{}\"", prov_model);
-                        let replace_pattern = format!("\"model\":\"{}\"", original_model);
-                        let rewritten_chunk = chunk_str.replace(&search_pattern, &replace_pattern);
-                        
-                        // Only parse JSON if we need token counting
-                        if needs_token_count {
-                            for line in rewritten_chunk.split('\n') {
-                                if line.starts_with("data: ") && line != "data: [DONE]" {
-                                    let json_str = line[6..].trim();
-                                    if json_str.is_empty() || !json_str.ends_with('}') {
-                                        continue;
-                                    }
-                                    
-                                    if let Ok(json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                        // Check for usage
-                                        if let Some(usage_value) = json_obj.get("usage") {
-                                            if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
-                                                record_token_usage(&usage, &original_model, &provider_name);
-                                                if let Some(ref counter) = token_counter {
-                                                    *counter.usage_found.lock().unwrap() = true;
-                                                }
-                                            }
-                                        }
-                                        
-                                        // Token counting
-                                        if let Some(ref counter) = token_counter {
-                                            if !*counter.usage_found.lock().unwrap() {
-                                                let contents = extract_stream_text(&json_obj);
-                                                if !contents.is_empty() {
-                                                    let now = Instant::now();
-                                                    
-                                                    let mut provider_first_token_guard = counter.provider_first_token_time.lock().unwrap();
-                                                    if provider_first_token_guard.is_none() {
-                                                        *provider_first_token_guard = Some(now);
-                                                        let provider_ttft = (now - counter.start_time).as_secs_f64();
-                                                        let metrics = get_metrics();
-                                                        metrics.ttft.with_label_values(&["provider", &original_model, &provider_name]).observe(provider_ttft);
-                                                    }
-                                                    
-                                                    let mut first_token_guard = counter.first_token_time.lock().unwrap();
-                                                    if first_token_guard.is_none() {
-                                                        *first_token_guard = Some(now);
-                                                        let proxy_ttft = (now - counter.start_time).as_secs_f64();
-                                                        let metrics = get_metrics();
-                                                        metrics.ttft.with_label_values(&["proxy", &original_model, &provider_name]).observe(proxy_ttft);
-                                                    }
-                                                    
-                                                    let mut output_guard = counter.output_tokens.lock().unwrap();
-                                                    for content in contents {
-                                                        *output_guard += count_tokens(&content, &original_model);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        return Some(Ok::<Vec<u8>, std::io::Error>(rewritten_chunk.into_bytes()));
+                    // Ultra-fast path: If no token counting needed, pass through directly!
+                    if !needs_token_count {
+                        return Some(Ok::<Vec<u8>, std::io::Error>(bytes.to_vec()));
                     }
                     
-                    // Slow path: First chunk - need to learn provider's model name and do full processing
-                    let mut rewritten_lines = Vec::new();
-
+                    // Only parse for token counting when needed
+                    let chunk_str = String::from_utf8_lossy(&bytes);
+                    
                     for line in chunk_str.split('\n') {
                         if line.starts_with("data: ") && line != "data: [DONE]" {
                             let json_str = line[6..].trim();
-                            
-                            // Skip incomplete JSON lines (don't end with closing brace)
                             if json_str.is_empty() || !json_str.ends_with('}') {
-                                rewritten_lines.push(line.to_string());
                                 continue;
                             }
                             
-                            if let Ok(mut json_obj) =
-                                serde_json::from_str::<serde_json::Value>(json_str)
-                            {
-                                // Check for usage in chunk (preferred method)
+                            if let Ok(json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                // Check for usage
                                 if let Some(usage_value) = json_obj.get("usage") {
-                                    if let Ok(usage) =
-                                        serde_json::from_value::<Usage>(usage_value.clone())
-                                    {
+                                    if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
                                         record_token_usage(&usage, &original_model, &provider_name);
                                         if let Some(ref counter) = token_counter {
                                             *counter.usage_found.lock().unwrap() = true;
                                         }
                                     }
                                 }
-
-                                // Accumulate tokens for fallback (only if usage not found yet)
+                                
+                                // Token counting
                                 if let Some(ref counter) = token_counter {
-                                    let usage_found = *counter.usage_found.lock().unwrap();
-                                    if !usage_found {
-                                        // Extract content from ALL choices, not just the first
+                                    if !*counter.usage_found.lock().unwrap() {
                                         let contents = extract_stream_text(&json_obj);
                                         if !contents.is_empty() {
                                             let now = Instant::now();
                                             
-                                            // Record provider TTFT on first token from provider
                                             let mut provider_first_token_guard = counter.provider_first_token_time.lock().unwrap();
                                             if provider_first_token_guard.is_none() {
                                                 *provider_first_token_guard = Some(now);
                                                 let provider_ttft = (now - counter.start_time).as_secs_f64();
-                                                
-                                                // Record provider TTFT metric
                                                 let metrics = get_metrics();
-                                                metrics
-                                                    .ttft
-                                                    .with_label_values(&["provider", &original_model, &provider_name])
-                                                    .observe(provider_ttft);
+                                                metrics.ttft.with_label_values(&["provider", &original_model, &provider_name]).observe(provider_ttft);
                                                 
                                                 tracing::debug!(
                                                     "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
@@ -270,18 +188,12 @@ pub async fn create_sse_stream(
                                                 );
                                             }
                                             
-                                            // Record proxy TTFT on first token to client
                                             let mut first_token_guard = counter.first_token_time.lock().unwrap();
                                             if first_token_guard.is_none() {
                                                 *first_token_guard = Some(now);
                                                 let proxy_ttft = (now - counter.start_time).as_secs_f64();
-                                                
-                                                // Record proxy TTFT metric
                                                 let metrics = get_metrics();
-                                                metrics
-                                                    .ttft
-                                                    .with_label_values(&["proxy", &original_model, &provider_name])
-                                                    .observe(proxy_ttft);
+                                                metrics.ttft.with_label_values(&["proxy", &original_model, &provider_name]).observe(proxy_ttft);
                                                 
                                                 tracing::debug!(
                                                     "Proxy TTFT recorded - model={} provider={} ttft={:.3}s",
@@ -291,50 +203,20 @@ pub async fn create_sse_stream(
                                                 );
                                             }
                                             
-                                            let mut output_guard =
-                                                counter.output_tokens.lock().unwrap();
+                                            let mut output_guard = counter.output_tokens.lock().unwrap();
                                             for content in contents {
-                                                *output_guard +=
-                                                    count_tokens(&content, &original_model);
+                                                *output_guard += count_tokens(&content, &original_model);
                                             }
                                         }
                                     }
-                                }
-
-                                // Learn provider's model name from first chunk and rewrite
-                                if let Some(obj) = json_obj.as_object_mut() {
-                                    if let Some(model_value) = obj.get("model") {
-                                        if let Some(model_str) = model_value.as_str() {
-                                            // Learn provider's model name for future fast replacement
-                                            let mut prov_model = provider_model.lock().unwrap();
-                                            if prov_model.is_none() {
-                                                *prov_model = Some(model_str.to_string());
-                                                tracing::debug!(
-                                                    "Learned provider model name: {} -> {}",
-                                                    model_str,
-                                                    original_model
-                                                );
-                                            }
-                                        }
-                                        // Rewrite model field
-                                        obj.insert(
-                                            "model".to_string(),
-                                            serde_json::Value::String(original_model.clone()),
-                                        );
-                                    }
-                                }
-
-                                if let Ok(rewritten_json) = serde_json::to_string(&json_obj) {
-                                    rewritten_lines.push(format!("data: {}", rewritten_json));
-                                    continue;
                                 }
                             }
                         }
-                        rewritten_lines.push(line.to_string());
                     }
+                    
+                    // Return original bytes without any modification!
+                    Some(Ok::<Vec<u8>, std::io::Error>(bytes.to_vec()))
 
-                    let rewritten_chunk = rewritten_lines.join("\n");
-                    Some(Ok::<Vec<u8>, std::io::Error>(rewritten_chunk.into_bytes()))
                 }
                 Err(e) => {
                     tracing::error!("Stream error: {}", e);

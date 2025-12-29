@@ -19,8 +19,28 @@ use std::net::SocketAddr;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Detect optimal worker threads from environment or cgroup
+    let worker_threads = std::env::var("TOKIO_WORKER_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            // Try to detect CPU limit from cgroup
+            detect_cpu_limit().unwrap_or(1)
+        });
+
+    println!("Tokio runtime: using {} worker threads", worker_threads);
+
+    // Build custom Tokio runtime with explicit thread count
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::registry()
         .with(
@@ -69,15 +89,19 @@ async fn main() -> Result<()> {
     }
 
     // Create shared HTTP client with connection pooling
+    // Increased limits to support high concurrency for the same model
     let http_client = reqwest::Client::builder()
         .danger_accept_invalid_certs(!config.verify_ssl)
         .timeout(std::time::Duration::from_secs(config.request_timeout_secs))
-        .pool_max_idle_per_host(20)
-        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .pool_max_idle_per_host(100)  // Increased from 20 to 100
+        .pool_idle_timeout(std::time::Duration::from_secs(90))  // Increased from 30s to 90s
+        .tcp_keepalive(std::time::Duration::from_secs(60))  // Enable TCP keepalive
+        .http2_keep_alive_interval(std::time::Duration::from_secs(30))  // HTTP/2 keepalive
+        .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
         .build()
         .expect("Failed to build HTTP client");
 
-    tracing::info!("HTTP client initialized with connection pooling (max_idle=20, timeout=30s)");
+    tracing::info!("HTTP client initialized with high-concurrency connection pooling (max_idle=100, timeout=90s)");
 
     // Create shared state
     let state = std::sync::Arc::new(AppState {
@@ -127,4 +151,42 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Detect CPU limit from cgroup (for containerized environments)
+fn detect_cpu_limit() -> Option<usize> {
+    // Try cgroup v2 first
+    if let Ok(max) = std::fs::read_to_string("/sys/fs/cgroup/cpu.max") {
+        let parts: Vec<&str> = max.trim().split_whitespace().collect();
+        if parts.len() == 2 {
+            if let (Ok(quota), Ok(period)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
+                if quota > 0 {
+                    let cores = ((quota as f64 / period as f64).ceil() as usize).max(1);
+                    println!("Detected CPU limit from cgroup v2: {} cores", cores);
+                    return Some(cores);
+                }
+            }
+        }
+    }
+
+    // Fallback to cgroup v1
+    let quota = std::fs::read_to_string("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+        .ok()?
+        .trim()
+        .parse::<i64>()
+        .ok()?;
+
+    let period = std::fs::read_to_string("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+        .ok()?
+        .trim()
+        .parse::<i64>()
+        .ok()?;
+
+    if quota > 0 {
+        let cores = ((quota as f64 / period as f64).ceil() as usize).max(1);
+        println!("Detected CPU limit from cgroup v1: {} cores", cores);
+        Some(cores)
+    } else {
+        None
+    }
 }
