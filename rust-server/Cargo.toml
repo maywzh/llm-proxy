@@ -78,6 +78,9 @@ pretty_assertions = "1.4"
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }
 
+# Profiling
+pprof = { version = "0.13", features = ["flamegraph", "criterion"] }
+
 # Coverage
 # Run with: cargo tarpaulin --out Html --output-dir coverage
 # Install with: cargo install cargo-tarpaulin
