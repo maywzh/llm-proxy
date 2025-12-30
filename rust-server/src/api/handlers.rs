@@ -5,7 +5,7 @@
 
 use crate::api::models::*;
 use crate::api::streaming::{
-    calculate_message_tokens, create_sse_stream, rewrite_model_in_response, TokenCounter,
+    calculate_message_tokens, create_sse_stream, rewrite_model_in_response,
 };
 use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
@@ -255,16 +255,12 @@ pub async fn chat_completions(
 
                     let mut final_response = if is_stream {
                         // For streaming, response is already checked for errors above
-                        // Calculate input tokens for fallback if available
-                        let token_counter = prompt_tokens_for_fallback.map(TokenCounter::new);
-
-                        // Create SSE stream with token counter
-                        // The stream will handle token counting synchronously during streaming
+                        // Pass input tokens for fallback calculation
                         let sse_stream = create_sse_stream(
                             response,
                             model_label.clone(),
                             provider.name.clone(),
-                            token_counter,
+                            prompt_tokens_for_fallback,
                         )
                         .await;
 
