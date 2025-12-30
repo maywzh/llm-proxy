@@ -7,37 +7,81 @@ use crate::api::models::Usage;
 use crate::core::metrics::get_metrics;
 use axum::body::Body;
 use axum::response::Response as AxumResponse;
-use futures::stream::StreamExt;
+use bytes::Bytes;
+use futures::stream::{Stream, StreamExt};
 use reqwest::Response;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-/// Token counter for fallback calculation and performance tracking
-#[derive(Clone)]
-pub struct TokenCounter {
-    pub input_tokens: usize,
-    pub output_tokens: Arc<Mutex<usize>>,
-    pub usage_found: Arc<Mutex<bool>>,
-    pub start_time: Instant,
-    pub first_token_time: Arc<Mutex<Option<Instant>>>,
-    pub provider_first_token_time: Arc<Mutex<Option<Instant>>>,
+// Global cache for BPE encoders to avoid repeated initialization
+lazy_static::lazy_static! {
+    static ref BPE_CACHE: RwLock<HashMap<String, Arc<tiktoken_rs::CoreBPE>>> = RwLock::new(HashMap::new());
 }
 
-impl TokenCounter {
-    pub fn new(input_tokens: usize) -> Self {
+/// Get or create a cached BPE encoder for the given model
+fn get_cached_bpe(model: &str) -> Option<Arc<tiktoken_rs::CoreBPE>> {
+    // Try to read from cache first (fast path)
+    {
+        let cache = BPE_CACHE.read().ok()?;
+        if let Some(bpe) = cache.get(model) {
+            return Some(Arc::clone(bpe));
+        }
+    }
+    
+    // Cache miss - create new encoder
+    let bpe = tiktoken_rs::get_bpe_from_model(model)
+        .or_else(|_| tiktoken_rs::cl100k_base())
+        .ok()?;
+    
+    let bpe_arc = Arc::new(bpe);
+    
+    // Store in cache
+    if let Ok(mut cache) = BPE_CACHE.write() {
+        cache.insert(model.to_string(), Arc::clone(&bpe_arc));
+    }
+    
+    Some(bpe_arc)
+}
+
+/// Stream state for token counting - NO synchronization needed!
+/// Each stream has its own state, processed sequentially
+struct StreamState {
+    stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+    output_tokens: usize,
+    usage_found: bool,
+    start_time: Instant,
+    first_token_time: Option<Instant>,
+    provider_first_token_time: Option<Instant>,
+    input_tokens: usize,
+    original_model: String,
+    provider_name: String,
+}
+
+impl StreamState {
+    fn new(
+        stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+        input_tokens: usize,
+        original_model: String,
+        provider_name: String,
+    ) -> Self {
         Self {
-            input_tokens,
-            output_tokens: Arc::new(Mutex::new(0)),
-            usage_found: Arc::new(Mutex::new(false)),
+            stream: Box::pin(stream),
+            output_tokens: 0,
+            usage_found: false,
             start_time: Instant::now(),
-            first_token_time: Arc::new(Mutex::new(None)),
-            provider_first_token_time: Arc::new(Mutex::new(None)),
+            first_token_time: None,
+            provider_first_token_time: None,
+            input_tokens,
+            original_model,
+            provider_name,
         }
     }
 }
 
-/// Calculate tokens for messages using tiktoken
+/// Calculate tokens for messages using tiktoken with caching
 pub fn calculate_message_tokens(messages: &[Value], model: &str) -> usize {
     fn count_with_encoder(messages: &[Value], encoder: &tiktoken_rs::CoreBPE) -> usize {
         let mut total_tokens = 0;
@@ -74,233 +118,206 @@ pub fn calculate_message_tokens(messages: &[Value], model: &str) -> usize {
         total_tokens + 2
     }
 
-    match tiktoken_rs::get_bpe_from_model(model) {
-        Ok(bpe) => count_with_encoder(messages, &bpe),
-        Err(_) => {
-            if let Ok(bpe) = tiktoken_rs::cl100k_base() {
-                count_with_encoder(messages, &bpe)
-            } else {
-                0
-            }
-        }
+    // Use cached encoder
+    if let Some(bpe) = get_cached_bpe(model) {
+        count_with_encoder(messages, &bpe)
+    } else {
+        0
     }
 }
 
-/// Count tokens in text
+/// Count tokens in text using cached encoder
 pub fn count_tokens(text: &str, model: &str) -> usize {
-    match tiktoken_rs::get_bpe_from_model(model) {
-        Ok(bpe) => bpe.encode_with_special_tokens(text).len(),
-        Err(_) => {
-            // Fallback to cl100k_base
-            tiktoken_rs::cl100k_base()
-                .map(|bpe| bpe.encode_with_special_tokens(text).len())
-                .unwrap_or(0)
-        }
+    if let Some(bpe) = get_cached_bpe(model) {
+        bpe.encode_with_special_tokens(text).len()
+    } else {
+        0
     }
 }
 
 /// Create an SSE stream from a provider response with token counting.
 ///
-/// This function:
-/// - Converts the provider's byte stream to raw SSE format
-/// - Rewrites model names to match the original request
-/// - Tracks token usage from streaming responses
-/// - Accumulates output tokens for fallback calculation (synchronously)
-/// - Maintains OpenAI-compatible SSE format (data: prefix, double newlines, [DONE] message)
+/// This function uses `unfold` to maintain state sequentially - NO synchronization needed!
+/// Each stream processes chunks sequentially, so state is local and lock-free.
 ///
 /// # Arguments
 ///
 /// * `response` - HTTP response from the provider
 /// * `original_model` - Model name from the original request
 /// * `provider_name` - Name of the provider for metrics
-/// * `token_counter` - Optional token counter for fallback calculation
+/// * `input_tokens` - Optional input token count for fallback calculation
 pub async fn create_sse_stream(
     response: Response,
     original_model: String,
     provider_name: String,
-    token_counter: Option<TokenCounter>,
+    input_tokens: Option<usize>,
 ) -> AxumResponse {
     let stream = response.bytes_stream();
     
-    // Track if this is the last chunk to record fallback tokens synchronously
-    let token_counter_for_final = token_counter.clone();
-    let model_for_final = original_model.clone();
-    let provider_for_final = provider_name.clone();
+    // Create initial state - all local, no Arc/Atomic needed!
+    let initial_state = StreamState::new(
+        stream,
+        input_tokens.unwrap_or(0),
+        original_model,
+        provider_name,
+    );
 
-    let byte_stream = stream.filter_map(move |chunk_result| {
-        let original_model = original_model.clone();
-        let provider_name = provider_name.clone();
-        let token_counter = token_counter.clone();
-
-        async move {
-            match chunk_result {
-                Ok(bytes) => {
-                    // Check if we need token counting
-                    let needs_token_count = token_counter.as_ref()
-                        .map(|c| !*c.usage_found.lock().unwrap())
-                        .unwrap_or(false);
-                    
-                    // Ultra-fast path: If no token counting needed, pass through directly!
-                    if !needs_token_count {
-                        return Some(Ok::<Vec<u8>, std::io::Error>(bytes.to_vec()));
+    // Use unfold to process stream with sequential state updates
+    let byte_stream = futures::stream::unfold(initial_state, |mut state| async move {
+        match state.stream.next().await {
+            Some(Ok(bytes)) => {
+                // Fast path: if usage already found, just pass through
+                if state.usage_found {
+                    return Some((Ok::<Vec<u8>, std::io::Error>(bytes.to_vec()), state));
+                }
+                
+                // Fast check: Does this chunk contain SSE data?
+                let has_data_line = bytes.windows(6).any(|w| w == b"data: ");
+                if !has_data_line {
+                    return Some((Ok(bytes.to_vec()), state));
+                }
+                
+                // Parse and process chunk
+                let chunk_str = String::from_utf8_lossy(&bytes);
+                
+                for line in chunk_str.split('\n') {
+                    if !line.starts_with("data: ") || line == "data: [DONE]" {
+                        continue;
                     }
                     
-                    // Only parse for token counting when needed
-                    let chunk_str = String::from_utf8_lossy(&bytes);
+                    let json_str = line[6..].trim();
+                    if json_str.is_empty() || !json_str.ends_with('}') {
+                        continue;
+                    }
                     
-                    for line in chunk_str.split('\n') {
-                        if line.starts_with("data: ") && line != "data: [DONE]" {
-                            let json_str = line[6..].trim();
-                            if json_str.is_empty() || !json_str.ends_with('}') {
-                                continue;
+                    if let Ok(json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        // Check for usage first
+                        if let Some(usage_value) = json_obj.get("usage") {
+                            if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
+                                record_token_usage(&usage, &state.original_model, &state.provider_name);
+                                state.usage_found = true;
+                                break;
                             }
-                            
-                            if let Ok(json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                // Check for usage
-                                if let Some(usage_value) = json_obj.get("usage") {
-                                    if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
-                                        record_token_usage(&usage, &original_model, &provider_name);
-                                        if let Some(ref counter) = token_counter {
-                                            *counter.usage_found.lock().unwrap() = true;
-                                        }
-                                    }
+                        }
+                        
+                        // Token counting - direct state modification, no locks!
+                        if !state.usage_found {
+                            let contents = extract_stream_text(&json_obj);
+                            if !contents.is_empty() {
+                                let now = Instant::now();
+                                
+                                // Record provider TTFT
+                                if state.provider_first_token_time.is_none() {
+                                    state.provider_first_token_time = Some(now);
+                                    let provider_ttft = (now - state.start_time).as_secs_f64();
+                                    let metrics = get_metrics();
+                                    metrics.ttft.with_label_values(&["provider", &state.original_model, &state.provider_name]).observe(provider_ttft);
+                                    
+                                    tracing::debug!(
+                                        "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
+                                        state.original_model,
+                                        state.provider_name,
+                                        provider_ttft
+                                    );
                                 }
                                 
-                                // Token counting
-                                if let Some(ref counter) = token_counter {
-                                    if !*counter.usage_found.lock().unwrap() {
-                                        let contents = extract_stream_text(&json_obj);
-                                        if !contents.is_empty() {
-                                            let now = Instant::now();
-                                            
-                                            let mut provider_first_token_guard = counter.provider_first_token_time.lock().unwrap();
-                                            if provider_first_token_guard.is_none() {
-                                                *provider_first_token_guard = Some(now);
-                                                let provider_ttft = (now - counter.start_time).as_secs_f64();
-                                                let metrics = get_metrics();
-                                                metrics.ttft.with_label_values(&["provider", &original_model, &provider_name]).observe(provider_ttft);
-                                                
-                                                tracing::debug!(
-                                                    "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
-                                                    original_model,
-                                                    provider_name,
-                                                    provider_ttft
-                                                );
-                                            }
-                                            
-                                            let mut first_token_guard = counter.first_token_time.lock().unwrap();
-                                            if first_token_guard.is_none() {
-                                                *first_token_guard = Some(now);
-                                                let proxy_ttft = (now - counter.start_time).as_secs_f64();
-                                                let metrics = get_metrics();
-                                                metrics.ttft.with_label_values(&["proxy", &original_model, &provider_name]).observe(proxy_ttft);
-                                                
-                                                tracing::debug!(
-                                                    "Proxy TTFT recorded - model={} provider={} ttft={:.3}s",
-                                                    original_model,
-                                                    provider_name,
-                                                    proxy_ttft
-                                                );
-                                            }
-                                            
-                                            let mut output_guard = counter.output_tokens.lock().unwrap();
-                                            for content in contents {
-                                                *output_guard += count_tokens(&content, &original_model);
-                                            }
-                                        }
-                                    }
+                                // Record proxy TTFT
+                                if state.first_token_time.is_none() {
+                                    state.first_token_time = Some(now);
+                                    let proxy_ttft = (now - state.start_time).as_secs_f64();
+                                    let metrics = get_metrics();
+                                    metrics.ttft.with_label_values(&["proxy", &state.original_model, &state.provider_name]).observe(proxy_ttft);
+                                    
+                                    tracing::debug!(
+                                        "Proxy TTFT recorded - model={} provider={} ttft={:.3}s",
+                                        state.original_model,
+                                        state.provider_name,
+                                        proxy_ttft
+                                    );
+                                }
+                                
+                                // Accumulate tokens - simple addition, no atomics!
+                                for content in contents {
+                                    state.output_tokens += count_tokens(&content, &state.original_model);
                                 }
                             }
                         }
                     }
-                    
-                    // Return original bytes without any modification!
-                    Some(Ok::<Vec<u8>, std::io::Error>(bytes.to_vec()))
-
                 }
-                Err(e) => {
-                    tracing::error!("Stream error: {}", e);
-                    // Send error event to client using SSE format
-                    let error_event = json!({
-                        "error": {
-                            "message": e.to_string(),
-                            "type": "stream_error",
-                            "code": "provider_error"
-                        }
-                    });
-                    let error_message = format!("event: error\ndata: {}\n\n", error_event);
-                    Some(Ok::<Vec<u8>, std::io::Error>(error_message.into_bytes()))
-                }
+                
+                Some((Ok(bytes.to_vec()), state))
             }
-        }
-    });
-
-    // Wrap the stream to record fallback tokens after completion
-    let byte_stream_with_cleanup = futures::stream::StreamExt::chain(
-        byte_stream,
-        futures::stream::once(async move {
-            // Record fallback tokens and TPS synchronously after stream completes
-            if let Some(counter) = token_counter_for_final {
-                if !*counter.usage_found.lock().unwrap() {
-                    let output_tokens = *counter.output_tokens.lock().unwrap();
+            Some(Err(e)) => {
+                tracing::error!("Stream error: {}", e);
+                let error_event = json!({
+                    "error": {
+                        "message": e.to_string(),
+                        "type": "stream_error",
+                        "code": "provider_error"
+                    }
+                });
+                let error_message = format!("event: error\ndata: {}\n\n", error_event);
+                Some((Ok(error_message.into_bytes()), state))
+            }
+            None => {
+                // Stream ended - record fallback tokens if needed
+                if !state.usage_found && state.output_tokens > 0 {
                     record_fallback_token_usage(
-                        counter.input_tokens,
-                        output_tokens,
-                        &model_for_final,
-                        &provider_for_final,
+                        state.input_tokens,
+                        state.output_tokens,
+                        &state.original_model,
+                        &state.provider_name,
                     );
                     
-                    // Calculate and record TPS for both provider and proxy
-                    let total_duration = counter.start_time.elapsed().as_secs_f64();
-                    if total_duration > 0.0 && output_tokens > 0 {
+                    // Calculate and record TPS
+                    let total_duration = state.start_time.elapsed().as_secs_f64();
+                    if total_duration > 0.0 {
                         let metrics = get_metrics();
                         
-                        // Provider TPS (from provider's first token to last token)
-                        if let Some(provider_first_time) = *counter.provider_first_token_time.lock().unwrap() {
+                        // Provider TPS
+                        if let Some(provider_first_time) = state.provider_first_token_time {
                             let provider_duration = provider_first_time.elapsed().as_secs_f64();
                             if provider_duration > 0.0 {
-                                let provider_tps = output_tokens as f64 / provider_duration;
+                                let provider_tps = state.output_tokens as f64 / provider_duration;
                                 metrics
                                     .tokens_per_second
-                                    .with_label_values(&["provider", &model_for_final, &provider_for_final])
+                                    .with_label_values(&["provider", &state.original_model, &state.provider_name])
                                     .observe(provider_tps);
                                 
                                 tracing::info!(
                                     "Provider TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
-                                    model_for_final,
-                                    provider_for_final,
-                                    output_tokens,
+                                    state.original_model,
+                                    state.provider_name,
+                                    state.output_tokens,
                                     provider_duration,
                                     provider_tps
                                 );
                             }
                         }
                         
-                        // Proxy TPS (end-to-end from client request to last token)
-                        let proxy_tps = output_tokens as f64 / total_duration;
+                        // Proxy TPS
+                        let proxy_tps = state.output_tokens as f64 / total_duration;
                         metrics
                             .tokens_per_second
-                            .with_label_values(&["proxy", &model_for_final, &provider_for_final])
+                            .with_label_values(&["proxy", &state.original_model, &state.provider_name])
                             .observe(proxy_tps);
                         
                         tracing::info!(
                             "Proxy TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
-                            model_for_final,
-                            provider_for_final,
-                            output_tokens,
+                            state.original_model,
+                            state.provider_name,
+                            state.output_tokens,
                             total_duration,
                             proxy_tps
                         );
                     }
                 }
+                None
             }
-            // Return empty chunk to signal end
-            Ok::<Vec<u8>, std::io::Error>(vec![])
-        }),
-    );
+        }
+    });
 
-    // Convert to Body and create response with proper SSE headers
-    let body = Body::from_stream(byte_stream_with_cleanup);
+    let body = Body::from_stream(byte_stream);
 
     AxumResponse::builder()
         .status(200)
@@ -474,15 +491,20 @@ mod tests {
     }
 
     #[test]
-    fn test_token_counter() {
-        let counter = TokenCounter::new(100);
-        assert_eq!(counter.input_tokens, 100);
-        assert_eq!(*counter.output_tokens.lock().unwrap(), 0);
-        assert_eq!(*counter.usage_found.lock().unwrap(), false);
-        assert!(counter.first_token_time.lock().unwrap().is_none());
-        assert!(counter.provider_first_token_time.lock().unwrap().is_none());
-
-        *counter.output_tokens.lock().unwrap() = 50;
-        assert_eq!(*counter.output_tokens.lock().unwrap(), 50);
+    fn test_stream_state_creation() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        let state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            "test-provider".to_string(),
+        );
+        
+        assert_eq!(state.input_tokens, 100);
+        assert_eq!(state.output_tokens, 0);
+        assert_eq!(state.usage_found, false);
+        assert!(state.first_token_time.is_none());
+        assert!(state.provider_first_token_time.is_none());
     }
 }
