@@ -128,51 +128,6 @@ pub struct ModelList {
     pub data: Vec<ModelInfo>,
 }
 
-/// Basic health check response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealthResponse {
-    pub status: String,
-    pub providers: usize,
-    pub provider_info: Vec<ProviderInfo>,
-}
-
-/// Provider information in health response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderInfo {
-    pub name: String,
-    pub weight: u32,
-    pub probability: String,
-}
-
-/// Detailed health check response with provider status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DetailedHealthResponse {
-    #[serde(flatten)]
-    pub providers: HashMap<String, ProviderHealth>,
-}
-
-/// Health status for a single provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderHealth {
-    pub status: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-
-    pub models: Vec<ModelHealth>,
-}
-
-/// Health status for a single model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelHealth {
-    pub model: String,
-    pub status: String,
-    pub latency: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,55 +297,6 @@ mod tests {
     }
 
     #[test]
-    fn test_health_response() {
-        let response = HealthResponse {
-            status: "ok".to_string(),
-            providers: 2,
-            provider_info: vec![ProviderInfo {
-                name: "Provider1".to_string(),
-                weight: 2,
-                probability: "66.7%".to_string(),
-            }],
-        };
-
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"status\":\"ok\""));
-        assert!(json.contains("\"providers\":2"));
-    }
-
-    #[test]
-    fn test_provider_health() {
-        let health = ProviderHealth {
-            status: "ok".to_string(),
-            error: None,
-            models: vec![ModelHealth {
-                model: "gpt-4".to_string(),
-                status: "ok".to_string(),
-                latency: "100ms".to_string(),
-                error: None,
-            }],
-        };
-
-        let json = serde_json::to_string(&health).unwrap();
-        assert!(json.contains("\"status\":\"ok\""));
-        assert!(json.contains("\"models\""));
-        assert!(!json.contains("\"error\""));
-    }
-
-    #[test]
-    fn test_provider_health_with_error() {
-        let health = ProviderHealth {
-            status: "error".to_string(),
-            error: Some("Connection refused".to_string()),
-            models: vec![],
-        };
-
-        let json = serde_json::to_string(&health).unwrap();
-        assert!(json.contains("\"status\":\"error\""));
-        assert!(json.contains("\"error\":\"Connection refused\""));
-    }
-
-    #[test]
     fn test_provider_clone() {
         let provider = Provider {
             name: "Test".to_string(),
@@ -404,32 +310,6 @@ mod tests {
         assert_eq!(cloned.name, provider.name);
         assert_eq!(cloned.api_base, provider.api_base);
         assert_eq!(cloned.weight, provider.weight);
-    }
-
-    #[test]
-    fn test_detailed_health_response_flatten() {
-        let mut providers = HashMap::new();
-        providers.insert(
-            "provider1".to_string(),
-            ProviderHealth {
-                status: "ok".to_string(),
-                error: None,
-                models: vec![ModelHealth {
-                    model: "gpt-4".to_string(),
-                    status: "ok".to_string(),
-                    latency: "100ms".to_string(),
-                    error: None,
-                }],
-            },
-        );
-
-        let response = DetailedHealthResponse { providers };
-        let json = serde_json::to_string(&response).unwrap();
-
-        // With flatten, provider name should be at top level
-        assert!(json.contains("\"provider1\""));
-        assert!(json.contains("\"status\":\"ok\""));
-        assert!(json.contains("\"models\""));
     }
 
     #[test]

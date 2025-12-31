@@ -1,7 +1,7 @@
 //! HTTP request handlers for the LLM proxy API.
 //!
 //! This module contains all endpoint handlers including chat completions,
-//! health checks, model listings, and metrics.
+//! model listings, and metrics.
 
 use crate::api::models::*;
 use crate::api::streaming::{
@@ -21,7 +21,6 @@ use axum::{
 use prometheus::{Encoder, TextEncoder};
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Instant;
 
 /// Shared application state.
 #[derive(Clone)]
@@ -513,189 +512,6 @@ pub async fn list_models(
             }))
         })
         .await
-}
-
-/// Basic health check endpoint.
-#[tracing::instrument(skip(state))]
-pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let request_id = generate_request_id();
-
-    REQUEST_ID
-        .scope(request_id.clone(), async move {
-            tracing::debug!(
-                request_id = %request_id,
-                "Health check requested"
-            );
-
-            let providers = state.provider_service.get_all_providers();
-            let weights = state.provider_service.get_provider_weights();
-            let total_weight: u32 = weights.iter().sum();
-
-            let provider_info = providers
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    let weight = weights[i];
-                    let probability = (weight as f64 / total_weight as f64) * 100.0;
-                    ProviderInfo {
-                        name: p.name.clone(),
-                        weight,
-                        probability: format!("{:.1}%", probability),
-                    }
-                })
-                .collect();
-
-            Json(HealthResponse {
-                status: "ok".to_string(),
-                providers: providers.len(),
-                provider_info,
-            })
-        })
-        .await
-}
-
-/// Detailed health check with provider testing.
-/// Tests all providers concurrently, but models serially within each provider.
-#[tracing::instrument(skip(state))]
-pub async fn health_detailed(State(state): State<Arc<AppState>>) -> Json<DetailedHealthResponse> {
-    let request_id = generate_request_id();
-
-    REQUEST_ID
-        .scope(request_id.clone(), async move {
-            tracing::debug!(
-                request_id = %request_id,
-                "Detailed health check requested"
-            );
-
-            let providers = state.provider_service.get_all_providers();
-
-            // Test all providers concurrently
-            let tasks: Vec<_> = providers
-                .into_iter()
-                .map(|provider| {
-                    let config = state.config.clone();
-                    async move { test_provider(provider, config).await }
-                })
-                .collect();
-
-            let results = futures::future::join_all(tasks).await;
-
-            let mut providers_map = std::collections::HashMap::new();
-            for (name, health) in results {
-                providers_map.insert(name, health);
-            }
-
-            Json(DetailedHealthResponse {
-                providers: providers_map,
-            })
-        })
-        .await
-}
-
-/// Test a single provider by checking all its models serially.
-#[tracing::instrument(
-    skip(provider, config),
-    fields(
-        provider_name = %provider.name,
-        models_count = provider.model_mapping.len(),
-    )
-)]
-async fn test_provider(
-    provider: crate::api::models::Provider,
-    config: crate::core::config::AppConfig,
-) -> (String, crate::api::models::ProviderHealth) {
-    use crate::api::models::{ModelHealth, ProviderHealth};
-
-    if provider.model_mapping.is_empty() {
-        return (
-            provider.name.clone(),
-            ProviderHealth {
-                status: "error".to_string(),
-                error: Some("no models configured".to_string()),
-                models: vec![],
-            },
-        );
-    }
-
-    // Create a dedicated client for health checks with shorter timeout
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(!config.verify_ssl)
-        .timeout(std::time::Duration::from_secs(30))
-        .pool_max_idle_per_host(5)
-        .pool_idle_timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap();
-
-    let mut model_results = Vec::new();
-
-    // Test models serially within this provider
-    for (model_name, actual_model) in &provider.model_mapping {
-        let start = Instant::now();
-
-        let test_payload = serde_json::json!({
-            "model": actual_model,
-            "messages": [{"role": "user", "content": "Hi"}],
-            "max_tokens": 10
-        });
-
-        match client
-            .post(format!("{}/chat/completions", provider.api_base))
-            .header("Authorization", format!("Bearer {}", provider.api_key))
-            .header("Content-Type", "application/json")
-            .json(&test_payload)
-            .send()
-            .await
-        {
-            Ok(response) => {
-                let latency_ms = start.elapsed().as_millis();
-                if response.status().is_success() {
-                    model_results.push(ModelHealth {
-                        model: model_name.clone(),
-                        status: "ok".to_string(),
-                        latency: format!("{}ms", latency_ms),
-                        error: None,
-                    });
-                } else {
-                    model_results.push(ModelHealth {
-                        model: model_name.clone(),
-                        status: "error".to_string(),
-                        latency: format!("{}ms", latency_ms),
-                        error: Some(format!("HTTP {}", response.status())),
-                    });
-                }
-            }
-            Err(e) => {
-                let latency_ms = start.elapsed().as_millis();
-                model_results.push(ModelHealth {
-                    model: model_name.clone(),
-                    status: "error".to_string(),
-                    latency: format!("{}ms", latency_ms),
-                    error: Some(e.to_string().chars().take(100).collect()),
-                });
-            }
-        }
-    }
-
-    // Determine overall provider status
-    let all_ok = model_results.iter().all(|m| m.status == "ok");
-    let any_ok = model_results.iter().any(|m| m.status == "ok");
-
-    let provider_status = if all_ok {
-        "ok"
-    } else if any_ok {
-        "partial"
-    } else {
-        "error"
-    };
-
-    (
-        provider.name.clone(),
-        ProviderHealth {
-            status: provider_status.to_string(),
-            error: None,
-            models: model_results,
-        },
-    )
 }
 
 /// Prometheus metrics endpoint.

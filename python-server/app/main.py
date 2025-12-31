@@ -2,7 +2,7 @@
 import urllib3
 from fastapi import FastAPI
 
-from app.api.router import api_router, health_router, metrics_router
+from app.api.router import api_router, metrics_router
 from app.services.provider_service import get_provider_service
 from app.core.config import get_config
 from app.core.http_client import get_http_client, close_http_client
@@ -31,7 +31,6 @@ def create_app() -> FastAPI:
     
     # Include routers
     app.include_router(api_router)
-    app.include_router(health_router)
     app.include_router(metrics_router)
     
     @app.on_event("startup")
