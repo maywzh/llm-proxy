@@ -9,7 +9,7 @@ use axum::{
 };
 use llm_proxy_rust::{
     api::{
-        chat_completions, completions, health, health_detailed, list_models, metrics_handler,
+        chat_completions, completions, list_models, metrics_handler,
         AppState,
     },
     core::{init_metrics, AppConfig, MetricsMiddleware, RateLimiter},
@@ -117,9 +117,6 @@ async fn async_main() -> Result<()> {
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
         .route("/v1/models", get(list_models))
-        // Health routes
-        .route("/health", get(health))
-        .route("/health/detailed", get(health_detailed))
         // Metrics route
         .route("/metrics", get(metrics_handler))
         .layer(CorsLayer::permissive())

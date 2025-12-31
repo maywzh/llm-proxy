@@ -14,7 +14,7 @@ use axum::{
 };
 use llm_proxy_rust::{
     api::{
-        chat_completions, completions, health, health_detailed, list_models, metrics_handler,
+        chat_completions, completions, list_models, metrics_handler,
         AppState,
     },
     core::{init_metrics, AppConfig, MetricsMiddleware},
@@ -57,8 +57,6 @@ fn create_test_app(config: AppConfig) -> Router {
         )
         .route("/v1/completions", axum::routing::post(completions))
         .route("/v1/models", axum::routing::get(list_models))
-        .route("/health", axum::routing::get(health))
-        .route("/health/detailed", axum::routing::get(health_detailed))
         .route("/metrics", axum::routing::get(metrics_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -126,58 +124,6 @@ fn create_test_config_with_auth() -> AppConfig {
 }
 
 #[tokio::test]
-async fn test_health_endpoint() {
-    let app = create_test_app(create_test_config_no_auth());
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/health")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    assert_eq!(json["status"], "ok");
-    assert_eq!(json["providers"], 2);
-    assert!(json["provider_info"].is_array());
-}
-
-#[tokio::test]
-async fn test_health_detailed_endpoint() {
-    let app = create_test_app(create_test_config_no_auth());
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/health/detailed")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    assert!(json.is_object());
-    assert!(json.get("TestProvider1").is_some());
-    assert!(json.get("TestProvider2").is_some());
-}
-
-#[tokio::test]
 async fn test_list_models_endpoint() {
     let app = create_test_app(create_test_config_no_auth());
 
@@ -222,7 +168,7 @@ async fn test_metrics_endpoint() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/health")
+                .uri("/v1/models")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -342,7 +288,7 @@ async fn test_cors_headers() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/health")
+                .uri("/v1/models")
                 .header("Origin", "http://example.com")
                 .body(Body::empty())
                 .unwrap(),
@@ -386,7 +332,7 @@ async fn test_concurrent_requests() {
             let response = app_clone
                 .oneshot(
                     Request::builder()
-                        .uri("/health")
+                        .uri("/v1/models")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -401,35 +347,6 @@ async fn test_concurrent_requests() {
     for handle in handles {
         handle.await.unwrap();
     }
-}
-
-#[tokio::test]
-async fn test_health_endpoint_provider_info() {
-    let app = create_test_app(create_test_config_no_auth());
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/health")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-    let provider_info = json["provider_info"].as_array().unwrap();
-    assert_eq!(provider_info.len(), 2);
-
-    // Check provider weights and probabilities
-    let provider1 = &provider_info[0];
-    assert_eq!(provider1["name"], "TestProvider1");
-    assert_eq!(provider1["weight"], 2);
-    assert!(provider1["probability"].as_str().unwrap().contains("%"));
 }
 
 #[tokio::test]
@@ -501,7 +418,7 @@ async fn test_multiple_sequential_requests() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/health")
+                    .uri("/v1/models")
                     .body(Body::empty())
                     .unwrap(),
             )
