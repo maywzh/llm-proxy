@@ -9,10 +9,10 @@ pub mod streaming;
 
 // Re-export commonly used types
 pub use handlers::{
-    chat_completions, completions, health, health_detailed, list_models, metrics_handler, AppState,
+    chat_completions, completions, list_models, metrics_handler, AppState,
 };
 pub use models::{
-    ChatCompletionRequest, ChatCompletionResponse, DetailedHealthResponse, HealthResponse,
+    ChatCompletionRequest, ChatCompletionResponse,
     ModelList, Provider,
 };
 pub use streaming::{create_sse_stream, rewrite_model_in_response};

@@ -166,37 +166,43 @@ pub async fn create_sse_stream(
     let byte_stream = futures::stream::unfold(initial_state, |mut state| async move {
         match state.stream.next().await {
             Some(Ok(bytes)) => {
-                // Fast path: if usage already found, just pass through
-                if state.usage_found {
-                    return Some((Ok::<Vec<u8>, std::io::Error>(bytes.to_vec()), state));
-                }
-                
                 // Fast check: Does this chunk contain SSE data?
                 let has_data_line = bytes.windows(6).any(|w| w == b"data: ");
                 if !has_data_line {
-                    return Some((Ok(bytes.to_vec()), state));
+                    return Some((Ok::<Vec<u8>, std::io::Error>(bytes.to_vec()), state));
                 }
                 
-                // Parse and process chunk
+                // Parse and process chunk, rewrite model field
                 let chunk_str = String::from_utf8_lossy(&bytes);
+                let mut rewritten_lines = Vec::new();
+                let mut chunk_modified = false;
                 
                 for line in chunk_str.split('\n') {
                     if !line.starts_with("data: ") || line == "data: [DONE]" {
+                        rewritten_lines.push(line.to_string());
                         continue;
                     }
                     
                     let json_str = line[6..].trim();
                     if json_str.is_empty() || !json_str.ends_with('}') {
+                        rewritten_lines.push(line.to_string());
                         continue;
                     }
                     
-                    if let Ok(json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    if let Ok(mut json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        // Rewrite model field to original model (like Python does)
+                        if json_obj.get("model").is_some() {
+                            json_obj["model"] = serde_json::Value::String(state.original_model.clone());
+                            chunk_modified = true;
+                        }
+                        
                         // Check for usage first
-                        if let Some(usage_value) = json_obj.get("usage") {
-                            if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
-                                record_token_usage(&usage, &state.original_model, &state.provider_name);
-                                state.usage_found = true;
-                                break;
+                        if !state.usage_found {
+                            if let Some(usage_value) = json_obj.get("usage") {
+                                if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
+                                    record_token_usage(&usage, &state.original_model, &state.provider_name);
+                                    state.usage_found = true;
+                                }
                             }
                         }
                         
@@ -242,10 +248,23 @@ pub async fn create_sse_stream(
                                 }
                             }
                         }
+                        
+                        // Rebuild the line with rewritten JSON
+                        let rewritten_json = serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
+                        rewritten_lines.push(format!("data: {}", rewritten_json));
+                    } else {
+                        rewritten_lines.push(line.to_string());
                     }
                 }
                 
-                Some((Ok(bytes.to_vec()), state))
+                // Return rewritten chunk if modified, otherwise original
+                let output = if chunk_modified {
+                    rewritten_lines.join("\n").into_bytes()
+                } else {
+                    bytes.to_vec()
+                };
+                
+                Some((Ok(output), state))
             }
             Some(Err(e)) => {
                 tracing::error!("Stream error: {}", e);
