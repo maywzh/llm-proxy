@@ -5,7 +5,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.metrics import REQUEST_COUNT, REQUEST_DURATION, ACTIVE_REQUESTS
-from app.core.logging import get_logger
+from app.core.logging import get_logger, get_api_key_name
 
 logger = get_logger()
 
@@ -33,8 +33,10 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             duration = time.time() - start_time
             
             # Get model and provider from request state (set by API handlers)
+            # Get api_key_name from context (set by verify_auth dependency)
             model = getattr(request.state, 'model', 'unknown')
             provider = getattr(request.state, 'provider', 'unknown')
+            api_key_name = get_api_key_name()
             status_code = response.status_code
             
             # Record metrics
@@ -43,20 +45,22 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 endpoint=endpoint,
                 model=model,
                 provider=provider,
-                status_code=status_code
+                status_code=status_code,
+                api_key_name=api_key_name
             ).inc()
             
             REQUEST_DURATION.labels(
                 method=method,
                 endpoint=endpoint,
                 model=model,
-                provider=provider
+                provider=provider,
+                api_key_name=api_key_name
             ).observe(duration)
             
             # Log request details
             log_message = f"{method} {endpoint}"
             if endpoint == '/v1/chat/completions':
-                log_message += f" - model={model} provider={provider}"
+                log_message += f" - model={model} provider={provider} key={api_key_name}"
             log_message += f" status={status_code} duration={duration:.3f}s"
             logger.info(log_message)
             
@@ -68,7 +72,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             if endpoint == '/v1/chat/completions':
                 model = getattr(request.state, 'model', 'unknown')
                 provider = getattr(request.state, 'provider', 'unknown')
-                log_message += f" - model={model} provider={provider}"
+                api_key_name = get_api_key_name()
+                log_message += f" - model={model} provider={provider} key={api_key_name}"
             log_message += f" - Error: {type(e).__name__}: {str(e)} duration={duration:.3f}s"
             logger.error(log_message)
             raise

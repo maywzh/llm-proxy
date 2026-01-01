@@ -19,6 +19,14 @@ tokio::task_local! {
     pub static REQUEST_ID: String;
 }
 
+tokio::task_local! {
+    /// Task-local storage for the current API key name.
+    ///
+    /// This allows metrics and logging to include the API key name
+    /// without passing it through every function call.
+    pub static API_KEY_NAME: String;
+}
+
 /// Get the current provider name from context, if set.
 ///
 /// Returns an empty string if no provider context is set.
@@ -33,6 +41,15 @@ pub fn get_provider_context() -> String {
 /// Returns an empty string if no request ID is set.
 pub fn get_request_id() -> String {
     REQUEST_ID.try_with(|id| id.clone()).unwrap_or_default()
+}
+
+/// Get the current API key name from context, if set.
+///
+/// Returns "anonymous" if no API key name is set.
+pub fn get_api_key_name() -> String {
+    API_KEY_NAME
+        .try_with(|name| name.clone())
+        .unwrap_or_else(|_| "anonymous".to_string())
 }
 
 /// Generate a new unique request ID using UUID v4.
@@ -187,6 +204,73 @@ mod tests {
                     .scope(provider.clone(), async {
                         assert_eq!(get_request_id(), "test-request-456");
                         assert_eq!(get_provider_context(), "TestProvider");
+                    })
+                    .await
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_api_key_name_get() {
+        API_KEY_NAME
+            .scope("test-key".to_string(), async {
+                assert_eq!(get_api_key_name(), "test-key");
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_api_key_name_default() {
+        // Test that API key name returns "anonymous" when not set
+        assert_eq!(get_api_key_name(), "anonymous");
+    }
+
+    #[tokio::test]
+    async fn test_api_key_name_isolation() {
+        // Test that API key names are isolated between tasks
+        let task1 = tokio::spawn(async {
+            API_KEY_NAME
+                .scope("key-1".to_string(), async {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    get_api_key_name()
+                })
+                .await
+        });
+
+        let task2 = tokio::spawn(async {
+            API_KEY_NAME
+                .scope("key-2".to_string(), async {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    get_api_key_name()
+                })
+                .await
+        });
+
+        let result1 = task1.await.unwrap();
+        let result2 = task2.await.unwrap();
+
+        assert_eq!(result1, "key-1");
+        assert_eq!(result2, "key-2");
+    }
+
+    #[tokio::test]
+    async fn test_all_contexts_together() {
+        // Test that all three contexts work together
+        let request_id = "test-request-789".to_string();
+        let provider = "TestProvider".to_string();
+        let api_key = "test-api-key".to_string();
+
+        REQUEST_ID
+            .scope(request_id.clone(), async {
+                PROVIDER_CONTEXT
+                    .scope(provider.clone(), async {
+                        API_KEY_NAME
+                            .scope(api_key.clone(), async {
+                                assert_eq!(get_request_id(), "test-request-789");
+                                assert_eq!(get_provider_context(), "TestProvider");
+                                assert_eq!(get_api_key_name(), "test-api-key");
+                            })
+                            .await
                     })
                     .await
             })

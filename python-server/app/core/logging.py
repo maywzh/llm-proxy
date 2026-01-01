@@ -8,6 +8,9 @@ from loguru import logger
 # Context variable to store current provider name
 current_provider: ContextVar[str] = ContextVar('current_provider', default='')
 
+# Context variable to store current API key name for metrics
+current_api_key_name: ContextVar[str] = ContextVar('current_api_key_name', default='anonymous')
+
 
 class InterceptHandler(logging.Handler):
     """Intercept standard logging messages and redirect to loguru"""
@@ -92,6 +95,29 @@ def set_provider_context(provider_name: str) -> None:
 def clear_provider_context() -> None:
     """Clear the provider context"""
     current_provider.set('')
+
+
+def set_api_key_context(api_key_name: str) -> None:
+    """Set the current API key name in context for metrics
+    
+    Args:
+        api_key_name: Name of the API key making the request
+    """
+    current_api_key_name.set(api_key_name)
+
+
+def get_api_key_name() -> str:
+    """Get the current API key name from context
+    
+    Returns:
+        The API key name, or 'anonymous' if not set
+    """
+    return current_api_key_name.get()
+
+
+def clear_api_key_context() -> None:
+    """Clear the API key context"""
+    current_api_key_name.set('anonymous')
 
 
 def get_logger():
