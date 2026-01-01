@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.config import get_config
 from app.core.metrics import TOKEN_USAGE, TTFT, TOKENS_PER_SECOND
-from app.core.logging import set_provider_context, clear_provider_context, get_logger
+from app.core.logging import set_provider_context, clear_provider_context, get_logger, get_api_key_name
 
 
 def count_tokens(text: str, model: str) -> int:
@@ -98,6 +98,7 @@ async def stream_response(
         request_data: Original request data for fallback token counting
     """
     logger = get_logger()
+    api_key_name = get_api_key_name()
     
     # Calculate input tokens for fallback
     input_tokens = 0
@@ -163,27 +164,30 @@ async def stream_response(
                                         TOKEN_USAGE.labels(
                                             model=model_name,
                                             provider=provider_name,
-                                            token_type='prompt'
+                                            token_type='prompt',
+                                            api_key_name=api_key_name
                                         ).inc(usage['prompt_tokens'])
                                     
                                     if 'completion_tokens' in usage:
                                         TOKEN_USAGE.labels(
                                             model=model_name,
                                             provider=provider_name,
-                                            token_type='completion'
+                                            token_type='completion',
+                                            api_key_name=api_key_name
                                         ).inc(usage['completion_tokens'])
                                     
                                     if 'total_tokens' in usage:
                                         TOKEN_USAGE.labels(
                                             model=model_name,
                                             provider=provider_name,
-                                            token_type='total'
+                                            token_type='total',
+                                            api_key_name=api_key_name
                                         ).inc(usage['total_tokens'])
                                     
                                     usage_found = True
                                     logger.debug(
                                         f"Token usage from provider - "
-                                        f"model={model_name} provider={provider_name} "
+                                        f"model={model_name} provider={provider_name} key={api_key_name} "
                                         f"prompt={usage.get('prompt_tokens', 0)} "
                                         f"completion={usage.get('completion_tokens', 0)} "
                                         f"total={usage.get('total_tokens', 0)}"
@@ -249,24 +253,27 @@ async def stream_response(
             TOKEN_USAGE.labels(
                 model=model_name,
                 provider=provider_name,
-                token_type='prompt'
+                token_type='prompt',
+                api_key_name=api_key_name
             ).inc(input_tokens)
             
             TOKEN_USAGE.labels(
                 model=model_name,
                 provider=provider_name,
-                token_type='completion'
+                token_type='completion',
+                api_key_name=api_key_name
             ).inc(output_tokens)
             
             TOKEN_USAGE.labels(
                 model=model_name,
                 provider=provider_name,
-                token_type='total'
+                token_type='total',
+                api_key_name=api_key_name
             ).inc(total_tokens)
             
             logger.info(
                 f"Token usage calculated (fallback) - "
-                f"model={model_name} provider={provider_name} "
+                f"model={model_name} provider={provider_name} key={api_key_name} "
                 f"prompt={input_tokens} completion={output_tokens} total={total_tokens}"
             )
         

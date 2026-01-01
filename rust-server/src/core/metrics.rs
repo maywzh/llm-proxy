@@ -58,14 +58,14 @@ pub fn init_metrics() -> &'static Metrics {
         let request_count = register_int_counter_vec!(
             "llm_proxy_requests_total",
             "Total number of requests",
-            &["method", "endpoint", "model", "provider", "status_code"]
+            &["method", "endpoint", "model", "provider", "status_code", "api_key_name"]
         )
         .expect("Failed to register request_count metric");
 
         let request_duration = register_histogram_vec!(
             "llm_proxy_request_duration_seconds",
             "Request duration in seconds",
-            &["method", "endpoint", "model", "provider"],
+            &["method", "endpoint", "model", "provider", "api_key_name"],
             vec![0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0]
         )
         .expect("Failed to register request_duration metric");
@@ -80,7 +80,7 @@ pub fn init_metrics() -> &'static Metrics {
         let token_usage = register_int_counter_vec!(
             "llm_proxy_tokens_total",
             "Total number of tokens used",
-            &["model", "provider", "token_type"]
+            &["model", "provider", "token_type", "api_key_name"]
         )
         .expect("Failed to register token_usage metric");
 
@@ -148,7 +148,7 @@ mod tests {
         // Test that we can access metrics
         metrics
             .request_count
-            .with_label_values(&["GET", "/test", "model", "provider", "200"])
+            .with_label_values(&["GET", "/test", "model", "provider", "200", "test-key"])
             .inc();
 
         // Verify the same instance is returned
@@ -162,17 +162,17 @@ mod tests {
 
         let initial = metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
             .get();
 
         metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
             .inc();
 
         let after = metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
             .get();
 
         assert_eq!(after, initial + 1);
@@ -184,12 +184,12 @@ mod tests {
 
         metrics
             .request_duration
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "test-key"])
             .observe(1.5);
 
         metrics
             .request_duration
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "test-key"])
             .observe(2.3);
 
         // Verify metric was recorded (count should be 2)
@@ -198,6 +198,7 @@ mod tests {
             "/v1/chat/completions",
             "gpt-4",
             "openai",
+            "test-key",
         ]);
 
         // Just verify we can access it without panicking
@@ -244,17 +245,17 @@ mod tests {
 
         let initial = metrics
             .token_usage
-            .with_label_values(&["gpt-4", "openai", "prompt"])
+            .with_label_values(&["gpt-4", "openai", "prompt", "test-key"])
             .get();
 
         metrics
             .token_usage
-            .with_label_values(&["gpt-4", "openai", "prompt"])
+            .with_label_values(&["gpt-4", "openai", "prompt", "test-key"])
             .inc_by(100);
 
         let after = metrics
             .token_usage
-            .with_label_values(&["gpt-4", "openai", "prompt"])
+            .with_label_values(&["gpt-4", "openai", "prompt", "test-key"])
             .get();
 
         assert_eq!(after, initial + 100);
@@ -309,22 +310,22 @@ mod tests {
 
         metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
             .inc();
 
         metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "anthropic", "200"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "anthropic", "200", "test-key"])
             .inc();
 
         let openai_count = metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
             .get();
 
         let anthropic_count = metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "anthropic", "200"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "anthropic", "200", "test-key"])
             .get();
 
         assert!(openai_count >= 1);
@@ -337,22 +338,22 @@ mod tests {
 
         metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
             .inc();
 
         metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "500"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "500", "test-key"])
             .inc();
 
         let success_count = metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
             .get();
 
         let error_count = metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "500"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "500", "test-key"])
             .get();
 
         assert!(success_count >= 1);

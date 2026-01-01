@@ -39,9 +39,9 @@ def verify_master_key(authorization: Optional[str] = None) -> Tuple[bool, Option
     Verify the master API key and check rate limits
     
     Returns:
-        Tuple[bool, Optional[str]]: (is_valid, key_id)
+        Tuple[bool, Optional[str]]: (is_valid, key_name)
         - is_valid: True if authentication passed and rate limit not exceeded
-        - key_id: The master key ID if found, None otherwise
+        - key_name: The master key name if found, None otherwise (for metrics tracking)
     
     Raises:
         HTTPException: 429 if rate limit exceeded, 401 if authentication failed
@@ -93,4 +93,6 @@ def verify_master_key(authorization: Optional[str] = None) -> Tuple[bool, Option
                 detail="Rate limit exceeded for this master key"
             )
     
-    return True, provided_key
+    # Return key name for metrics tracking (not the key itself for security)
+    key_name = matching_key.name or "unnamed"
+    return True, key_name

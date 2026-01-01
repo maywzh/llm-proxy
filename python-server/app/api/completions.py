@@ -14,7 +14,7 @@ from app.utils.streaming import create_streaming_response, rewrite_model_in_resp
 from app.core.config import get_config
 from app.core.http_client import get_http_client
 from app.core.metrics import TOKEN_USAGE
-from app.core.logging import get_logger, set_provider_context, clear_provider_context
+from app.core.logging import get_logger, set_provider_context, clear_provider_context, get_api_key_name
 
 router = APIRouter()
 logger = get_logger()
@@ -174,30 +174,34 @@ async def proxy_completion_request(
             if 'usage' in response_data:
                 usage = response_data['usage']
                 model_name = original_model or 'unknown'
+                api_key_name = get_api_key_name()
                 
                 if 'prompt_tokens' in usage:
                     TOKEN_USAGE.labels(
                         model=model_name,
                         provider=provider.name,
-                        token_type='prompt'
+                        token_type='prompt',
+                        api_key_name=api_key_name
                     ).inc(usage['prompt_tokens'])
                 
                 if 'completion_tokens' in usage:
                     TOKEN_USAGE.labels(
                         model=model_name,
                         provider=provider.name,
-                        token_type='completion'
+                        token_type='completion',
+                        api_key_name=api_key_name
                     ).inc(usage['completion_tokens'])
                 
                 if 'total_tokens' in usage:
                     TOKEN_USAGE.labels(
                         model=model_name,
                         provider=provider.name,
-                        token_type='total'
+                        token_type='total',
+                        api_key_name=api_key_name
                     ).inc(usage['total_tokens'])
                     
                     logger.debug(
-                        f"Token usage - model={model_name} provider={provider.name} "
+                        f"Token usage - model={model_name} provider={provider.name} key={api_key_name} "
                         f"prompt={usage.get('prompt_tokens', 0)} "
                         f"completion={usage.get('completion_tokens', 0)} "
                         f"total={usage.get('total_tokens', 0)}"

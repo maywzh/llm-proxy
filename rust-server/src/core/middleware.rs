@@ -20,6 +20,10 @@ pub struct ModelName(pub String);
 #[derive(Clone, Debug)]
 pub struct ProviderName(pub String);
 
+/// Extension type for storing API key name in response
+#[derive(Clone, Debug)]
+pub struct ApiKeyName(pub String);
+
 /// Middleware for tracking request metrics.
 pub struct MetricsMiddleware;
 
@@ -66,7 +70,7 @@ impl MetricsMiddleware {
         let duration = start.elapsed().as_secs_f64();
         let status_code = response.status().as_u16().to_string();
 
-        // Get model and provider from response extensions (set by handlers)
+        // Get model, provider, and api_key_name from response extensions (set by handlers)
         let model = response
             .extensions()
             .get::<ModelName>()
@@ -77,26 +81,32 @@ impl MetricsMiddleware {
             .get::<ProviderName>()
             .map(|p| p.0.as_str())
             .unwrap_or("unknown");
+        let api_key_name = response
+            .extensions()
+            .get::<ApiKeyName>()
+            .map(|k| k.0.as_str())
+            .unwrap_or("anonymous");
 
         // Record metrics
         metrics
             .request_count
-            .with_label_values(&[&method, &endpoint, &model, &provider, &status_code])
+            .with_label_values(&[&method, &endpoint, &model, &provider, &status_code, &api_key_name])
             .inc();
 
         metrics
             .request_duration
-            .with_label_values(&[&method, &endpoint, &model, &provider])
+            .with_label_values(&[&method, &endpoint, &model, &provider, &api_key_name])
             .observe(duration);
 
-        // Log request - only show model and provider for /v1/chat/completions
+        // Log request - only show model, provider, and key for /v1/chat/completions
         if endpoint == "/v1/chat/completions" {
             tracing::info!(
-                "{} {} - model={} provider={} status={} duration={:.3}s",
+                "{} {} - model={} provider={} key={} status={} duration={:.3}s",
                 method,
                 endpoint,
                 model,
                 provider,
+                api_key_name,
                 status_code,
                 duration
             );
@@ -264,7 +274,7 @@ mod tests {
         // Verify duration was recorded
         let metric = metrics
             .request_duration
-            .with_label_values(&["GET", "/test", "unknown", "unknown"]);
+            .with_label_values(&["GET", "/test", "unknown", "unknown", "anonymous"]);
 
         assert!(metric.get_sample_count() > 0);
     }
@@ -293,7 +303,7 @@ mod tests {
         // Verify request count was incremented
         let count = metrics
             .request_count
-            .with_label_values(&["GET", "/test", "unknown", "unknown", "404"])
+            .with_label_values(&["GET", "/test", "unknown", "unknown", "404", "anonymous"])
             .get();
 
         assert!(count > 0);
