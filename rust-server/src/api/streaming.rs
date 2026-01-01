@@ -54,7 +54,6 @@ struct StreamState {
     output_tokens: usize,
     usage_found: bool,
     start_time: Instant,
-    first_token_time: Option<Instant>,
     provider_first_token_time: Option<Instant>,
     input_tokens: usize,
     original_model: String,
@@ -75,7 +74,6 @@ impl StreamState {
             output_tokens: 0,
             usage_found: false,
             start_time: Instant::now(),
-            first_token_time: None,
             provider_first_token_time: None,
             input_tokens,
             original_model,
@@ -237,21 +235,6 @@ pub async fn create_sse_stream(
                                     );
                                 }
                                 
-                                // Record proxy TTFT
-                                if state.first_token_time.is_none() {
-                                    state.first_token_time = Some(now);
-                                    let proxy_ttft = (now - state.start_time).as_secs_f64();
-                                    let metrics = get_metrics();
-                                    metrics.ttft.with_label_values(&["proxy", &state.original_model, &state.provider_name]).observe(proxy_ttft);
-                                    
-                                    tracing::debug!(
-                                        "Proxy TTFT recorded - model={} provider={} ttft={:.3}s",
-                                        state.original_model,
-                                        state.provider_name,
-                                        proxy_ttft
-                                    );
-                                }
-                                
                                 // Accumulate tokens - simple addition, no atomics!
                                 for content in contents {
                                     state.output_tokens += count_tokens(&content, &state.original_model);
@@ -324,22 +307,6 @@ pub async fn create_sse_stream(
                                 );
                             }
                         }
-                        
-                        // Proxy TPS
-                        let proxy_tps = state.output_tokens as f64 / total_duration;
-                        metrics
-                            .tokens_per_second
-                            .with_label_values(&["proxy", &state.original_model, &state.provider_name])
-                            .observe(proxy_tps);
-                        
-                        tracing::info!(
-                            "Proxy TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
-                            state.original_model,
-                            state.provider_name,
-                            state.output_tokens,
-                            total_duration,
-                            proxy_tps
-                        );
                     }
                 }
                 None
@@ -538,7 +505,6 @@ mod tests {
         assert_eq!(state.input_tokens, 100);
         assert_eq!(state.output_tokens, 0);
         assert_eq!(state.usage_found, false);
-        assert!(state.first_token_time.is_none());
         assert!(state.provider_first_token_time.is_none());
         assert_eq!(state.api_key_name, "test-key");
     }

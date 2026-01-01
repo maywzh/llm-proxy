@@ -30,11 +30,11 @@ pub struct Metrics {
     pub provider_latency: HistogramVec,
 
     /// Time to first token (TTFT) histogram in seconds for streaming requests
-    /// source: "provider" (upstream) or "proxy" (end-to-end)
+    /// Measures upstream provider latency
     pub ttft: HistogramVec,
 
     /// Tokens per second (TPS) histogram for streaming requests
-    /// source: "provider" (upstream) or "proxy" (end-to-end)
+    /// Measures upstream provider throughput
     pub tokens_per_second: HistogramVec,
 }
 
@@ -101,7 +101,7 @@ pub fn init_metrics() -> &'static Metrics {
 
         let ttft = register_histogram_vec!(
             "llm_proxy_ttft_seconds",
-            "Time to first token (TTFT) in seconds for streaming requests. source=provider measures upstream latency, source=proxy measures end-to-end latency",
+            "Time to first token (TTFT) in seconds for streaming requests (upstream provider latency)",
             &["source", "model", "provider"],
             vec![0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
         )
@@ -109,7 +109,7 @@ pub fn init_metrics() -> &'static Metrics {
 
         let tokens_per_second = register_histogram_vec!(
             "llm_proxy_tokens_per_second",
-            "Tokens generated per second for streaming requests. source=provider measures upstream throughput, source=proxy measures end-to-end throughput",
+            "Tokens generated per second for streaming requests (upstream provider throughput)",
             &["source", "model", "provider"],
             vec![1.0, 5.0, 10.0, 20.0, 30.0, 50.0, 75.0, 100.0, 150.0, 200.0]
         )

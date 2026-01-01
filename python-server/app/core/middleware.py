@@ -5,7 +5,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.metrics import REQUEST_COUNT, REQUEST_DURATION, ACTIVE_REQUESTS
-from app.core.logging import get_logger, get_api_key_name
+from app.core.logging import get_logger, get_api_key_name, clear_api_key_context
 
 logger = get_logger()
 
@@ -81,3 +81,5 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         finally:
             # Decrement active requests
             ACTIVE_REQUESTS.labels(endpoint=endpoint).dec()
+            # Clear API key context to prevent leaking between requests
+            clear_api_key_context()
