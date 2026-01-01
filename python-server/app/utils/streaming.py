@@ -117,7 +117,6 @@ async def stream_response(
     # Performance tracking
     start_time = time.time()
     provider_first_token_time: Optional[float] = None
-    proxy_first_token_time: Optional[float] = None
     token_count = 0
     
     try:
@@ -232,17 +231,6 @@ async def stream_response(
             except Exception as e:
                 logger.debug(f"Failed to count tokens for TPS: {e}")
             
-            # Record proxy TTFT on first token sent to client
-            if proxy_first_token_time is None:
-                proxy_first_token_time = now
-                proxy_ttft = now - start_time
-                TTFT.labels(
-                    source='proxy',
-                    model=original_model or 'unknown',
-                    provider=provider_name
-                ).observe(proxy_ttft)
-                logger.debug(f"Proxy TTFT: {proxy_ttft:.3f}s")
-            
             yield await rewrite_sse_chunk(chunk, original_model)
         
         # If no usage was provided by provider, use calculated values (fallback)
@@ -291,17 +279,6 @@ async def stream_response(
                         provider=provider_name
                     ).observe(provider_tps)
                     logger.debug(f"Provider TPS: {provider_tps:.2f} tokens/s")
-            
-            # Proxy TPS: from request start to completion
-            proxy_duration = end_time - start_time
-            if proxy_duration > 0:
-                proxy_tps = token_count / proxy_duration
-                TOKENS_PER_SECOND.labels(
-                    source='proxy',
-                    model=original_model or 'unknown',
-                    provider=provider_name
-                ).observe(proxy_tps)
-                logger.debug(f"Proxy TPS: {proxy_tps:.2f} tokens/s")
     except httpx.RemoteProtocolError as e:
         # Handle connection closed by remote server during streaming
         logger.error(
