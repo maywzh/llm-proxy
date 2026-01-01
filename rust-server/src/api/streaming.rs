@@ -4,6 +4,7 @@
 //! model name rewriting and token usage tracking.
 
 use crate::api::models::Usage;
+use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
 use axum::body::Body;
 use axum::response::Response as AxumResponse;
@@ -58,6 +59,7 @@ struct StreamState {
     input_tokens: usize,
     original_model: String,
     provider_name: String,
+    api_key_name: String,
 }
 
 impl StreamState {
@@ -66,6 +68,7 @@ impl StreamState {
         input_tokens: usize,
         original_model: String,
         provider_name: String,
+        api_key_name: String,
     ) -> Self {
         Self {
             stream: Box::pin(stream),
@@ -77,6 +80,7 @@ impl StreamState {
             input_tokens,
             original_model,
             provider_name,
+            api_key_name,
         }
     }
 }
@@ -140,6 +144,8 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
 /// This function uses `unfold` to maintain state sequentially - NO synchronization needed!
 /// Each stream processes chunks sequentially, so state is local and lock-free.
 ///
+/// Reads api_key_name from context (set by API_KEY_NAME.scope() in handlers).
+///
 /// # Arguments
 ///
 /// * `response` - HTTP response from the provider
@@ -154,12 +160,16 @@ pub async fn create_sse_stream(
 ) -> AxumResponse {
     let stream = response.bytes_stream();
     
+    // Get api_key_name from context
+    let api_key_name = get_api_key_name();
+    
     // Create initial state - all local, no Arc/Atomic needed!
     let initial_state = StreamState::new(
         stream,
         input_tokens.unwrap_or(0),
         original_model,
         provider_name,
+        api_key_name,
     );
 
     // Use unfold to process stream with sequential state updates
@@ -200,7 +210,7 @@ pub async fn create_sse_stream(
                         if !state.usage_found {
                             if let Some(usage_value) = json_obj.get("usage") {
                                 if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
-                                    record_token_usage(&usage, &state.original_model, &state.provider_name);
+                                    record_token_usage(&usage, &state.original_model, &state.provider_name, &state.api_key_name);
                                     state.usage_found = true;
                                 }
                             }
@@ -286,6 +296,7 @@ pub async fn create_sse_stream(
                         state.output_tokens,
                         &state.original_model,
                         &state.provider_name,
+                        &state.api_key_name,
                     );
                     
                     // Calculate and record TPS
@@ -397,28 +408,29 @@ fn extract_stream_text(chunk_obj: &Value) -> Vec<String> {
 }
 
 /// Record token usage metrics.
-fn record_token_usage(usage: &Usage, model: &str, provider: &str) {
+fn record_token_usage(usage: &Usage, model: &str, provider: &str, api_key_name: &str) {
     let metrics = get_metrics();
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "prompt"])
+        .with_label_values(&[model, provider, "prompt", api_key_name])
         .inc_by(usage.prompt_tokens as u64);
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "completion"])
+        .with_label_values(&[model, provider, "completion", api_key_name])
         .inc_by(usage.completion_tokens as u64);
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "total"])
+        .with_label_values(&[model, provider, "total", api_key_name])
         .inc_by(usage.total_tokens as u64);
 
     tracing::debug!(
-        "Token usage - model={} provider={} prompt={} completion={} total={}",
+        "Token usage - model={} provider={} key={} prompt={} completion={} total={}",
         model,
         provider,
+        api_key_name,
         usage.prompt_tokens,
         usage.completion_tokens,
         usage.total_tokens
@@ -431,29 +443,31 @@ pub fn record_fallback_token_usage(
     output_tokens: usize,
     model: &str,
     provider: &str,
+    api_key_name: &str,
 ) {
     let metrics = get_metrics();
     let total_tokens = input_tokens + output_tokens;
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "prompt"])
+        .with_label_values(&[model, provider, "prompt", api_key_name])
         .inc_by(input_tokens as u64);
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "completion"])
+        .with_label_values(&[model, provider, "completion", api_key_name])
         .inc_by(output_tokens as u64);
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "total"])
+        .with_label_values(&[model, provider, "total", api_key_name])
         .inc_by(total_tokens as u64);
 
     tracing::info!(
-        "Token usage calculated (fallback) - model={} provider={} prompt={} completion={} total={}",
+        "Token usage calculated (fallback) - model={} provider={} key={} prompt={} completion={} total={}",
         model,
         provider,
+        api_key_name,
         input_tokens,
         output_tokens,
         total_tokens
@@ -518,6 +532,7 @@ mod tests {
             100,
             "gpt-3.5-turbo".to_string(),
             "test-provider".to_string(),
+            "test-key".to_string(),
         );
         
         assert_eq!(state.input_tokens, 100);
@@ -525,5 +540,6 @@ mod tests {
         assert_eq!(state.usage_found, false);
         assert!(state.first_token_time.is_none());
         assert!(state.provider_first_token_time.is_none());
+        assert_eq!(state.api_key_name, "test-key");
     }
 }
