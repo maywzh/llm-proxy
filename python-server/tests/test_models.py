@@ -207,10 +207,9 @@ class TestAppConfig:
         assert config.providers[2].name == 'p3'
     
     def test_app_config_empty_providers(self):
-        """Test AppConfig requires at least one provider"""
-        with pytest.raises(ValidationError) as exc_info:
-            AppConfig(providers=[], verify_ssl=True)
-        assert 'providers' in str(exc_info.value)
+        """Test AppConfig allows empty providers (database mode starts empty)"""
+        config = AppConfig(providers=[], verify_ssl=True)
+        assert len(config.providers) == 0
     
     def test_app_config_serialization(self):
         """Test AppConfig serialization"""

@@ -1,25 +1,34 @@
 //! LLM Proxy Server - Main entry point
 //!
 //! This binary creates and runs the HTTP server with all configured routes and middleware.
+//! Configuration is loaded from the database via Admin API.
 
 use anyhow::Result;
 use axum::{
+    response::IntoResponse,
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 use llm_proxy_rust::{
-    api::{
-        chat_completions, completions, list_models, metrics_handler,
-        AppState,
+    admin_router, AdminApiDoc,
+    api::{chat_completions, completions, list_models, metrics_handler, AdminState, AppState},
+    core::{
+        init_metrics, AppConfig, Database, DatabaseConfig, DynamicConfig, MetricsMiddleware,
+        RateLimiter, RuntimeConfig,
     },
-    core::{init_metrics, AppConfig, MetricsMiddleware, RateLimiter},
     services::ProviderService,
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 fn main() -> Result<()> {
+    // Load .env file if present (before reading any environment variables)
+    dotenvy::dotenv().ok();
+
     // Detect optimal worker threads from environment or cgroup
     let worker_threads = std::env::var("TOKIO_WORKER_THREADS")
         .ok()
@@ -50,104 +59,218 @@ async fn async_main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Load configuration
-    let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.yaml".to_string());
-    let config = AppConfig::load(&config_path)?;
-
-    let _host = std::env::var("HOST").unwrap_or_else(|_| config.server.host.clone());
-    let port = std::env::var("PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(config.server.port);
-
     // Initialize metrics
     init_metrics();
 
-    // Initialize provider service
-    let provider_service = ProviderService::new(config.clone());
-    provider_service.log_providers();
+    // Get required environment variables
+    let db_url = std::env::var("DB_URL")
+        .map_err(|_| anyhow::anyhow!("DB_URL environment variable is required"))?;
+    let admin_key = std::env::var("ADMIN_KEY")
+        .map_err(|_| anyhow::anyhow!("ADMIN_KEY environment variable is required"))?;
 
-    // Initialize rate limiter and register master keys
-    let rate_limiter = std::sync::Arc::new(RateLimiter::new());
-    for key_config in &config.master_keys {
-        if key_config.enabled {
-            if let Some(rate_limit) = &key_config.rate_limit {
-                rate_limiter.register_key(&key_config.key, rate_limit);
-                tracing::info!(
-                    "Registered rate limit for key '{}': {} req/s (burst: {})",
-                    key_config.name,
-                    rate_limit.requests_per_second,
-                    rate_limit.burst_size
-                );
-            } else {
-                tracing::info!(
-                    "Master key '{}' registered without rate limiting",
-                    key_config.name
-                );
-            }
-        }
+    // Connect to database
+    let db_config = DatabaseConfig::from_url(&db_url);
+    tracing::info!("Connecting to database...");
+    let db = Database::connect(&db_config).await?;
+    tracing::info!("Database connected successfully");
+
+    // Check if migrations have been applied
+    if !db.check_migrations().await? {
+        return Err(anyhow::anyhow!(
+            "Database migrations not applied. Please run './scripts/db_migrate.sh' first."
+        ));
     }
 
-    // Create shared HTTP client with connection pooling
-    // Increased limits to support high concurrency for the same model
-    let http_client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(!config.verify_ssl)
-        .timeout(std::time::Duration::from_secs(config.request_timeout_secs))
-        .pool_max_idle_per_host(100)  // Increased from 20 to 100
-        .pool_idle_timeout(std::time::Duration::from_secs(90))  // Increased from 30s to 90s
-        .tcp_keepalive(std::time::Duration::from_secs(60))  // Enable TCP keepalive
-        .http2_keep_alive_interval(std::time::Duration::from_secs(30))  // HTTP/2 keepalive
-        .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .expect("Failed to build HTTP client");
+    let db = Arc::new(db);
 
-    tracing::info!("HTTP client initialized with high-concurrency connection pooling (max_idle=100, timeout=90s)");
+    // Load configuration from database (empty config if database is empty)
+    let runtime_config = if db.is_empty().await? {
+        tracing::info!("Database is empty. Server will start with no providers/master_keys.");
+        tracing::info!("Use Admin API to add providers and master keys.");
+        RuntimeConfig {
+            providers: vec![],
+            master_keys: vec![],
+            version: 0,
+            loaded_at: chrono::Utc::now(),
+        }
+    } else {
+        tracing::info!("Loading configuration from database...");
+        let config = RuntimeConfig::load_from_db(&db).await?;
+        tracing::info!(
+            "Configuration loaded: {} providers, {} master keys, version {}",
+            config.providers.len(),
+            config.master_keys.len(),
+            config.version
+        );
+        config
+    };
 
-    // Create shared state
-    let state = std::sync::Arc::new(AppState {
-        config: config.clone(),
-        provider_service,
-        rate_limiter,
-        http_client,
+    // Create dynamic config manager
+    let dynamic_config = Arc::new(DynamicConfig::new(runtime_config, db.clone()));
+
+    // Create admin state
+    let admin_state = Arc::new(AdminState {
+        dynamic_config: dynamic_config.clone(),
+        admin_key,
     });
 
+    // Get server config from environment
+    let base_config = AppConfig::from_env()?;
+    let port = base_config.server.port;
+
+    // Create HTTP client
+    let http_client = create_http_client(&base_config);
+
     // Build router
-    let app = Router::new()
-        // API routes
-        .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1/completions", post(completions))
-        .route("/v1/models", get(list_models))
-        // Metrics route
-        .route("/metrics", get(metrics_handler))
-        .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            MetricsMiddleware::track_metrics,
-        ))
-        .with_state(state);
+    let app = build_router(dynamic_config, admin_state, base_config, http_client);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Starting LLM API Proxy on {}", addr);
-    tracing::info!("Using config file: {}", config_path);
-
-    // Log authentication status
-    if !config.master_keys.is_empty() {
-        tracing::info!(
-            "Master keys: {} configured ({} enabled)",
-            config.master_keys.len(),
-            config.master_keys.iter().filter(|k| k.enabled).count()
-        );
-    } else {
-        tracing::info!("Authentication: Disabled");
-    }
-
+    tracing::info!("Admin API: /admin/v1/*");
+    tracing::info!("Swagger UI: /swagger-ui");
     tracing::info!("Metrics endpoint: /metrics");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Build router with all endpoints
+fn build_router(
+    dynamic_config: Arc<DynamicConfig>,
+    admin_state: Arc<AdminState>,
+    base_config: AppConfig,
+    http_client: reqwest::Client,
+) -> Router {
+    // Admin routes are always available (with their own state)
+    let admin_routes = admin_router(admin_state);
+
+    // Swagger UI for API documentation
+    let swagger_ui = SwaggerUi::new("/swagger-ui")
+        .url("/api-docs/openapi.json", AdminApiDoc::openapi());
+
+    // Get current config
+    let config = dynamic_config.get_full();
+
+    // Convert database entities to AppConfig format
+    let app_config = convert_runtime_to_app_config(&config, &base_config);
+
+    let provider_service = ProviderService::new(app_config.clone());
+    provider_service.log_providers();
+
+    let rate_limiter = Arc::new(RateLimiter::new());
+    // Register rate limits from database master keys
+    for key in &config.master_keys {
+        if key.is_enabled {
+            if let Some(rps) = key.rate_limit {
+                let rate_config = llm_proxy_rust::core::config::RateLimitConfig {
+                    requests_per_second: rps as u32,
+                    burst_size: (rps as u32).saturating_mul(2),
+                };
+                rate_limiter.register_key(&key.key_hash, &rate_config);
+                tracing::info!(
+                    "Registered rate limit for key '{}': {} req/s",
+                    key.name,
+                    rps
+                );
+            }
+        }
+    }
+
+    let state = Arc::new(AppState {
+        config: app_config,
+        provider_service,
+        rate_limiter,
+        http_client,
+    });
+
+    // Build API routes with AppState
+    let api_routes = Router::new()
+        .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/completions", post(completions))
+        .route("/v1/models", get(list_models))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            MetricsMiddleware::track_metrics,
+        ))
+        .with_state(state);
+
+    // Merge admin routes (with AdminState) and API routes (with AppState)
+    Router::new()
+        .nest("/admin/v1", admin_routes)
+        .merge(swagger_ui)
+        .merge(api_routes)
+        .route("/health", get(health_handler))
+        .route("/metrics", get(metrics_handler))
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
+}
+
+/// Convert RuntimeConfig to AppConfig for compatibility
+fn convert_runtime_to_app_config(
+    runtime: &RuntimeConfig,
+    base: &AppConfig,
+) -> AppConfig {
+    use llm_proxy_rust::core::config::{MasterKeyConfig, ProviderConfig};
+
+    let providers: Vec<ProviderConfig> = runtime
+        .providers
+        .iter()
+        .map(|p| ProviderConfig {
+            name: p.id.clone(),
+            api_base: p.api_base.clone(),
+            api_key: p.api_key.clone(),
+            weight: 1, // Default weight
+            model_mapping: p.model_mapping.0.clone(),
+        })
+        .collect();
+
+    let master_keys: Vec<MasterKeyConfig> = runtime
+        .master_keys
+        .iter()
+        .map(|k| MasterKeyConfig {
+            key: k.key_hash.clone(), // Use hash for comparison
+            name: k.name.clone(),
+            description: None,
+            rate_limit: k.rate_limit.map(|rps| {
+                llm_proxy_rust::core::config::RateLimitConfig {
+                    requests_per_second: rps as u32,
+                    burst_size: (rps as u32).saturating_mul(2),
+                }
+            }),
+            enabled: k.is_enabled,
+        })
+        .collect();
+
+    AppConfig {
+        providers,
+        server: base.server.clone(),
+        verify_ssl: base.verify_ssl,
+        request_timeout_secs: base.request_timeout_secs,
+        master_keys,
+    }
+}
+
+/// Create HTTP client with connection pooling
+fn create_http_client(config: &AppConfig) -> reqwest::Client {
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(!config.verify_ssl)
+        .timeout(std::time::Duration::from_secs(config.request_timeout_secs))
+        .pool_max_idle_per_host(100)
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .tcp_keepalive(std::time::Duration::from_secs(60))
+        .http2_keep_alive_interval(std::time::Duration::from_secs(30))
+        .http2_keep_alive_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+/// Health check endpoint
+async fn health_handler() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok"
+    }))
 }
 
 /// Detect CPU limit from cgroup (for containerized environments)

@@ -2,12 +2,13 @@
 import pytest
 
 from app.core.security import verify_master_key, init_rate_limiter
+from app.core.database import hash_key
 from app.models.config import AppConfig, ProviderConfig, MasterKeyConfig, RateLimitConfig
 
 
 @pytest.mark.unit
 class TestVerifyMasterKey:
-    """Test master API key verification with new master_keys system"""
+    """Test master API key verification (database mode with hashed keys)"""
     
     def test_verify_when_no_master_keys_configured(self, monkeypatch, clear_config_cache):
         """Test verification succeeds when no master keys are configured"""
@@ -25,7 +26,6 @@ class TestVerifyMasterKey:
         from app.core import security as security_module
         monkeypatch.setattr(security_module, 'get_config', lambda: config)
         
-        # Should allow any request when no master keys are set
         is_valid, key_id = verify_master_key(None)
         assert is_valid is True
         assert key_id is None
@@ -39,7 +39,10 @@ class TestVerifyMasterKey:
         assert key_id is None
     
     def test_verify_with_valid_master_key(self, monkeypatch, clear_config_cache):
-        """Test verification succeeds with valid master key"""
+        """Test verification succeeds with valid master key (hashed)"""
+        raw_key = 'secret-key'
+        hashed_key = hash_key(raw_key)
+        
         config = AppConfig(
             providers=[
                 ProviderConfig(
@@ -50,7 +53,8 @@ class TestVerifyMasterKey:
             ],
             master_keys=[
                 MasterKeyConfig(
-                    key='secret-key',
+                    key=hashed_key,
+                    name='test-key',
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20)
                 )
             ],
@@ -61,13 +65,16 @@ class TestVerifyMasterKey:
         monkeypatch.setattr(security_module, 'get_config', lambda: config)
         init_rate_limiter()
         
-        is_valid, key_id = verify_master_key('Bearer secret-key')
+        is_valid, key_id = verify_master_key(f'Bearer {raw_key}')
         assert is_valid is True
-        assert key_id == 'secret-key'
+        assert key_id == 'test-key'
     
     def test_verify_with_invalid_master_key(self, monkeypatch, clear_config_cache):
         """Test verification fails with invalid master key"""
         from fastapi import HTTPException
+        
+        raw_key = 'secret-key'
+        hashed_key = hash_key(raw_key)
         
         config = AppConfig(
             providers=[
@@ -79,7 +86,7 @@ class TestVerifyMasterKey:
             ],
             master_keys=[
                 MasterKeyConfig(
-                    key='secret-key',
+                    key=hashed_key,
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20)
                 )
             ],
@@ -98,6 +105,9 @@ class TestVerifyMasterKey:
         """Test verification fails without Bearer prefix"""
         from fastapi import HTTPException
         
+        raw_key = 'secret-key'
+        hashed_key = hash_key(raw_key)
+        
         config = AppConfig(
             providers=[
                 ProviderConfig(
@@ -108,7 +118,7 @@ class TestVerifyMasterKey:
             ],
             master_keys=[
                 MasterKeyConfig(
-                    key='secret-key',
+                    key=hashed_key,
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20)
                 )
             ],
@@ -127,6 +137,9 @@ class TestVerifyMasterKey:
         """Test verification fails with None authorization when keys are configured"""
         from fastapi import HTTPException
         
+        raw_key = 'secret-key'
+        hashed_key = hash_key(raw_key)
+        
         config = AppConfig(
             providers=[
                 ProviderConfig(
@@ -137,7 +150,7 @@ class TestVerifyMasterKey:
             ],
             master_keys=[
                 MasterKeyConfig(
-                    key='secret-key',
+                    key=hashed_key,
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20)
                 )
             ],
@@ -154,6 +167,11 @@ class TestVerifyMasterKey:
     
     def test_verify_with_multiple_master_keys(self, monkeypatch, clear_config_cache):
         """Test verification with multiple master keys"""
+        raw_key_1 = 'key-1'
+        raw_key_2 = 'key-2'
+        hashed_key_1 = hash_key(raw_key_1)
+        hashed_key_2 = hash_key(raw_key_2)
+        
         config = AppConfig(
             providers=[
                 ProviderConfig(
@@ -164,11 +182,13 @@ class TestVerifyMasterKey:
             ],
             master_keys=[
                 MasterKeyConfig(
-                    key='key-1',
+                    key=hashed_key_1,
+                    name='first-key',
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20)
                 ),
                 MasterKeyConfig(
-                    key='key-2',
+                    key=hashed_key_2,
+                    name='second-key',
                     rate_limit=RateLimitConfig(requests_per_second=5, burst_size=10)
                 )
             ],
@@ -179,14 +199,13 @@ class TestVerifyMasterKey:
         monkeypatch.setattr(security_module, 'get_config', lambda: config)
         init_rate_limiter()
         
-        # Both keys should work
-        is_valid, key_id = verify_master_key('Bearer key-1')
+        is_valid, key_id = verify_master_key(f'Bearer {raw_key_1}')
         assert is_valid is True
-        assert key_id == 'key-1'
+        assert key_id == 'first-key'
         
-        is_valid, key_id = verify_master_key('Bearer key-2')
+        is_valid, key_id = verify_master_key(f'Bearer {raw_key_2}')
         assert is_valid is True
-        assert key_id == 'key-2'
+        assert key_id == 'second-key'
 
 
 @pytest.mark.unit
@@ -199,6 +218,9 @@ class TestSecurityIntegration:
         from app.api.dependencies import verify_auth
         from fastapi import HTTPException
         
+        raw_key = 'secret-key'
+        hashed_key = hash_key(raw_key)
+        
         config = AppConfig(
             providers=[
                 ProviderConfig(
@@ -209,7 +231,8 @@ class TestSecurityIntegration:
             ],
             master_keys=[
                 MasterKeyConfig(
-                    key='secret-key',
+                    key=hashed_key,
+                    name='test-key',
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20)
                 )
             ],
@@ -220,11 +243,9 @@ class TestSecurityIntegration:
         monkeypatch.setattr(security_module, 'get_config', lambda: config)
         init_rate_limiter()
         
-        # Test with correct key
-        result = await verify_auth('Bearer secret-key')
-        assert result == 'secret-key'  # Should return the key_id
+        result = await verify_auth(f'Bearer {raw_key}')
+        assert result == 'test-key'
         
-        # Test with incorrect key
         with pytest.raises(HTTPException) as exc_info:
             await verify_auth('Bearer wrong-key')
         assert exc_info.value.status_code == 401
@@ -248,7 +269,6 @@ class TestSecurityIntegration:
         from app.core import security as security_module
         monkeypatch.setattr(security_module, 'get_config', lambda: config)
         
-        # All should succeed and return None when no keys configured
         assert await verify_auth(None) is None
         assert await verify_auth('') is None
         assert await verify_auth('Bearer any-key') is None

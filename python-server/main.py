@@ -1,44 +1,37 @@
 #!/usr/bin/env python3
-"""CLI entry point for LLM API Proxy"""
-import argparse
+"""CLI entry point for LLM API Proxy (database mode only)"""
 import os
 
 import uvicorn
 
-from app.core.config import load_config
+from app.core.config import get_env_config
 from app.core.logging import setup_logging, get_logger
 
 
 def main():
     """Main entry point"""
-    # Initialize logging early
     setup_logging(log_level="INFO")
     logger = get_logger()
 
-    parser = argparse.ArgumentParser(description="LLM API Proxy Server")
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="config.yaml",
-        help="Path to configuration file (default: config.yaml)",
-    )
-    args = parser.parse_args()
+    env_config = get_env_config()
 
-    config = load_config(args.config)
+    if not env_config.db_url:
+        logger.error("DB_URL environment variable is required")
+        logger.info("Set DB_URL to your PostgreSQL connection string")
+        raise SystemExit(1)
 
-    host = os.environ.get("HOST", config.server.host)
-    port = int(os.environ.get("PORT", config.server.port))
+    host = env_config.host
+    port = env_config.port
 
-    logger.info(f"Using config file: {args.config}")
+    logger.info(f"Starting LLM API Proxy (database mode)")
     logger.info(f"Listening on {host}:{port}")
 
-    # Configure uvicorn to use loguru
     uvicorn.run(
         "app.main:app",
         host=host,
         port=port,
-        log_config=None,  # Disable uvicorn's default logging config
-        access_log=True,  # Enable access logs (will be intercepted by loguru)
+        log_config=None,
+        access_log=True,
     )
 
 

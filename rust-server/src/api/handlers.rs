@@ -7,6 +7,7 @@ use crate::api::models::*;
 use crate::api::streaming::{
     calculate_message_tokens, create_sse_stream, rewrite_model_in_response,
 };
+use crate::core::database::hash_key;
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID, API_KEY_NAME};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
@@ -60,10 +61,13 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<String> {
 
     let provided_key = provided_key.ok_or(AppError::Unauthorized)?;
 
+    // Hash the provided key for comparison with stored hashes
+    let provided_key_hash = hash_key(provided_key);
+
     // Check against master_keys configuration
     for key_config in &state.config.master_keys {
-        if key_config.enabled && key_config.key == provided_key {
-            // Check rate limit for this key
+        if key_config.enabled && key_config.key == provided_key_hash {
+            // Check rate limit for this key using the hash
             state.rate_limiter.check_rate_limit(&key_config.key)?;
 
             tracing::debug!(

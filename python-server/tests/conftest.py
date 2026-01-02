@@ -1,106 +1,56 @@
 """Shared test fixtures and configuration"""
 import os
-import tempfile
-from typing import Generator
 from unittest.mock import Mock
 
 import pytest
-import yaml
 from fastapi.testclient import TestClient
 
 from app.models.config import AppConfig, ProviderConfig, ServerConfig
 from app.services.provider_service import ProviderService
 
-# Set CONFIG_PATH for tests - use absolute path to ensure it's found
-os.environ['CONFIG_PATH'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.test.yaml')
-
 
 @pytest.fixture
-def test_config_dict() -> dict:
-    """Sample configuration dictionary for testing"""
-    return {
-        'providers': [
-            {
-                'name': 'provider1',
-                'api_base': 'https://api.provider1.com/v1',
-                'api_key': 'test-key-1',
-                'weight': 2,
-                'model_mapping': {
+def test_config() -> AppConfig:
+    """Sample AppConfig instance for testing"""
+    return AppConfig(
+        providers=[
+            ProviderConfig(
+                name='provider1',
+                api_base='https://api.provider1.com/v1',
+                api_key='test-key-1',
+                weight=2,
+                model_mapping={
                     'gpt-4': 'gpt-4-0613',
                     'gpt-3.5-turbo': 'gpt-3.5-turbo-0613'
                 }
-            },
-            {
-                'name': 'provider2',
-                'api_base': 'https://api.provider2.com/v1',
-                'api_key': 'test-key-2',
-                'weight': 1,
-                'model_mapping': {
+            ),
+            ProviderConfig(
+                name='provider2',
+                api_base='https://api.provider2.com/v1',
+                api_key='test-key-2',
+                weight=1,
+                model_mapping={
                     'gpt-4': 'gpt-4-1106-preview',
                     'claude-3': 'claude-3-opus-20240229'
                 }
-            }
+            )
         ],
-        'server': {
-            'host': '0.0.0.0',
-            'port': 18000
-        },
-        'verify_ssl': True
-    }
-
-
-@pytest.fixture
-def test_config(test_config_dict: dict) -> AppConfig:
-    """Sample AppConfig instance for testing"""
-    return AppConfig(**test_config_dict)
-
-
-@pytest.fixture
-def test_config_file(test_config_dict: dict) -> Generator[str, None, None]:
-    """Create a temporary config file for testing"""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-        yaml.dump(test_config_dict, f)
-        config_path = f.name
-    
-    yield config_path
-    
-    # Cleanup
-    if os.path.exists(config_path):
-        os.unlink(config_path)
-
-
-@pytest.fixture
-def test_config_with_env_vars() -> dict:
-    """Config dictionary with environment variable placeholders"""
-    return {
-        'providers': [
-            {
-                'name': 'provider1',
-                'api_base': '${API_BASE}',
-                'api_key': '${API_KEY:-default-key}',
-                'weight': 1,
-                'model_mapping': {'gpt-4': 'gpt-4-0613'}
-            }
-        ],
-        'server': {
-            'host': '${HOST:-0.0.0.0}',
-            'port': 18000
-        },
-        'verify_ssl': True
-    }
+        server=ServerConfig(host='0.0.0.0', port=18000),
+        verify_ssl=True
+    )
 
 
 @pytest.fixture
 def provider_service(test_config: AppConfig, monkeypatch, clear_config_cache) -> ProviderService:
     """Provider service instance with test configuration"""
-    # Mock get_config in the provider_service module where it's imported
     from app.services import provider_service as ps_module
+    from app.core import config as config_module
+    
+    config_module._cached_config = test_config
     monkeypatch.setattr(ps_module, 'get_config', lambda: test_config)
     
-    # Reset provider service singleton
     ps_module._provider_service = None
     
-    # Create fresh provider service
     service = ProviderService()
     service.initialize()
     return service
@@ -120,26 +70,6 @@ def mock_httpx_client():
     }
     mock_client.post.return_value = mock_response
     return mock_client
-
-
-@pytest.fixture
-def app_client(test_config: AppConfig, monkeypatch, clear_config_cache):
-    """FastAPI test client with mocked configuration"""
-    # Clear config cache first
-    from app.core.config import get_config
-    get_config.cache_clear()
-    
-    from app.core import config as config_module
-    from app.main import app
-    
-    # Mock get_config
-    monkeypatch.setattr(config_module, 'get_config', lambda: test_config)
-    
-    # Reset provider service singleton
-    from app.services import provider_service as ps_module
-    ps_module._provider_service = None
-    
-    return TestClient(app)
 
 
 @pytest.fixture(autouse=True)
@@ -214,25 +144,20 @@ def sample_sse_chunk_with_usage() -> bytes:
     return b'data: {"id":"test","model":"gpt-4-0613","usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}\n\n'
 
 
-@pytest.fixture
-def mock_env_vars(monkeypatch):
-    """Set up mock environment variables"""
-    monkeypatch.setenv('API_BASE', 'https://test.api.com')
-    monkeypatch.setenv('API_KEY', 'test-env-key')
-    monkeypatch.setenv('HOST', '127.0.0.1')
-
-
 @pytest.fixture(autouse=True)
 def clear_config_cache():
     """Clear the config cache before and after tests"""
-    from app.core.config import get_config
+    from app.core.config import get_config, clear_config_cache as clear_cache
+    from app.core import config as config_module
+    
+    config_module._cached_config = None
     get_config.cache_clear()
     
-    # Also reset provider service singleton
     from app.services import provider_service as ps_module
     ps_module._provider_service = None
     
     yield
     
+    config_module._cached_config = None
     get_config.cache_clear()
     ps_module._provider_service = None

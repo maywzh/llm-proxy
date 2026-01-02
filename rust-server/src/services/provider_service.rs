@@ -34,11 +34,24 @@ impl ProviderService {
     ///
     /// # Examples
     ///
-    /// ```no_run
-    /// use llm_proxy_rust::core::config::AppConfig;
+    /// ```
+    /// use llm_proxy_rust::core::config::{AppConfig, ProviderConfig, ServerConfig};
     /// use llm_proxy_rust::services::ProviderService;
+    /// use std::collections::HashMap;
     ///
-    /// let config = AppConfig::load("config.yaml").unwrap();
+    /// let config = AppConfig {
+    ///     providers: vec![ProviderConfig {
+    ///         name: "test".to_string(),
+    ///         api_base: "http://localhost".to_string(),
+    ///         api_key: "key".to_string(),
+    ///         weight: 1,
+    ///         model_mapping: HashMap::new(),
+    ///     }],
+    ///     server: ServerConfig::default(),
+    ///     verify_ssl: true,
+    ///     request_timeout_secs: 300,
+    ///     master_keys: vec![],
+    /// };
     /// let service = ProviderService::new(config);
     /// ```
     pub fn new(config: AppConfig) -> Self {

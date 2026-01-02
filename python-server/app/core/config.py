@@ -1,59 +1,70 @@
-"""Configuration management"""
+"""Configuration management for database-only mode"""
 import os
-import re
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import Optional
 
-import yaml
 from dotenv import load_dotenv
 
-from app.models.config import AppConfig
+from app.models.config import AppConfig, ServerConfig
 
 load_dotenv()
 
 
-def expand_env_vars(value: str) -> str:
-    """Expand environment variables in string. Supports ${VAR}, ${VAR:-default}, ${VAR:default}"""
-    if not isinstance(value, str):
-        return value
-    
-    pattern = r'\$\{([^}:]+)(?::?-([^}]*))?\}'
-    return re.sub(pattern, lambda m: os.environ.get(m.group(1), m.group(2) or ''), value)
+@dataclass
+class AppEnvConfig:
+    """Application configuration from environment variables"""
+    host: str = "0.0.0.0"
+    port: int = 18000
+    verify_ssl: bool = True
+    request_timeout_secs: int = 300
+    db_url: Optional[str] = None
+    admin_key: Optional[str] = None
+
+    @classmethod
+    def from_env(cls) -> "AppEnvConfig":
+        """Load configuration from environment variables"""
+        return cls(
+            host=os.environ.get("HOST", "0.0.0.0"),
+            port=int(os.environ.get("PORT", "18000")),
+            verify_ssl=os.environ.get("VERIFY_SSL", "true").lower() in ("true", "1", "yes"),
+            request_timeout_secs=int(os.environ.get("REQUEST_TIMEOUT_SECS", "300")),
+            db_url=os.environ.get("DB_URL"),
+            admin_key=os.environ.get("ADMIN_KEY"),
+        )
 
 
-def expand_config_env_vars(config: Any) -> Any:
-    """Recursively expand environment variables in config"""
-    if isinstance(config, dict):
-        return {k: expand_config_env_vars(v) for k, v in config.items()}
-    elif isinstance(config, list):
-        return [expand_config_env_vars(item) for item in config]
-    elif isinstance(config, str):
-        return expand_env_vars(config)
-    return config
+_cached_config: Optional[AppConfig] = None
 
 
-def str_to_bool(value: Any) -> bool:
-    """Convert string representation of boolean to actual boolean"""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.lower() in ('true', '1', 'yes', 'on')
-    return bool(value)
+def set_config(config: AppConfig) -> None:
+    """Set the cached configuration (used by database mode)"""
+    global _cached_config
+    _cached_config = config
 
 
-def load_config(config_path: str = 'config.yaml') -> AppConfig:
-    """Load and parse configuration from YAML file"""
-    with open(config_path, 'r') as f:
-        raw_config = yaml.safe_load(f)
-    
-    expanded_config = expand_config_env_vars(raw_config)
-    expanded_config['verify_ssl'] = str_to_bool(expanded_config.get('verify_ssl', True))
-    
-    return AppConfig(**expanded_config)
+def clear_config_cache() -> None:
+    """Clear the configuration cache"""
+    global _cached_config
+    _cached_config = None
+    get_config.cache_clear()
 
 
 @lru_cache
 def get_config() -> AppConfig:
-    """Get cached configuration instance"""
-    config_path = os.environ.get('CONFIG_PATH', 'config.yaml')
-    return load_config(config_path)
+    """Get cached configuration instance. Returns empty config if not set."""
+    global _cached_config
+    if _cached_config is not None:
+        return _cached_config
+    return AppConfig(
+        providers=[],
+        master_keys=[],
+        server=ServerConfig(),
+        verify_ssl=True,
+        request_timeout_secs=300,
+    )
+
+
+def get_env_config() -> AppEnvConfig:
+    """Get environment configuration"""
+    return AppEnvConfig.from_env()

@@ -111,10 +111,12 @@ fn create_test_config_no_auth() -> AppConfig {
 /// Create a test config with authentication
 fn create_test_config_with_auth() -> AppConfig {
     use llm_proxy_rust::core::config::MasterKeyConfig;
+    use llm_proxy_rust::core::database::hash_key;
 
     let mut config = create_test_config_no_auth();
+    // Store the hash of the key, not the plain text key
     config.master_keys = vec![MasterKeyConfig {
-        key: "test_master_key".to_string(),
+        key: hash_key("test_master_key"),
         name: "Test Key".to_string(),
         description: None,
         rate_limit: None,

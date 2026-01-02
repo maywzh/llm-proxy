@@ -16,6 +16,130 @@ llm-proxy 是一个高性能的 LLM API 代理服务，支持加权负载均衡�
 - ✅ 模块化架构设计
 - ✅ 类型安全（Pydantic）
 - ✅ **可选的 Master Key 速率限制**
+- ✅ **动态配置模式（数据库存储）**
+
+## 动态配置模式
+
+LLM Proxy 支持两种配置模式：
+
+### YAML 模式（默认）
+- 不设置 `DB_URL` 环境变量
+- 使用 `config.yaml` 文件配置
+- 适合开发和简单部署
+- 配置变更需要重启服务
+
+### 数据库模式
+- 设置 `DB_URL` 和 `ADMIN_KEY` 环境变量
+- 配置存储在 PostgreSQL 数据库
+- 支持运行时热更新，无需重启
+- 适合生产环境
+- 通过 Admin API 管理配置
+
+### 动态配置环境变量
+
+| 变量 | 说明 | 必需 |
+|------|------|------|
+| `DB_URL` | PostgreSQL 连接字符串 | 数据库模式必需 |
+| `ADMIN_KEY` | Admin API 认证密钥 | 数据库模式必需 |
+| `PORT` | 服务端口 | 否（默认 18000）|
+
+### 数据库迁移
+
+```bash
+# 安装 golang-migrate
+brew install golang-migrate
+
+# 设置数据库 URL
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+
+# 运行迁移
+./scripts/db_migrate.sh up
+
+# 查看迁移版本
+./scripts/db_migrate.sh version
+
+# 回滚一个迁移
+./scripts/db_migrate.sh down
+```
+
+### 迁移现有 YAML 配置到数据库
+
+```bash
+# 设置环境变量
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+
+# 运行迁移脚本
+./scripts/migrate_config.sh config.yaml
+```
+
+### Admin API 示例
+
+```bash
+# 设置 Admin Key
+export ADMIN_KEY='your-admin-key'
+
+# 创建 Provider
+curl -X POST http://localhost:18000/admin/v1/providers \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "openai-main",
+    "provider_type": "openai",
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "sk-xxx",
+    "model_mapping": {},
+    "is_enabled": true
+  }'
+
+# 列出所有 Provider
+curl http://localhost:18000/admin/v1/providers \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# 获取指定 Provider
+curl http://localhost:18000/admin/v1/providers/openai-main \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# 更新 Provider
+curl -X PUT http://localhost:18000/admin/v1/providers/openai-main \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "sk-new-key",
+    "model_mapping": {"gpt-4": "gpt-4-turbo"},
+    "is_enabled": true
+  }'
+
+# 删除 Provider
+curl -X DELETE http://localhost:18000/admin/v1/providers/openai-main \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# 创建 Master Key
+curl -X POST http://localhost:18000/admin/v1/master-keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "key-1",
+    "key": "mk-xxx",
+    "name": "Default Key",
+    "allowed_models": ["*"],
+    "is_enabled": true
+  }'
+
+# 列出所有 Master Key
+curl http://localhost:18000/admin/v1/master-keys \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# 重新加载配置（热更新）
+curl -X POST http://localhost:18000/admin/v1/config/reload \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# 获取当前配置版本
+curl http://localhost:18000/admin/v1/config/version \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+---
 
 ## 快速开始
 
