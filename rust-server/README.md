@@ -77,7 +77,132 @@ docker run -p 18000:18000 \
 
 ## Configuration
 
-The server supports flexible configuration through environment variables and YAML files.
+The server supports flexible configuration through environment variables and YAML files, with an optional database-backed dynamic configuration mode.
+
+## Dynamic Configuration Mode
+
+LLM Proxy supports two configuration modes:
+
+### YAML Mode (Default)
+- Do not set `DB_URL` environment variable
+- Use `config.yaml` file for configuration
+- Suitable for development and simple deployments
+- Configuration changes require server restart
+
+### Database Mode
+- Set `DB_URL` and `ADMIN_KEY` environment variables
+- Configuration stored in PostgreSQL database
+- Supports runtime hot-reload without restart
+- Suitable for production environments
+- Manage configuration via Admin API
+
+### Environment Variables for Dynamic Config
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `DB_URL` | PostgreSQL connection string | Required for database mode |
+| `ADMIN_KEY` | Admin API authentication key | Required for database mode |
+| `PORT` | Server port | No (default: 18000) |
+
+### Database Migration
+
+```bash
+# Install golang-migrate
+brew install golang-migrate
+
+# Set database URL
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+
+# Run migrations
+./scripts/db_migrate.sh up
+
+# Check migration version
+./scripts/db_migrate.sh version
+
+# Rollback one migration
+./scripts/db_migrate.sh down
+```
+
+### Migrate Existing YAML Config to Database
+
+```bash
+# Set environment variables
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+
+# Run migration script
+./scripts/migrate_config.sh config.yaml
+```
+
+### Admin API Examples
+
+```bash
+# Set your admin key
+export ADMIN_KEY='your-admin-key'
+
+# Create a Provider
+curl -X POST http://localhost:18000/admin/v1/providers \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "openai-main",
+    "provider_type": "openai",
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "sk-xxx",
+    "model_mapping": {},
+    "is_enabled": true
+  }'
+
+# List all Providers
+curl http://localhost:18000/admin/v1/providers \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# Get a specific Provider
+curl http://localhost:18000/admin/v1/providers/openai-main \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# Update a Provider
+curl -X PUT http://localhost:18000/admin/v1/providers/openai-main \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "sk-new-key",
+    "model_mapping": {"gpt-4": "gpt-4-turbo"},
+    "is_enabled": true
+  }'
+
+# Delete a Provider
+curl -X DELETE http://localhost:18000/admin/v1/providers/openai-main \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# Create a Master Key
+curl -X POST http://localhost:18000/admin/v1/master-keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "key-1",
+    "key": "mk-xxx",
+    "name": "Default Key",
+    "allowed_models": ["*"],
+    "is_enabled": true
+  }'
+
+# List all Master Keys
+curl http://localhost:18000/admin/v1/master-keys \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# Reload configuration (hot-reload)
+curl -X POST http://localhost:18000/admin/v1/config/reload \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# Get current config version
+curl http://localhost:18000/admin/v1/config/version \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+---
+
+## YAML Configuration
 
 ### Quick Start
 
