@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 
 from app.core.config import get_config
 from app.core.rate_limiter import RateLimiter
+from app.core.database import hash_key
 
 
 _rate_limiter: Optional[RateLimiter] = None
@@ -20,7 +21,6 @@ def init_rate_limiter() -> None:
         for key_config in config.master_keys:
             if not key_config.enabled:
                 continue
-            # Only register keys that have rate limiting configured
             if key_config.rate_limit is not None:
                 _rate_limiter.register_key(
                     key_config.key,
@@ -48,28 +48,24 @@ def verify_master_key(authorization: Optional[str] = None) -> Tuple[bool, Option
     """
     config = get_config()
     
-    # Extract the provided key from Authorization header
     provided_key = None
     if authorization and authorization.startswith('Bearer '):
         provided_key = authorization[7:]
     
-    # If no master keys configured, allow all requests
     if not config.master_keys:
         return True, None
     
-    # Require authentication when master keys are configured
     if not provided_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid authorization header"
         )
     
-    # Find matching master key - MUST check enabled field
-    # Use constant-time comparison to prevent timing attacks
+    key_to_compare = hash_key(provided_key)
+    
     matching_key = None
     for key_config in config.master_keys:
-        if hmac.compare_digest(key_config.key, provided_key):
-            # Check if key is enabled before accepting it
+        if hmac.compare_digest(key_config.key, key_to_compare):
             if not key_config.enabled:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -84,7 +80,6 @@ def verify_master_key(authorization: Optional[str] = None) -> Tuple[bool, Option
             detail="Invalid master key"
         )
     
-    # Check rate limit only if the key has rate limiting configured
     if matching_key.rate_limit is not None:
         rate_limiter = get_rate_limiter()
         if rate_limiter and not rate_limiter.check_rate_limit(provided_key):
@@ -93,6 +88,5 @@ def verify_master_key(authorization: Optional[str] = None) -> Tuple[bool, Option
                 detail="Rate limit exceeded for this master key"
             )
     
-    # Return key name for metrics tracking (not the key itself for security)
     key_name = matching_key.name or "unnamed"
     return True, key_name
