@@ -37,7 +37,7 @@ pub mod services;
 // Re-export commonly used types for convenience
 pub use api::{admin_router, AdminApiDoc, AdminState, AppState, ChatCompletionRequest, ChatCompletionResponse};
 pub use core::{
-    AppConfig, AppError, Database, DatabaseConfig, DynamicConfig, Result,
-    RuntimeConfig,
+    admin_logging_middleware, AppConfig, AppError, Database, DatabaseConfig, DynamicConfig,
+    Result, RuntimeConfig,
 };
 pub use services::ProviderService;

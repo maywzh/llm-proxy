@@ -23,6 +23,7 @@ use crate::core::database::{
 #[derive(OpenApi)]
 #[openapi(
     paths(
+        validate_admin_key,
         list_providers,
         create_provider,
         get_provider,
@@ -38,6 +39,7 @@ use crate::core::database::{
     ),
     components(
         schemas(
+            AuthValidateResponse,
             ProviderListResponse,
             ProviderResponse,
             CreateProviderRequest,
@@ -51,6 +53,7 @@ use crate::core::database::{
         )
     ),
     tags(
+        (name = "auth", description = "Authentication endpoints"),
         (name = "providers", description = "Provider management endpoints"),
         (name = "master-keys", description = "Master key management endpoints"),
         (name = "config", description = "Configuration management endpoints")
@@ -423,6 +426,19 @@ pub struct AdminErrorDetail {
     pub message: String,
     /// HTTP status code
     pub code: u16,
+}
+
+/// Auth validation response
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(example = json!({
+    "valid": true,
+    "message": "Admin key is valid"
+}))]
+pub struct AuthValidateResponse {
+    /// Whether the admin key is valid
+    pub valid: bool,
+    /// Validation message
+    pub message: String,
 }
 
 fn default_true() -> bool {
@@ -860,6 +876,65 @@ pub async fn delete_master_key(
 }
 
 // ============================================================================
+// Auth Handlers
+// ============================================================================
+
+/// Validate admin key
+///
+/// Validates the admin API key for UI login. Returns success if the key is valid.
+#[utoipa::path(
+    post,
+    path = "/admin/v1/auth/validate",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Admin key is valid", body = AuthValidateResponse),
+        (status = 401, description = "Invalid admin key", body = AuthValidateResponse),
+        (status = 503, description = "Admin key not configured", body = AdminErrorResponse)
+    )
+)]
+pub async fn validate_admin_key(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+) -> Result<Json<AuthValidateResponse>, Response> {
+    if state.admin_key.is_empty() {
+        let body = serde_json::json!({
+            "error": {
+                "message": "Admin API not configured. Set ADMIN_KEY environment variable.",
+                "code": 503
+            }
+        });
+        return Err((StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response());
+    }
+
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok());
+
+    let provided_key = match auth_header {
+        Some(h) if h.starts_with("Bearer ") => &h[7..],
+        _ => {
+            return Ok(Json(AuthValidateResponse {
+                valid: false,
+                message: "Invalid admin key".to_string(),
+            }));
+        }
+    };
+
+    if provided_key != state.admin_key {
+        let body = AuthValidateResponse {
+            valid: false,
+            message: "Invalid admin key".to_string(),
+        };
+        return Err((StatusCode::UNAUTHORIZED, Json(body)).into_response());
+    }
+
+    Ok(Json(AuthValidateResponse {
+        valid: true,
+        message: "Admin key is valid".to_string(),
+    }))
+}
+
+// ============================================================================
 // Config Handlers
 // ============================================================================
 
@@ -927,6 +1002,8 @@ pub async fn reload_config(
 /// Create Admin API router
 pub fn admin_router(state: Arc<AdminState>) -> Router {
     Router::new()
+        // Auth routes
+        .route("/auth/validate", post(validate_admin_key))
         // Provider routes
         .route("/providers", get(list_providers).post(create_provider))
         .route(

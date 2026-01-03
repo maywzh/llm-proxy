@@ -13,8 +13,8 @@ use llm_proxy_rust::{
     admin_router, AdminApiDoc,
     api::{chat_completions, completions, list_models, metrics_handler, AdminState, AppState},
     core::{
-        init_metrics, AppConfig, Database, DatabaseConfig, DynamicConfig, MetricsMiddleware,
-        RateLimiter, RuntimeConfig,
+        admin_logging_middleware, init_metrics, AppConfig, Database, DatabaseConfig,
+        DynamicConfig, MetricsMiddleware, RateLimiter, RuntimeConfig,
     },
     services::ProviderService,
 };
@@ -143,8 +143,9 @@ fn build_router(
     base_config: AppConfig,
     http_client: reqwest::Client,
 ) -> Router {
-    // Admin routes are always available (with their own state)
-    let admin_routes = admin_router(admin_state);
+    // Admin routes with logging middleware
+    let admin_routes = admin_router(admin_state)
+        .layer(axum::middleware::from_fn(admin_logging_middleware));
 
     // Swagger UI for API documentation
     let swagger_ui = SwaggerUi::new("/swagger-ui")
@@ -190,10 +191,7 @@ fn build_router(
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
         .route("/v1/models", get(list_models))
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            MetricsMiddleware::track_metrics,
-        ))
+        .layer(axum::middleware::from_fn(MetricsMiddleware::track_metrics))
         .with_state(state);
 
     // Merge admin routes (with AdminState) and API routes (with AppState)

@@ -5,11 +5,10 @@
 
 use crate::core::metrics::get_metrics;
 use axum::{
-    extract::{Request, State},
+    extract::Request,
     middleware::Next,
     response::Response,
 };
-use std::sync::Arc;
 use std::time::Instant;
 
 /// Extension type for storing model name in response
@@ -23,6 +22,34 @@ pub struct ProviderName(pub String);
 /// Extension type for storing API key name in response
 #[derive(Clone, Debug)]
 pub struct ApiKeyName(pub String);
+
+/// Middleware for logging admin API requests.
+///
+/// This middleware logs all requests to /admin/v1/* endpoints with:
+/// - HTTP method
+/// - Request path
+/// - Response status code
+/// - Request duration
+pub async fn admin_logging_middleware(request: Request, next: Next) -> Response {
+    let method = request.method().to_string();
+    let path = request.uri().path().to_string();
+    let start = Instant::now();
+
+    let response = next.run(request).await;
+
+    let duration = start.elapsed().as_secs_f64();
+    let status = response.status().as_u16();
+
+    tracing::info!(
+        "[Admin API] {} {} - status={} duration={:.3}s",
+        method,
+        path,
+        status,
+        duration
+    );
+
+    response
+}
 
 /// Middleware for tracking request metrics.
 pub struct MetricsMiddleware;
@@ -38,11 +65,9 @@ impl MetricsMiddleware {
     ///
     /// # Arguments
     ///
-    /// * `state` - Application state (unused but required by Axum)
     /// * `request` - Incoming HTTP request
     /// * `next` - Next middleware/handler in the chain
-    pub async fn track_metrics<S>(
-        State(_state): State<Arc<S>>,
+    pub async fn track_metrics(
         request: Request,
         next: Next,
     ) -> Response {
@@ -141,14 +166,13 @@ mod tests {
         routing::get,
         Router,
     };
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     #[test]
     fn test_metrics_middleware_initialization() {
-        // Initialize metrics for testing
         init_metrics();
 
-        // Verify metrics are accessible
         let metrics = get_metrics();
         assert!(metrics.active_requests.with_label_values(&["/test"]).get() >= 0.0);
     }
@@ -163,10 +187,7 @@ mod tests {
 
         let app = Router::new()
             .route("/test", get(handler))
-            .layer(middleware::from_fn_with_state(
-                Arc::new(()),
-                MetricsMiddleware::track_metrics::<()>,
-            ));
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
 
         let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
@@ -182,13 +203,9 @@ mod tests {
             "metrics"
         }
 
-        let app =
-            Router::new()
-                .route("/metrics", get(handler))
-                .layer(middleware::from_fn_with_state(
-                    Arc::new(()),
-                    MetricsMiddleware::track_metrics::<()>,
-                ));
+        let app = Router::new()
+            .route("/metrics", get(handler))
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
 
         let request = Request::builder()
             .uri("/metrics")
@@ -204,15 +221,12 @@ mod tests {
         init_metrics();
         let metrics = get_metrics();
 
-        // Get initial count
         let initial = metrics.active_requests.with_label_values(&["/test"]).get();
 
-        // Use Arc<Mutex> to share state between handler and test
         let in_handler = Arc::new(tokio::sync::Mutex::new(false));
         let in_handler_clone = in_handler.clone();
 
         async fn slow_handler(flag: Arc<tokio::sync::Mutex<bool>>) -> &'static str {
-            // Signal that we're in the handler
             *flag.lock().await = true;
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             "ok"
@@ -220,32 +234,24 @@ mod tests {
 
         let app = Router::new()
             .route("/test", get(move || slow_handler(in_handler_clone)))
-            .layer(middleware::from_fn_with_state(
-                Arc::new(()),
-                MetricsMiddleware::track_metrics::<()>,
-            ));
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
 
         let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
-        // Spawn the request in a separate task
         let handle = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
 
-        // Wait for handler to start
         while !*in_handler.lock().await {
             tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         }
 
-        // Check that active requests was incremented
         let during = metrics.active_requests.with_label_values(&["/test"]).get();
         assert!(
             during > initial,
             "Active requests should be incremented during execution"
         );
 
-        // Wait for request to complete
         let _response = handle.await.unwrap();
 
-        // After request completes, active requests should be back to initial
         let final_count = metrics.active_requests.with_label_values(&["/test"]).get();
         assert_eq!(final_count, initial);
     }
@@ -262,16 +268,12 @@ mod tests {
 
         let app = Router::new()
             .route("/test", get(handler))
-            .layer(middleware::from_fn_with_state(
-                Arc::new(()),
-                MetricsMiddleware::track_metrics::<()>,
-            ));
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
 
         let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let _response = app.oneshot(request).await.unwrap();
 
-        // Verify duration was recorded
         let metric = metrics
             .request_duration
             .with_label_values(&["GET", "/test", "unknown", "unknown", "anonymous"]);
@@ -290,22 +292,37 @@ mod tests {
 
         let app = Router::new()
             .route("/test", get(handler))
-            .layer(middleware::from_fn_with_state(
-                Arc::new(()),
-                MetricsMiddleware::track_metrics::<()>,
-            ));
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
 
         let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
-        // Verify request count was incremented
         let count = metrics
             .request_count
             .with_label_values(&["GET", "/test", "unknown", "unknown", "404", "anonymous"])
             .get();
 
         assert!(count > 0);
+    }
+
+    #[tokio::test]
+    async fn test_admin_logging_middleware() {
+        async fn handler() -> &'static str {
+            "admin response"
+        }
+
+        let app = Router::new()
+            .route("/admin/v1/providers", get(handler))
+            .layer(middleware::from_fn(admin_logging_middleware));
+
+        let request = Request::builder()
+            .uri("/admin/v1/providers")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
