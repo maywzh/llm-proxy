@@ -149,7 +149,8 @@ const Login: React.FC = () => {
                   server
                 </li>
                 <li>
-                  • Check that VITE_API_BASE_URL is configured in your .env file
+                  • Check that VITE_PUBLIC_API_BASE_URL is configured in your
+                  .env file
                 </li>
               </ul>
             </div>

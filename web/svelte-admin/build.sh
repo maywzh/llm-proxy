@@ -3,14 +3,14 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-IMAGE_NAME="llm-proxy"
+IMAGE_NAME="llm-proxy-admin-ui-svelte"
 UPLOAD=false
 RUN=false
 BUILD=false
 ENV_FILE=""
 ARGS_FILE=""
-LOCAL_PORT=18000
-PORT=18000
+LOCAL_PORT=8080
+PORT=8080
 FORCE_BUILD=false
 
 # Parse command line arguments
@@ -70,19 +70,10 @@ image_exists() {
 
 # Function to build image
 build_image() {
-    if [ "$FORCE_BUILD" = true ]; then
-        echo "Force building Docker image (no cache)..."
-    else
-        echo "Building Docker image..."
-    fi
+    echo "Building Docker image..."
     
     # Prepare build args
     BUILD_ARGS=""
-    
-    # Add --no-cache if force build is enabled
-    if [ "$FORCE_BUILD" = true ]; then
-        BUILD_ARGS="--no-cache"
-    fi
     if [ -n "$ARGS_FILE" ] && [ -f "$ARGS_FILE" ]; then
         echo "Using build args file: $ARGS_FILE"
         
@@ -112,9 +103,13 @@ build_image() {
         fi
     fi
     
-    # Build with build args (including --no-cache if force build)
-    echo "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
-    eval "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
+    # Build with or without build args
+    if [ -n "$BUILD_ARGS" ]; then
+        echo "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
+        eval "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
+    else
+        docker build --platform linux/amd64 -t "$IMAGE_NAME" .
+    fi
     
     echo "Image built successfully: $IMAGE_NAME:latest"
 }
@@ -157,8 +152,18 @@ run_container() {
             # Handle JSON format
             ENV_ARGS=$(jq -r 'to_entries | map("-e '\''\(.key)=\(.value|tostring)'\''") | join(" ")' "$ENV_FILE")
         else
-            # Handle .env format - use --env-file for proper handling of special characters
-            ENV_ARGS="--env-file $ENV_FILE"
+            # Handle .env format
+            ENV_ARGS=""
+            while IFS= read -r line || [ -n "$line" ]; do
+                # Skip empty lines and comments
+                if [[ -n "$line" && ! "$line" =~ ^[[:space:]]*# ]]; then
+                    # Remove leading/trailing whitespace
+                    line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                    if [[ -n "$line" ]]; then
+                        ENV_ARGS="$ENV_ARGS -e '$line'"
+                    fi
+                fi
+            done < "$ENV_FILE"
         fi
 
         # Print the command

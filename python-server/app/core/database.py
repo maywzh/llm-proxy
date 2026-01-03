@@ -11,7 +11,18 @@ from typing import AsyncGenerator, Optional
 from urllib.parse import quote
 
 from loguru import logger
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, func, select, text, update, delete
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    func,
+    select,
+    text,
+    update,
+    delete,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -24,11 +35,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     """SQLAlchemy declarative base"""
+
     pass
 
 
 class ProviderModel(Base):
     """Provider database model"""
+
     __tablename__ = "providers"
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
@@ -41,7 +54,10 @@ class ProviderModel(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
     def get_model_mapping(self) -> dict[str, str]:
@@ -51,6 +67,7 @@ class ProviderModel(Base):
 
 class MasterKeyModel(Base):
     """Master key database model"""
+
     __tablename__ = "master_keys"
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
@@ -63,12 +80,16 @@ class MasterKeyModel(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
 class ConfigVersionModel(Base):
     """Config version database model (singleton)"""
+
     __tablename__ = "config_version"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
@@ -113,8 +134,12 @@ class DatabaseConfig:
 
     @staticmethod
     def _convert_url(url: str) -> str:
-        """Convert DB_URL to SQLAlchemy async URL format with password encoding"""
+        """Convert DB_URL to SQLAlchemy async URL format with password encoding.
+
+        Also removes sslmode parameter as asyncpg doesn't support it directly.
+        """
         encoded_url = _encode_password_in_url(url)
+        encoded_url = _remove_sslmode_param(encoded_url)
         if encoded_url.startswith("postgresql://"):
             return encoded_url.replace("postgresql://", "postgresql+asyncpg://")
         elif encoded_url.startswith("postgres://"):
@@ -122,12 +147,31 @@ class DatabaseConfig:
         elif encoded_url.startswith("postgresql+asyncpg://"):
             return encoded_url
         else:
-            raise ValueError(f"Unsupported database URL: {url}. Only PostgreSQL is supported.")
+            raise ValueError(
+                f"Unsupported database URL: {url}. Only PostgreSQL is supported."
+            )
 
     @property
     def is_configured(self) -> bool:
         """Check if database is configured"""
         return self.url is not None
+
+
+def _remove_sslmode_param(url: str) -> str:
+    """Remove sslmode parameter from URL as asyncpg doesn't support it directly.
+
+    asyncpg uses ssl=True/False instead of sslmode parameter.
+    """
+    if "?" not in url:
+        return url
+
+    base_url, query_string = url.split("?", 1)
+    params = query_string.split("&")
+    filtered_params = [p for p in params if not p.startswith("sslmode=")]
+
+    if not filtered_params:
+        return base_url
+    return f"{base_url}?{'&'.join(filtered_params)}"
 
 
 def _encode_password_in_url(url: str) -> str:
@@ -139,29 +183,29 @@ def _encode_password_in_url(url: str) -> str:
     scheme_end = url.find("://")
     if scheme_end == -1:
         return url
-    
-    scheme = url[:scheme_end + 3]
-    after_scheme = url[scheme_end + 3:]
-    
+
+    scheme = url[: scheme_end + 3]
+    after_scheme = url[scheme_end + 3 :]
+
     at_pos = after_scheme.rfind("@")
     if at_pos == -1:
         return url
-    
+
     userinfo = after_scheme[:at_pos]
-    host_and_rest = after_scheme[at_pos + 1:]
-    
+    host_and_rest = after_scheme[at_pos + 1 :]
+
     colon_pos = userinfo.find(":")
     if colon_pos == -1:
         return url
-    
+
     username = userinfo[:colon_pos]
-    password = userinfo[colon_pos + 1:]
-    
+    password = userinfo[colon_pos + 1 :]
+
     if not password:
         return url
-    
-    encoded_password = quote(password, safe='')
-    
+
+    encoded_password = quote(password, safe="")
+
     return f"{scheme}{username}:{encoded_password}@{host_and_rest}"
 
 
@@ -179,7 +223,9 @@ class Database:
             return
 
         if not self.config.is_configured:
-            raise RuntimeError("Database URL not configured. Set DB_URL environment variable.")
+            raise RuntimeError(
+                "Database URL not configured. Set DB_URL environment variable."
+            )
 
         self._engine = create_async_engine(
             self.config.url,
@@ -222,9 +268,11 @@ class Database:
             raise RuntimeError("Database not connected")
 
         async with self._engine.begin() as conn:
-            result = await conn.execute(text(
-                "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='schema_migrations')"
-            ))
+            result = await conn.execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='schema_migrations')"
+                )
+            )
             row = result.fetchone()
             return bool(row and row[0])
 
@@ -244,7 +292,9 @@ class Database:
             raise RuntimeError("Database not connected")
 
         async with self._engine.begin() as conn:
-            result = await conn.execute(text("SELECT version FROM config_version WHERE id = 1"))
+            result = await conn.execute(
+                text("SELECT version FROM config_version WHERE id = 1")
+            )
             row = result.fetchone()
             return row[0] if row else 0
 
@@ -252,6 +302,7 @@ class Database:
 @dataclass
 class InitResult:
     """Initialization result"""
+
     providers: list = None
     master_keys: list = None
     version: int = 0
@@ -266,6 +317,7 @@ class InitResult:
 @dataclass
 class VersionedConfig:
     """Versioned configuration wrapper"""
+
     version: int
     timestamp: datetime
     providers: list
@@ -306,11 +358,72 @@ class DynamicConfig:
             return await self._load_from_db()
 
     async def reload(self) -> VersionedConfig:
-        """Reload configuration from database"""
+        """Reload configuration from database and update AppConfig and ProviderService"""
         async with self._lock:
             config = await self._load_from_db()
+            self._sync_app_config(config)
             logger.info(f"Configuration reloaded, version={config.version}")
             return config
+
+    def _sync_app_config(self, versioned_config: VersionedConfig) -> None:
+        """Sync AppConfig and ProviderService with the loaded configuration"""
+        from app.core.config import set_config, get_env_config, clear_config_cache
+        from app.models.config import (
+            AppConfig,
+            ProviderConfig,
+            MasterKeyConfig,
+            RateLimitConfig,
+            ServerConfig,
+        )
+        from app.services.provider_service import get_provider_service
+
+        env_config = get_env_config()
+
+        providers = [
+            ProviderConfig(
+                name=p.id,
+                api_base=p.api_base,
+                api_key=p.api_key,
+                weight=1,
+                model_mapping=p.get_model_mapping(),
+            )
+            for p in versioned_config.providers
+        ]
+
+        master_keys = [
+            MasterKeyConfig(
+                key=mk.key_hash,
+                name=mk.name,
+                rate_limit=(
+                    RateLimitConfig(
+                        requests_per_second=mk.rate_limit,
+                        burst_size=mk.rate_limit,
+                    )
+                    if mk.rate_limit
+                    else None
+                ),
+                enabled=mk.is_enabled,
+            )
+            for mk in versioned_config.master_keys
+        ]
+
+        new_config = AppConfig(
+            providers=providers,
+            master_keys=master_keys,
+            server=ServerConfig(host=env_config.host, port=env_config.port),
+            verify_ssl=env_config.verify_ssl,
+            request_timeout_secs=env_config.request_timeout_secs,
+        )
+
+        clear_config_cache()
+        set_config(new_config)
+
+        provider_svc = get_provider_service()
+        provider_svc.reinitialize()
+
+        logger.info(
+            f"AppConfig and ProviderService synced: {len(providers)} providers, {len(master_keys)} master keys"
+        )
 
     async def _load_from_db(self) -> VersionedConfig:
         """Internal method to load config from database"""
@@ -404,7 +517,9 @@ async def close_database() -> None:
         _dynamic_config = None
 
 
-async def list_providers(db: Database, enabled_only: bool = False) -> list[ProviderModel]:
+async def list_providers(
+    db: Database, enabled_only: bool = False
+) -> list[ProviderModel]:
     """List all providers"""
     async with db.session() as session:
         stmt = select(ProviderModel)
@@ -446,7 +561,9 @@ async def create_provider(
         return provider
 
 
-async def update_provider(db: Database, provider_id: str, **kwargs) -> Optional[ProviderModel]:
+async def update_provider(
+    db: Database, provider_id: str, **kwargs
+) -> Optional[ProviderModel]:
     """Update provider by ID"""
     async with db.session() as session:
         stmt = (
@@ -467,7 +584,9 @@ async def delete_provider(db: Database, provider_id: str) -> bool:
         return result.rowcount > 0
 
 
-async def list_master_keys(db: Database, enabled_only: bool = False) -> list[MasterKeyModel]:
+async def list_master_keys(
+    db: Database, enabled_only: bool = False
+) -> list[MasterKeyModel]:
     """List all master keys"""
     async with db.session() as session:
         stmt = select(MasterKeyModel)
@@ -518,7 +637,9 @@ async def create_master_key(
         return master_key
 
 
-async def update_master_key(db: Database, key_id: str, **kwargs) -> Optional[MasterKeyModel]:
+async def update_master_key(
+    db: Database, key_id: str, **kwargs
+) -> Optional[MasterKeyModel]:
     """Update master key by ID"""
     if "key" in kwargs:
         kwargs["key_hash"] = hash_key(kwargs.pop("key"))

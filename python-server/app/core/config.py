@@ -1,7 +1,10 @@
-"""Configuration management for database-only mode"""
+"""Configuration management for the LLM proxy server.
+
+This module handles configuration loading from environment variables.
+Dynamic configuration (providers, master keys) is loaded from the database.
+"""
+
 import os
-from dataclasses import dataclass
-from functools import lru_cache
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -11,34 +14,38 @@ from app.models.config import AppConfig, ServerConfig
 load_dotenv()
 
 
-@dataclass
-class AppEnvConfig:
-    """Application configuration from environment variables"""
-    host: str = "0.0.0.0"
-    port: int = 18000
-    verify_ssl: bool = True
-    request_timeout_secs: int = 300
-    db_url: Optional[str] = None
-    admin_key: Optional[str] = None
+def _str_to_bool(value: str) -> bool:
+    """Convert string to boolean. Accepts: 'true', '1', 'yes', 'on' (case-insensitive)"""
+    return value.lower() in ("true", "1", "yes", "on")
+
+
+class EnvConfig:
+    """Server configuration from environment variables.
+
+    Providers and master keys are loaded from the database, not from config files.
+    """
+
+    def __init__(self):
+        self.host: str = os.environ.get("HOST", "0.0.0.0")
+        self.port: int = int(os.environ.get("PORT", "18000"))
+        self.verify_ssl: bool = _str_to_bool(os.environ.get("VERIFY_SSL", "true"))
+        self.request_timeout_secs: int = int(
+            os.environ.get("REQUEST_TIMEOUT_SECS", "300")
+        )
+        self.db_url: Optional[str] = os.environ.get("DB_URL")
+        self.admin_key: Optional[str] = os.environ.get("ADMIN_KEY")
 
     @classmethod
-    def from_env(cls) -> "AppEnvConfig":
+    def from_env(cls) -> "EnvConfig":
         """Load configuration from environment variables"""
-        return cls(
-            host=os.environ.get("HOST", "0.0.0.0"),
-            port=int(os.environ.get("PORT", "18000")),
-            verify_ssl=os.environ.get("VERIFY_SSL", "true").lower() in ("true", "1", "yes"),
-            request_timeout_secs=int(os.environ.get("REQUEST_TIMEOUT_SECS", "300")),
-            db_url=os.environ.get("DB_URL"),
-            admin_key=os.environ.get("ADMIN_KEY"),
-        )
+        return cls()
 
 
 _cached_config: Optional[AppConfig] = None
 
 
 def set_config(config: AppConfig) -> None:
-    """Set the cached configuration (used by database mode)"""
+    """Set the runtime configuration (called after loading from database)"""
     global _cached_config
     _cached_config = config
 
@@ -47,24 +54,26 @@ def clear_config_cache() -> None:
     """Clear the configuration cache"""
     global _cached_config
     _cached_config = None
-    get_config.cache_clear()
 
 
-@lru_cache
 def get_config() -> AppConfig:
-    """Get cached configuration instance. Returns empty config if not set."""
+    """Get current runtime configuration.
+
+    Returns empty config if not yet loaded from database.
+    """
     global _cached_config
     if _cached_config is not None:
         return _cached_config
+    env = EnvConfig()
     return AppConfig(
         providers=[],
         master_keys=[],
-        server=ServerConfig(),
-        verify_ssl=True,
-        request_timeout_secs=300,
+        server=ServerConfig(host=env.host, port=env.port),
+        verify_ssl=env.verify_ssl,
+        request_timeout_secs=env.request_timeout_secs,
     )
 
 
-def get_env_config() -> AppEnvConfig:
+def get_env_config() -> EnvConfig:
     """Get environment configuration"""
-    return AppEnvConfig.from_env()
+    return EnvConfig.from_env()

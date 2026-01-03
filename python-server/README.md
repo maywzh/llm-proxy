@@ -16,26 +16,18 @@ llm-proxy 是一个高性能的 LLM API 代理服务，支持加权负载均衡�
 - ✅ 模块化架构设计
 - ✅ 类型安全（Pydantic）
 - ✅ **可选的 Master Key 速率限制**
-- ✅ **动态配置模式（数据库存储）**
+- ✅ **动态配置（数据库存储）**
 
-## 动态配置模式
+## 配置模式
 
-LLM Proxy 支持两种配置模式：
+LLM Proxy 使用数据库存储配置：
 
-### YAML 模式（默认）
-- 不设置 `DB_URL` 环境变量
-- 使用 `config.yaml` 文件配置
-- 适合开发和简单部署
-- 配置变更需要重启服务
-
-### 数据库模式
 - 设置 `DB_URL` 和 `ADMIN_KEY` 环境变量
 - 配置存储在 PostgreSQL 数据库
 - 支持运行时热更新，无需重启
-- 适合生产环境
 - 通过 Admin API 管理配置
 
-### 动态配置环境变量
+### 环境变量
 
 | 变量 | 说明 | 必需 |
 |------|------|------|
@@ -60,16 +52,6 @@ export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
 
 # 回滚一个迁移
 ./scripts/db_migrate.sh down
-```
-
-### 迁移现有 YAML 配置到数据库
-
-```bash
-# 设置环境变量
-export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
-
-# 运行迁移脚本
-./scripts/migrate_config.sh config.yaml
 ```
 
 ### Admin API 示例
@@ -155,40 +137,28 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
-### 2. 配置 config.yaml
+### 2. 配置环境变量
 
-编辑 `config.yaml` 文件，添加你的 API 提供商：
+创建 `.env` 文件或设置环境变量：
 
-```yaml
-providers:
-  - name: "provider1"
-    api_base: "https://api.openai.com/v1"
-    api_key: "sk-your-api-key-1"
-    
-  - name: "provider2"
-    api_base: "https://api.openai.com/v1"
-    api_key: "sk-your-api-key-2"
+```bash
+# 必需：数据库连接
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
 
-# Master API key configuration
-master_keys:
-  # Key with rate limiting
-  - name: "Production Key"
-    key: "sk-prod-key"
-    rate_limit:
-      requests_per_second: 100
-      burst_size: 150
-  
-  # Key without rate limiting (unlimited requests)
-  - name: "Unlimited Key"
-    key: "sk-unlimited-key"
-    # No rate_limit field = no rate limiting
+# 必需：Admin API 认证密钥
+export ADMIN_KEY='your-admin-key'
 
-server:
-  host: "0.0.0.0"
-  port: 8000
+# 可选：服务端口（默认 18000）
+export PORT=18000
 ```
 
-### 3. 启动代理服务
+### 3. 运行数据库迁移
+
+```bash
+./scripts/db_migrate.sh up
+```
+
+### 4. 启动代理服务
 
 #### 方式一：直接运行
 
@@ -197,7 +167,7 @@ server:
 ./run.sh
 
 # 或使用 uv
-uv run python main.py --config config.yaml
+uv run python main.py
 ```
 
 #### 方式二：使用 Docker Compose（推荐，包含监控）
@@ -253,12 +223,12 @@ curl http://localhost:8000/health
 
 ## 工作原理
 
-1. 代理从 `config.yaml` 读取多个 API 提供商配置
-2. 使用 round-robin 算法循环选择提供商
+1. 代理从数据库读取多个 API 提供商配置
+2. 使用加权随机算法选择提供商
 3. 将请求转发到选中的提供商
 4. 返回提供商的响应给客户端
 
-每个请求会依次使用不同的提供商，实现负载均衡。
+根据配置的权重，请求会按比例分配到不同的提供商，实现负载均衡。
 
 ## 支持的端点
 
@@ -276,22 +246,31 @@ curl http://localhost:8000/health
 
 ### 配置方式
 
-**启用速率限制：**
-```yaml
-master_keys:
-  - name: "Limited Key"
-    key: "sk-limited-key"
-    rate_limit:
-      requests_per_second: 100  # 每秒最多 100 个请求
-      burst_size: 150           # 允许的突发请求数
-```
+通过 Admin API 创建 Master Key 时配置速率限制：
 
-**禁用速率限制（无限制）：**
-```yaml
-master_keys:
-  - name: "Unlimited Key"
-    key: "sk-unlimited-key"
-    # 不设置 rate_limit 字段 = 无速率限制
+```bash
+# 创建带速率限制的 Key
+curl -X POST http://localhost:18000/admin/v1/master-keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "limited-key",
+    "key": "mk-limited",
+    "name": "Limited Key",
+    "rate_limit": 100,
+    "is_enabled": true
+  }'
+
+# 创建无速率限制的 Key（rate_limit 设为 null 或不设置）
+curl -X POST http://localhost:18000/admin/v1/master-keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "unlimited-key",
+    "key": "mk-unlimited",
+    "name": "Unlimited Key",
+    "is_enabled": true
+  }'
 ```
 
 ### 行为说明
