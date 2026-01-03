@@ -184,9 +184,10 @@ docker-compose down
 ```
 
 **服务访问地址：**
-- LLM Proxy: http://localhost:18000
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000 (admin/admin)
+
+- LLM Proxy: <http://localhost:18000>
+- Prometheus: <http://localhost:9090>
+- Grafana: <http://localhost:3000> (admin/admin)
 
 ## 使用方法
 
@@ -308,6 +309,7 @@ curl -X POST http://localhost:18000/admin/v1/master-keys \
 ### Grafana Dashboard
 
 预配置的 Dashboard 包含：
+
 - 请求速率趋势
 - P95/P99 延迟
 - Token 使用量统计
