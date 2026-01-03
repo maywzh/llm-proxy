@@ -26,5 +26,5 @@ pub use database::{
 pub use error::{AppError, Result};
 pub use logging::{get_provider_context, PROVIDER_CONTEXT};
 pub use metrics::{get_metrics, init_metrics, Metrics};
-pub use middleware::{MetricsMiddleware, ModelName, ProviderName};
+pub use middleware::{admin_logging_middleware, MetricsMiddleware, ModelName, ProviderName};
 pub use rate_limiter::RateLimiter;

@@ -317,6 +317,57 @@ class ErrorResponse(BaseModel):
     detail: str = Field(..., description="Error message")
 
 
+class AuthValidateResponse(BaseModel):
+    """Auth validation response"""
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "valid": True,
+            "message": "Admin key is valid"
+        }
+    })
+    
+    valid: bool = Field(..., description="Whether the admin key is valid")
+    message: str = Field(..., description="Validation message")
+
+
+@router.post(
+    "/auth/validate",
+    response_model=AuthValidateResponse,
+    summary="Validate admin key",
+    description="Validate the admin API key for UI login. Returns success if the key is valid.",
+    tags=["auth"],
+    responses={
+        200: {"model": AuthValidateResponse, "description": "Admin key is valid"},
+        401: {"model": AuthValidateResponse, "description": "Invalid admin key"},
+        503: {"model": ErrorResponse, "description": "Service unavailable - Admin key not configured"},
+    },
+)
+async def api_validate_admin_key(
+    authorization: Optional[str] = Header(None),
+) -> AuthValidateResponse:
+    """Validate admin API key for UI login"""
+    if not ADMIN_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin API not configured. Set ADMIN_KEY environment variable.",
+        )
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=AuthValidateResponse(valid=False, message="Invalid admin key").model_dump(),
+        )
+
+    provided_key = authorization[7:]
+    if provided_key != ADMIN_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=AuthValidateResponse(valid=False, message="Invalid admin key").model_dump(),
+        )
+
+    return AuthValidateResponse(valid=True, message="Admin key is valid")
+
+
 @router.get(
     "/providers",
     response_model=ProviderListResponse,
