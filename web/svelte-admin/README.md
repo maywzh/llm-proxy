@@ -27,7 +27,7 @@ Copy `.env.example` to `.env.local` and configure:
 
 ```bash
 # Optional: Default API base URL
-VITE_API_BASE_URL=http://127.0.0.1:17999
+VITE_PUBLIC_API_BASE_URL=http://127.0.0.1:17999
 ```
 
 ### Login Credentials

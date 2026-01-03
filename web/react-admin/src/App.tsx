@@ -4,7 +4,7 @@ import {
   Route,
   Navigate,
 } from 'react-router-dom';
-import { useAuth } from './hooks/useAuth.ts';
+import { useAuth } from './contexts/AuthContext';
 import Layout from './components/Layout.tsx';
 import Login from './pages/Login.tsx';
 import Providers from './pages/Providers.tsx';

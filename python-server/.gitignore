@@ -39,7 +39,3 @@ coverage.json
 .pytest_cache/
 .hypothesis/
 *.proptest-regressions
-
-# Config files
-config.yaml
-proxy.py.old
