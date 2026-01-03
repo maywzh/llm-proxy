@@ -3,7 +3,7 @@
   import { ApiClient } from '$lib/api';
 
   const API_BASE_URL =
-    import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:17999';
+    import.meta.env.VITE_PUBLIC_API_BASE_URL || 'http://127.0.0.1:18000';
 
   let apiKey = $state('');
   let isLoading = $state(false);
@@ -151,7 +151,9 @@
         <li>
           • Verify the ADMIN_KEY environment variable is set on the server
         </li>
-        <li>• Check that VITE_API_BASE_URL is configured in your .env file</li>
+        <li>
+          • Check that VITE_PUBLIC_API_BASE_URL is configured in your .env file
+        </li>
       </ul>
     </div>
   </div>

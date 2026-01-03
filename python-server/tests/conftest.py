@@ -1,4 +1,5 @@
 """Shared test fixtures and configuration"""
+
 import os
 from unittest.mock import Mock
 
@@ -15,42 +16,44 @@ def test_config() -> AppConfig:
     return AppConfig(
         providers=[
             ProviderConfig(
-                name='provider1',
-                api_base='https://api.provider1.com/v1',
-                api_key='test-key-1',
+                name="provider1",
+                api_base="https://api.provider1.com/v1",
+                api_key="test-key-1",
                 weight=2,
                 model_mapping={
-                    'gpt-4': 'gpt-4-0613',
-                    'gpt-3.5-turbo': 'gpt-3.5-turbo-0613'
-                }
+                    "gpt-4": "gpt-4-0613",
+                    "gpt-3.5-turbo": "gpt-3.5-turbo-0613",
+                },
             ),
             ProviderConfig(
-                name='provider2',
-                api_base='https://api.provider2.com/v1',
-                api_key='test-key-2',
+                name="provider2",
+                api_base="https://api.provider2.com/v1",
+                api_key="test-key-2",
                 weight=1,
                 model_mapping={
-                    'gpt-4': 'gpt-4-1106-preview',
-                    'claude-3': 'claude-3-opus-20240229'
-                }
-            )
+                    "gpt-4": "gpt-4-1106-preview",
+                    "claude-3": "claude-3-opus-20240229",
+                },
+            ),
         ],
-        server=ServerConfig(host='0.0.0.0', port=18000),
-        verify_ssl=True
+        server=ServerConfig(host="0.0.0.0", port=18000),
+        verify_ssl=True,
     )
 
 
 @pytest.fixture
-def provider_service(test_config: AppConfig, monkeypatch, clear_config_cache) -> ProviderService:
+def provider_service(
+    test_config: AppConfig, monkeypatch, clear_config_cache
+) -> ProviderService:
     """Provider service instance with test configuration"""
     from app.services import provider_service as ps_module
     from app.core import config as config_module
-    
+
     config_module._cached_config = test_config
-    monkeypatch.setattr(ps_module, 'get_config', lambda: test_config)
-    
+    monkeypatch.setattr(ps_module, "get_config", lambda: test_config)
+
     ps_module._provider_service = None
-    
+
     service = ProviderService()
     service.initialize()
     return service
@@ -63,10 +66,10 @@ def mock_httpx_client():
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        'id': 'test-id',
-        'model': 'gpt-4-0613',
-        'choices': [{'message': {'content': 'Test response'}}],
-        'usage': {'prompt_tokens': 10, 'completion_tokens': 20, 'total_tokens': 30}
+        "id": "test-id",
+        "model": "gpt-4-0613",
+        "choices": [{"message": {"content": "Test response"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
     }
     mock_client.post.return_value = mock_response
     return mock_client
@@ -76,7 +79,7 @@ def mock_httpx_client():
 def reset_metrics():
     """Reset Prometheus metrics before each test"""
     from prometheus_client import REGISTRY
-    
+
     # Clear all collectors
     collectors = list(REGISTRY._collector_to_names.keys())
     for collector in collectors:
@@ -84,9 +87,9 @@ def reset_metrics():
             REGISTRY.unregister(collector)
         except Exception:
             pass
-    
+
     yield
-    
+
     # Clear again after test
     collectors = list(REGISTRY._collector_to_names.keys())
     for collector in collectors:
@@ -100,13 +103,13 @@ def reset_metrics():
 def sample_chat_request() -> dict:
     """Sample chat completion request"""
     return {
-        'model': 'gpt-4',
-        'messages': [
-            {'role': 'system', 'content': 'You are a helpful assistant.'},
-            {'role': 'user', 'content': 'Hello!'}
+        "model": "gpt-4",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello!"},
         ],
-        'temperature': 0.7,
-        'max_tokens': 100
+        "temperature": 0.7,
+        "max_tokens": 100,
     }
 
 
@@ -114,10 +117,10 @@ def sample_chat_request() -> dict:
 def sample_completion_request() -> dict:
     """Sample completion request"""
     return {
-        'model': 'gpt-3.5-turbo',
-        'prompt': 'Once upon a time',
-        'max_tokens': 50,
-        'temperature': 0.8
+        "model": "gpt-3.5-turbo",
+        "prompt": "Once upon a time",
+        "max_tokens": 50,
+        "temperature": 0.8,
     }
 
 
@@ -125,10 +128,10 @@ def sample_completion_request() -> dict:
 def sample_streaming_request() -> dict:
     """Sample streaming request"""
     return {
-        'model': 'gpt-4',
-        'messages': [{'role': 'user', 'content': 'Tell me a story'}],
-        'stream': True,
-        'max_tokens': 100
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "Tell me a story"}],
+        "stream": True,
+        "max_tokens": 100,
     }
 
 
@@ -147,17 +150,18 @@ def sample_sse_chunk_with_usage() -> bytes:
 @pytest.fixture(autouse=True)
 def clear_config_cache():
     """Clear the config cache before and after tests"""
-    from app.core.config import get_config, clear_config_cache as clear_cache
+    from app.core.config import clear_config_cache as clear_cache
     from app.core import config as config_module
-    
+
     config_module._cached_config = None
-    get_config.cache_clear()
-    
+    clear_cache()
+
     from app.services import provider_service as ps_module
+
     ps_module._provider_service = None
-    
+
     yield
-    
+
     config_module._cached_config = None
-    get_config.cache_clear()
+    clear_cache()
     ps_module._provider_service = None
