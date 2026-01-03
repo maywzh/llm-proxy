@@ -15,6 +15,8 @@ Both variants expose the same endpoints (`/v1/chat/completions`, `/v1/completion
 - Prometheus metrics and prebuilt Grafana dashboards; health checks for providers
 - Docker/Docker Compose support (includes Prometheus + Grafana stack)
 - Kubernetes manifests for dev testing under [k8s/dev/](k8s/dev/)
+- **Dynamic configuration mode** with PostgreSQL storage and Admin API
+- Runtime hot-reload without server restart (database mode)
 
 ## Repo Layout
 
@@ -112,6 +114,65 @@ verify_ssl: false
 ```
 
 Priority: environment variables > .env > YAML values. Use `master_api_key` or `master_keys` to protect endpoints with optional per-key rate limiting. Set `verify_ssl=false` if calling providers with custom cert chains (see `cacerts.pem`).
+
+## Dynamic Configuration Mode
+
+LLM Proxy supports two configuration modes:
+
+### YAML Mode (Default)
+- Do not set `DB_URL` environment variable
+- Use `config.yaml` file for configuration
+- Suitable for development and simple deployments
+
+### Database Mode
+- Set `DB_URL` and `ADMIN_KEY` environment variables
+- Configuration stored in PostgreSQL database
+- Supports runtime hot-reload without restart
+- Suitable for production environments
+
+### Database Migration
+
+```bash
+# Install golang-migrate
+brew install golang-migrate
+
+# Run migrations
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+./scripts/db_migrate.sh up
+```
+
+### Migrate Existing Config
+
+```bash
+# Migrate YAML config to database
+./scripts/migrate_config.sh config.yaml
+```
+
+### Admin API Overview
+
+When running in database mode, use the Admin API to manage configuration:
+
+```bash
+export ADMIN_KEY='your-admin-key'
+
+# Create Provider
+curl -X POST http://localhost:18000/admin/v1/providers \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id": "openai-main", "provider_type": "openai", "api_base": "https://api.openai.com/v1", "api_key": "sk-xxx", "model_mapping": {}, "is_enabled": true}'
+
+# Create Master Key
+curl -X POST http://localhost:18000/admin/v1/master-keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id": "key-1", "key": "mk-xxx", "name": "Default Key", "allowed_models": ["*"], "is_enabled": true}'
+
+# Reload configuration
+curl -X POST http://localhost:18000/admin/v1/config/reload \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+See [rust-server/README.md](rust-server/README.md) or [python-server/README.md](python-server/README.md) for complete Admin API documentation.
 
 ## Monitoring
 
