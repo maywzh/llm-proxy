@@ -1,8 +1,6 @@
 """Admin API for dynamic configuration management"""
 
 import os
-import secrets
-from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, status
@@ -83,51 +81,76 @@ def get_config() -> DynamicConfig:
 
 class ProviderCreate(BaseModel):
     """Provider creation request"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "id": "openai-primary",
-            "provider_type": "openai",
-            "api_base": "https://api.openai.com/v1",
-            "api_key": "sk-xxx",
-            "model_mapping": {"gpt-4": "gpt-4-turbo"}
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "id": "openai-primary",
+                "provider_type": "openai",
+                "api_base": "https://api.openai.com/v1",
+                "api_key": "sk-xxx",
+                "model_mapping": {"gpt-4": "gpt-4-turbo"},
+            }
         }
-    })
-    
+    )
+
     id: str = Field(..., description="Unique provider ID", examples=["openai-primary"])
-    provider_type: str = Field(default="openai", description="Provider type (openai, azure, etc.)", examples=["openai", "azure"])
-    api_base: str = Field(..., description="API base URL", examples=["https://api.openai.com/v1"])
-    api_key: str = Field(..., description="API key for the provider", examples=["sk-xxx"])
-    model_mapping: dict[str, str] = Field(default_factory=dict, description="Model name mapping (source -> target)", examples=[{"gpt-4": "gpt-4-turbo"}])
+    provider_type: str = Field(
+        default="openai",
+        description="Provider type (openai, azure, etc.)",
+        examples=["openai", "azure"],
+    )
+    api_base: str = Field(
+        ..., description="API base URL", examples=["https://api.openai.com/v1"]
+    )
+    api_key: str = Field(
+        ..., description="API key for the provider", examples=["sk-xxx"]
+    )
+    model_mapping: dict[str, str] = Field(
+        default_factory=dict,
+        description="Model name mapping (source -> target)",
+        examples=[{"gpt-4": "gpt-4-turbo"}],
+    )
 
 
 class ProviderUpdate(BaseModel):
     """Provider update request"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "api_base": "https://api.openai.com/v1",
-            "is_enabled": True
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {"api_base": "https://api.openai.com/v1", "is_enabled": True}
         }
-    })
-    
-    provider_type: Optional[str] = Field(None, description="Provider type (openai, azure, etc.)")
+    )
+
+    provider_type: Optional[str] = Field(
+        None, description="Provider type (openai, azure, etc.)"
+    )
     api_base: Optional[str] = Field(None, description="API base URL")
     api_key: Optional[str] = Field(None, description="API key for the provider")
-    model_mapping: Optional[dict[str, str]] = Field(None, description="Model name mapping")
-    is_enabled: Optional[bool] = Field(None, description="Whether the provider is enabled")
+    model_mapping: Optional[dict[str, str]] = Field(
+        None, description="Model name mapping"
+    )
+    is_enabled: Optional[bool] = Field(
+        None, description="Whether the provider is enabled"
+    )
 
 
 class ProviderResponse(BaseModel):
     """Provider response model"""
-    model_config = ConfigDict(from_attributes=True, json_schema_extra={
-        "example": {
-            "id": "openai-primary",
-            "provider_type": "openai",
-            "api_base": "https://api.openai.com/v1",
-            "model_mapping": {"gpt-4": "gpt-4-turbo"},
-            "is_enabled": True
-        }
-    })
-    
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "example": {
+                "id": "openai-primary",
+                "provider_type": "openai",
+                "api_base": "https://api.openai.com/v1",
+                "model_mapping": {"gpt-4": "gpt-4-turbo"},
+                "is_enabled": True,
+            }
+        },
+    )
+
     id: str = Field(..., description="Unique provider identifier")
     provider_type: str = Field(..., description="Provider type (openai, azure, etc.)")
     api_base: str = Field(..., description="API base URL")
@@ -137,195 +160,188 @@ class ProviderResponse(BaseModel):
 
 class ProviderListResponse(BaseModel):
     """Provider list response"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "version": 1,
-            "providers": [
-                {
-                    "id": "openai-primary",
-                    "provider_type": "openai",
-                    "api_base": "https://api.openai.com/v1",
-                    "model_mapping": {},
-                    "is_enabled": True
-                }
-            ]
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "version": 1,
+                "providers": [
+                    {
+                        "id": "openai-primary",
+                        "provider_type": "openai",
+                        "api_base": "https://api.openai.com/v1",
+                        "model_mapping": {},
+                        "is_enabled": True,
+                    }
+                ],
+            }
         }
-    })
-    
+    )
+
     version: int = Field(..., description="Current configuration version")
     providers: list[ProviderResponse] = Field(..., description="List of providers")
 
 
 class ProviderCreateResponse(BaseModel):
     """Provider creation response"""
+
     version: int = Field(..., description="Current configuration version")
     provider: ProviderResponse = Field(..., description="Created provider")
 
 
 class MasterKeyCreate(BaseModel):
     """Master key creation request"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "id": "key-1",
-            "key": "sk-my-secret-key",
-            "name": "Production Key",
-            "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
-            "rate_limit": 100
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "id": "key-1",
+                "key": "sk-my-secret-key",
+                "name": "Production Key",
+                "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
+                "rate_limit": 100,
+            }
         }
-    })
-    
+    )
+
     id: str = Field(..., description="Unique key ID", examples=["key-1"])
-    key: str = Field(..., description="The actual API key", examples=["sk-my-secret-key"])
-    name: str = Field(..., description="Human-readable name", examples=["Production Key"])
-    allowed_models: list[str] = Field(default_factory=list, description="Allowed models (empty = all)", examples=[["gpt-4", "gpt-3.5-turbo"]])
-    rate_limit: Optional[int] = Field(default=None, description="Rate limit (requests per second)", examples=[100])
+    key: str = Field(
+        ..., description="The actual API key", examples=["sk-my-secret-key"]
+    )
+    name: str = Field(
+        ..., description="Human-readable name", examples=["Production Key"]
+    )
+    allowed_models: list[str] = Field(
+        default_factory=list,
+        description="Allowed models (empty = all)",
+        examples=[["gpt-4", "gpt-3.5-turbo"]],
+    )
+    rate_limit: Optional[int] = Field(
+        default=None, description="Rate limit (requests per second)", examples=[100]
+    )
 
 
 class MasterKeyUpdate(BaseModel):
     """Master key update request"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "name": "Updated Key Name",
-            "rate_limit": 200,
-            "is_enabled": True
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Updated Key Name",
+                "rate_limit": 200,
+                "is_enabled": True,
+            }
         }
-    })
-    
+    )
+
     name: Optional[str] = Field(None, description="Human-readable name")
-    allowed_models: Optional[list[str]] = Field(None, description="Allowed models (empty = all)")
-    rate_limit: Optional[int] = Field(None, description="Rate limit (requests per second)")
+    allowed_models: Optional[list[str]] = Field(
+        None, description="Allowed models (empty = all)"
+    )
+    rate_limit: Optional[int] = Field(
+        None, description="Rate limit (requests per second)"
+    )
     is_enabled: Optional[bool] = Field(None, description="Whether the key is enabled")
 
 
 class MasterKeyResponse(BaseModel):
     """Master key response model"""
-    model_config = ConfigDict(from_attributes=True, json_schema_extra={
-        "example": {
-            "id": "key-1",
-            "name": "Production Key",
-            "key_preview": "sk-***key",
-            "allowed_models": ["gpt-4"],
-            "rate_limit": 100,
-            "is_enabled": True
-        }
-    })
-    
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "example": {
+                "id": "key-1",
+                "name": "Production Key",
+                "key_preview": "sk-***key",
+                "allowed_models": ["gpt-4"],
+                "rate_limit": 100,
+                "is_enabled": True,
+            }
+        },
+    )
+
     id: str = Field(..., description="Unique key identifier")
     name: str = Field(..., description="Human-readable name")
     key_preview: str = Field(..., description="Masked preview of the key")
     allowed_models: list[str] = Field(..., description="Allowed models")
-    rate_limit: Optional[int] = Field(None, description="Rate limit (requests per second)")
+    rate_limit: Optional[int] = Field(
+        None, description="Rate limit (requests per second)"
+    )
     is_enabled: bool = Field(..., description="Whether the key is enabled")
 
 
 class MasterKeyListResponse(BaseModel):
     """Master key list response"""
+
     version: int = Field(..., description="Current configuration version")
     keys: list[MasterKeyResponse] = Field(..., description="List of master keys")
 
 
 class MasterKeyCreateResponse(BaseModel):
     """Master key creation response"""
+
     version: int = Field(..., description="Current configuration version")
     key: MasterKeyResponse = Field(..., description="Created master key")
 
 
-class MasterKeyRotateResponse(BaseModel):
-    """Master key rotation response"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "version": 2,
-            "new_key": "sk-new-generated-key",
-            "message": "Save this key securely. It will not be shown again."
-        }
-    })
-    
-    version: int = Field(..., description="Current configuration version")
-    new_key: str = Field(..., description="The new generated key")
-    message: str = Field(..., description="Important message about the key")
-
-
 class ConfigVersionResponse(BaseModel):
     """Config version response"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "version": 1,
-            "timestamp": "2024-01-01T00:00:00Z"
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {"version": 1, "timestamp": "2024-01-01T00:00:00Z"}
         }
-    })
-    
+    )
+
     version: int = Field(..., description="Current configuration version")
     timestamp: str = Field(..., description="Last update timestamp in ISO format")
 
 
 class ConfigReloadResponse(BaseModel):
     """Config reload response"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "version": 2,
-            "timestamp": "2024-01-01T00:00:00Z",
-            "providers_count": 3,
-            "master_keys_count": 2
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "version": 2,
+                "timestamp": "2024-01-01T00:00:00Z",
+                "providers_count": 3,
+                "master_keys_count": 2,
+            }
         }
-    })
-    
+    )
+
     version: int = Field(..., description="New configuration version")
     timestamp: str = Field(..., description="Reload timestamp in ISO format")
     providers_count: int = Field(..., description="Number of active providers")
     master_keys_count: int = Field(..., description="Number of active master keys")
 
 
-class StatusUpdateResponse(BaseModel):
-    """Status update response"""
-    version: int = Field(..., description="Current configuration version")
-    is_enabled: bool = Field(..., description="New enabled status")
-
-
 class UpdateResponse(BaseModel):
     """Generic update response"""
+
     version: int = Field(..., description="Current configuration version")
     status: str = Field(..., description="Update status", examples=["updated"])
 
 
-class HealthResponse(BaseModel):
-    """Admin health check response"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "status": "ok",
-            "database_configured": True,
-            "admin_key_configured": True,
-            "config_loaded": True,
-            "config_version": 1
-        }
-    })
-    
-    status: str = Field(..., description="Health status")
-    database_configured: bool = Field(..., description="Whether database is configured")
-    admin_key_configured: bool = Field(..., description="Whether admin key is configured")
-    config_loaded: bool = Field(..., description="Whether configuration is loaded")
-    config_version: int = Field(..., description="Current configuration version")
-
-
 class ErrorResponse(BaseModel):
     """Error response model"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "detail": "Provider 'openai-primary' not found"
-        }
-    })
-    
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"detail": "Provider 'openai-primary' not found"}}
+    )
+
     detail: str = Field(..., description="Error message")
 
 
 class AuthValidateResponse(BaseModel):
     """Auth validation response"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "valid": True,
-            "message": "Admin key is valid"
-        }
-    })
-    
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"valid": True, "message": "Admin key is valid"}}
+    )
+
     valid: bool = Field(..., description="Whether the admin key is valid")
     message: str = Field(..., description="Validation message")
 
@@ -339,7 +355,10 @@ class AuthValidateResponse(BaseModel):
     responses={
         200: {"model": AuthValidateResponse, "description": "Admin key is valid"},
         401: {"model": AuthValidateResponse, "description": "Invalid admin key"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Admin key not configured"},
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Admin key not configured",
+        },
     },
 )
 async def api_validate_admin_key(
@@ -355,14 +374,18 @@ async def api_validate_admin_key(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=AuthValidateResponse(valid=False, message="Invalid admin key").model_dump(),
+            detail=AuthValidateResponse(
+                valid=False, message="Invalid admin key"
+            ).model_dump(),
         )
 
     provided_key = authorization[7:]
     if provided_key != ADMIN_KEY:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=AuthValidateResponse(valid=False, message="Invalid admin key").model_dump(),
+            detail=AuthValidateResponse(
+                valid=False, message="Invalid admin key"
+            ).model_dump(),
         )
 
     return AuthValidateResponse(valid=True, message="Admin key is valid")
@@ -375,8 +398,14 @@ async def api_validate_admin_key(
     description="Get a list of all configured providers with their settings",
     tags=["providers"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_list_providers(
@@ -409,9 +438,18 @@ async def api_list_providers(
     description="Create a new LLM provider configuration",
     tags=["providers"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        409: {"model": ErrorResponse, "description": "Conflict - Provider already exists"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": "Conflict - Provider already exists",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_create_provider(
@@ -459,9 +497,18 @@ async def api_create_provider(
     description="Retrieve a specific provider configuration by its unique identifier",
     tags=["providers"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        404: {"model": ErrorResponse, "description": "Not found - Provider does not exist"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Provider does not exist",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_get_provider(
@@ -493,10 +540,22 @@ async def api_get_provider(
     description="Update an existing provider configuration",
     tags=["providers"],
     responses={
-        400: {"model": ErrorResponse, "description": "Bad request - No fields to update"},
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        404: {"model": ErrorResponse, "description": "Not found - Provider does not exist"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        400: {
+            "model": ErrorResponse,
+            "description": "Bad request - No fields to update",
+        },
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Provider does not exist",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_update_provider(
@@ -534,9 +593,18 @@ async def api_update_provider(
     description="Delete an existing provider configuration",
     tags=["providers"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        404: {"model": ErrorResponse, "description": "Not found - Provider does not exist"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Provider does not exist",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_delete_provider(
@@ -557,39 +625,6 @@ async def api_delete_provider(
     logger.info(f"Provider deleted: {provider_id}")
 
 
-@router.patch(
-    "/providers/{provider_id}/status",
-    response_model=StatusUpdateResponse,
-    summary="Enable or disable a provider",
-    description="Toggle the enabled status of a provider",
-    tags=["providers"],
-    responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        404: {"model": ErrorResponse, "description": "Not found - Provider does not exist"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
-    },
-)
-async def api_set_provider_status(
-    provider_id: str,
-    enabled: bool,
-    _: None = Depends(verify_admin_key),
-    db: Database = Depends(get_db),
-    config: DynamicConfig = Depends(get_config),
-) -> StatusUpdateResponse:
-    """Enable or disable a provider"""
-    updated = await update_provider(db, provider_id, is_enabled=enabled)
-    if not updated:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Provider '{provider_id}' not found",
-        )
-
-    await config.reload()
-    logger.info(f"Provider {provider_id} {'enabled' if enabled else 'disabled'}")
-
-    return StatusUpdateResponse(version=config.version, is_enabled=enabled)
-
-
 @router.get(
     "/master-keys",
     response_model=MasterKeyListResponse,
@@ -597,8 +632,14 @@ async def api_set_provider_status(
     description="Get a list of all configured master keys (actual keys are hidden)",
     tags=["master-keys"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_list_master_keys(
@@ -632,9 +673,18 @@ async def api_list_master_keys(
     description="Create a new master API key for authentication",
     tags=["master-keys"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        409: {"model": ErrorResponse, "description": "Conflict - Master key already exists"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": "Conflict - Master key already exists",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_create_master_key(
@@ -683,9 +733,18 @@ async def api_create_master_key(
     description="Retrieve a specific master key configuration by its unique identifier",
     tags=["master-keys"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        404: {"model": ErrorResponse, "description": "Not found - Master key does not exist"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Master key does not exist",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_get_master_key(
@@ -718,10 +777,22 @@ async def api_get_master_key(
     description="Update an existing master key configuration",
     tags=["master-keys"],
     responses={
-        400: {"model": ErrorResponse, "description": "Bad request - No fields to update"},
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        404: {"model": ErrorResponse, "description": "Not found - Master key does not exist"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        400: {
+            "model": ErrorResponse,
+            "description": "Bad request - No fields to update",
+        },
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Master key does not exist",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_update_master_key(
@@ -759,9 +830,18 @@ async def api_update_master_key(
     description="Delete an existing master key",
     tags=["master-keys"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        404: {"model": ErrorResponse, "description": "Not found - Master key does not exist"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Master key does not exist",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database or admin key not configured",
+        },
     },
 )
 async def api_delete_master_key(
@@ -782,78 +862,6 @@ async def api_delete_master_key(
     logger.info(f"Master key deleted: {key_id}")
 
 
-@router.patch(
-    "/master-keys/{key_id}/status",
-    response_model=StatusUpdateResponse,
-    summary="Enable or disable a master key",
-    description="Toggle the enabled status of a master key",
-    tags=["master-keys"],
-    responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        404: {"model": ErrorResponse, "description": "Not found - Master key does not exist"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
-    },
-)
-async def api_set_master_key_status(
-    key_id: str,
-    enabled: bool,
-    _: None = Depends(verify_admin_key),
-    db: Database = Depends(get_db),
-    config: DynamicConfig = Depends(get_config),
-) -> StatusUpdateResponse:
-    """Enable or disable a master key"""
-    updated = await update_master_key(db, key_id, is_enabled=enabled)
-    if not updated:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Master key '{key_id}' not found",
-        )
-
-    await config.reload()
-    logger.info(f"Master key {key_id} {'enabled' if enabled else 'disabled'}")
-
-    return StatusUpdateResponse(version=config.version, is_enabled=enabled)
-
-
-@router.post(
-    "/master-keys/{key_id}/rotate",
-    response_model=MasterKeyRotateResponse,
-    summary="Rotate a master key",
-    description="Generate a new key for an existing master key. The old key will be invalidated.",
-    tags=["master-keys"],
-    responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        404: {"model": ErrorResponse, "description": "Not found - Master key does not exist"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Database or admin key not configured"},
-    },
-)
-async def api_rotate_master_key(
-    key_id: str,
-    _: None = Depends(verify_admin_key),
-    db: Database = Depends(get_db),
-    config: DynamicConfig = Depends(get_config),
-) -> MasterKeyRotateResponse:
-    """Rotate a master key (generate new key)"""
-    existing = await get_master_key_by_id(db, key_id)
-    if not existing:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Master key '{key_id}' not found",
-        )
-
-    new_key = f"sk-{secrets.token_urlsafe(32)}"
-    await update_master_key(db, key_id, key=new_key)
-
-    await config.reload()
-    logger.info(f"Master key rotated: {key_id}")
-
-    return MasterKeyRotateResponse(
-        version=config.version,
-        new_key=new_key,
-        message="Save this key securely. It will not be shown again.",
-    )
-
-
 @router.get(
     "/config/version",
     response_model=ConfigVersionResponse,
@@ -861,8 +869,14 @@ async def api_rotate_master_key(
     description="Get the current configuration version and timestamp",
     tags=["config"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Dynamic config not initialized"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Dynamic config not initialized",
+        },
     },
 )
 async def api_get_config_version(
@@ -883,8 +897,14 @@ async def api_get_config_version(
     description="Reload configuration from database and apply changes",
     tags=["config"],
     responses={
-        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing admin key"},
-        503: {"model": ErrorResponse, "description": "Service unavailable - Dynamic config not initialized"},
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Dynamic config not initialized",
+        },
     },
 )
 async def api_reload_config(
@@ -900,25 +920,4 @@ async def api_reload_config(
         timestamp=versioned.timestamp.isoformat(),
         providers_count=len(versioned.providers),
         master_keys_count=len(versioned.master_keys),
-    )
-
-
-@router.get(
-    "/health",
-    response_model=HealthResponse,
-    summary="Admin API health check",
-    description="Check the health status of the Admin API (no authentication required)",
-    tags=["health"],
-)
-async def admin_health() -> HealthResponse:
-    """Admin API health check (no auth required)"""
-    db = get_database()
-    config = get_dynamic_config()
-
-    return HealthResponse(
-        status="ok",
-        database_configured=db is not None,
-        admin_key_configured=ADMIN_KEY is not None,
-        config_loaded=config is not None and config.config is not None,
-        config_version=config.version if config else 0,
     )
