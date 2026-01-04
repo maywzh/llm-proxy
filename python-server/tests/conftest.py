@@ -1,13 +1,22 @@
 """Shared test fixtures and configuration"""
 
 import os
-from unittest.mock import Mock
+from unittest.mock import Mock, patch, AsyncMock
+from contextlib import asynccontextmanager
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.models.config import AppConfig, ProviderConfig, ServerConfig
+from app.models.config import (
+    AppConfig,
+    ProviderConfig,
+    ServerConfig,
+    MasterKeyConfig,
+    RateLimitConfig,
+)
 from app.services.provider_service import ProviderService
+from app.core.database import hash_key
 
 
 @pytest.fixture
@@ -165,3 +174,64 @@ def clear_config_cache():
     config_module._cached_config = None
     clear_cache()
     ps_module._provider_service = None
+
+
+@pytest.fixture
+def app_with_config(test_config, monkeypatch):
+    """Create a FastAPI app with test configuration (no database)"""
+    from app.api.router import api_router, metrics_router, admin_router
+    from app.core.middleware import MetricsMiddleware
+    from app.core import config as config_module
+    from app.core import security as security_module
+    from app.services import provider_service as ps_module
+
+    raw_master_key = "test-master-key"
+    hashed_master_key = hash_key(raw_master_key)
+
+    config_with_auth = AppConfig(
+        providers=test_config.providers,
+        server=test_config.server,
+        verify_ssl=test_config.verify_ssl,
+        master_keys=[
+            MasterKeyConfig(
+                key=hashed_master_key,
+                name="test-key",
+                rate_limit=RateLimitConfig(requests_per_second=1000, burst_size=2000),
+            )
+        ],
+    )
+
+    config_module._cached_config = config_with_auth
+    monkeypatch.setattr(security_module, "get_config", lambda: config_with_auth)
+    monkeypatch.setattr(ps_module, "get_config", lambda: config_with_auth)
+
+    ps_module._provider_service = None
+    service = ProviderService()
+    service.initialize()
+
+    security_module.init_rate_limiter()
+
+    @asynccontextmanager
+    async def test_lifespan(app: FastAPI):
+        yield
+
+    app = FastAPI(lifespan=test_lifespan)
+    app.add_middleware(MetricsMiddleware)
+    app.include_router(api_router)
+    app.include_router(metrics_router)
+    app.include_router(admin_router)
+
+    @app.get("/health")
+    async def health_check():
+        return {
+            "status": "ok",
+            "providers": len(config_with_auth.providers),
+        }
+
+    return app
+
+
+@pytest.fixture
+def app_client(app_with_config):
+    """Test client for the FastAPI app"""
+    return TestClient(app_with_config)

@@ -7,6 +7,7 @@ use crate::api::models::*;
 use crate::api::streaming::{
     calculate_message_tokens, create_sse_stream, rewrite_model_in_response,
 };
+use crate::core::config::MasterKeyConfig;
 use crate::core::database::hash_key;
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID, API_KEY_NAME};
 use crate::core::metrics::get_metrics;
@@ -21,6 +22,7 @@ use axum::{
 };
 use prometheus::{Encoder, TextEncoder};
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Shared application state.
@@ -37,8 +39,8 @@ pub struct AppState {
 /// Checks the Authorization header against configured master keys.
 /// If a master key is found, also enforces rate limiting if configured.
 ///
-/// Returns the key name for metrics tracking (not the key itself for security).
-fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<String> {
+/// Returns the full MasterKeyConfig for the authenticated key, or None if no auth required.
+fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<MasterKeyConfig>> {
     // Extract the provided key from Authorization header
     let provided_key = if let Some(auth_header) = headers.get("authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
@@ -56,7 +58,7 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<String> {
 
     // Check if any authentication is required
     if state.config.master_keys.is_empty() {
-        return Ok("anonymous".to_string());
+        return Ok(None);
     }
 
     let provided_key = provided_key.ok_or(AppError::Unauthorized)?;
@@ -74,16 +76,42 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<String> {
                 key_name = %key_config.name,
                 "Request authenticated with master key"
             );
-            return Ok(key_config.name.clone());
+            return Ok(Some(key_config.clone()));
         }
     }
 
     Err(AppError::Unauthorized)
 }
 
+/// Get the key name from an optional MasterKeyConfig
+fn get_key_name(key_config: &Option<MasterKeyConfig>) -> String {
+    key_config
+        .as_ref()
+        .map(|k| k.name.clone())
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
 /// Handle chat completion requests.
 ///
 /// Supports both streaming and non-streaming responses.
+/// This endpoint is compatible with the OpenAI Chat Completions API.
+#[utoipa::path(
+    post,
+    path = "/v1/chat/completions",
+    tag = "completions",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "Chat completion response", body = ChatCompletionResponse),
+        (status = 400, description = "Bad request", body = ApiErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ApiErrorResponse),
+        (status = 502, description = "Bad gateway - upstream error", body = ApiErrorResponse),
+        (status = 504, description = "Gateway timeout", body = ApiErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 #[tracing::instrument(skip(state, headers, payload))]
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
@@ -91,7 +119,8 @@ pub async fn chat_completions(
     Json(mut payload): Json<serde_json::Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let api_key_name = verify_auth(&headers, &state)?;
+    let key_config = verify_auth(&headers, &state)?;
+    let api_key_name = get_key_name(&key_config);
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
@@ -324,6 +353,25 @@ pub async fn chat_completions(
 }
 
 /// Handle legacy completions endpoint.
+///
+/// This endpoint is compatible with the OpenAI Completions API (legacy).
+#[utoipa::path(
+    post,
+    path = "/v1/completions",
+    tag = "completions",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "Completion response"),
+        (status = 400, description = "Bad request", body = ApiErrorResponse),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ApiErrorResponse),
+        (status = 502, description = "Bad gateway - upstream error", body = ApiErrorResponse),
+        (status = 504, description = "Gateway timeout", body = ApiErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 #[tracing::instrument(skip(state, headers, payload))]
 pub async fn completions(
     State(state): State<Arc<AppState>>,
@@ -331,7 +379,8 @@ pub async fn completions(
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let api_key_name = verify_auth(&headers, &state)?;
+    let key_config = verify_auth(&headers, &state)?;
+    let api_key_name = get_key_name(&key_config);
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
@@ -505,6 +554,21 @@ pub async fn completions(
 }
 
 /// List available models.
+///
+/// Returns a list of all available models that can be used with the API.
+/// This endpoint is compatible with the OpenAI Models API.
+#[utoipa::path(
+    get,
+    path = "/v1/models",
+    tag = "models",
+    responses(
+        (status = 200, description = "List of available models", body = ModelList),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 #[tracing::instrument(skip(state, headers))]
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
@@ -514,15 +578,31 @@ pub async fn list_models(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let _api_key_name = verify_auth(&headers, &state)?;
+            let key_config = verify_auth(&headers, &state)?;
 
             tracing::debug!(
                 request_id = %request_id,
                 "Listing available models"
             );
 
-            let models = state.provider_service.get_all_models();
-            let mut model_list: Vec<ModelInfo> = models
+            let all_models = state.provider_service.get_all_models();
+            
+            // Filter models based on allowed_models if configured
+            let filtered_models: HashSet<String> = if let Some(ref config) = key_config {
+                if !config.allowed_models.is_empty() {
+                    let allowed_set: HashSet<&String> = config.allowed_models.iter().collect();
+                    all_models
+                        .into_iter()
+                        .filter(|m| allowed_set.contains(m))
+                        .collect()
+                } else {
+                    all_models
+                }
+            } else {
+                all_models
+            };
+
+            let mut model_list: Vec<ModelInfo> = filtered_models
                 .into_iter()
                 .map(|model| ModelInfo {
                     id: model,

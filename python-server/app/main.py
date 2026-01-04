@@ -111,14 +111,22 @@ def _log_provider_info() -> None:
 def create_app() -> FastAPI:
     """Create and configure FastAPI application"""
     app = FastAPI(
-        title="LLM Proxy Admin API",
-        description="Admin API for managing LLM Proxy configuration including providers and master keys.",
+        title="LLM Proxy API",
+        description="LLM Proxy API with OpenAI-compatible endpoints and Admin API for configuration management.",
         version="1.0.0",
         lifespan=lifespan,
         docs_url="/swagger-ui",
         redoc_url="/redoc",
         openapi_url="/api-docs/openapi.json",
         openapi_tags=[
+            {
+                "name": "completions",
+                "description": "OpenAI-compatible completion endpoints",
+            },
+            {
+                "name": "models",
+                "description": "OpenAI-compatible model listing endpoints",
+            },
             {"name": "providers", "description": "Provider management endpoints"},
             {"name": "master-keys", "description": "Master key management endpoints"},
             {"name": "config", "description": "Configuration management endpoints"},
@@ -130,11 +138,19 @@ def create_app() -> FastAPI:
         if app.openapi_schema:
             return app.openapi_schema
         openapi_schema = get_openapi(
-            title="LLM Proxy Admin API",
+            title="LLM Proxy API",
             version="1.0.0",
-            description="Admin API for managing LLM Proxy configuration including providers and master keys.",
+            description="LLM Proxy API with OpenAI-compatible endpoints and Admin API for configuration management.",
             routes=app.routes,
             tags=[
+                {
+                    "name": "completions",
+                    "description": "OpenAI-compatible completion endpoints",
+                },
+                {
+                    "name": "models",
+                    "description": "OpenAI-compatible model listing endpoints",
+                },
                 {"name": "providers", "description": "Provider management endpoints"},
                 {
                     "name": "master-keys",

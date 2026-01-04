@@ -121,6 +121,7 @@ fn create_test_config_with_auth() -> AppConfig {
         description: None,
         rate_limit: None,
         enabled: true,
+        allowed_models: vec![],
     }];
     config
 }
