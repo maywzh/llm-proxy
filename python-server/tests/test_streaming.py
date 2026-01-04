@@ -114,13 +114,13 @@ class TestStreamResponse:
     @pytest.mark.asyncio
     async def test_stream_response_basic(self):
         """Test basic streaming response"""
+
+        async def mock_aiter_bytes():
+            yield b'data: {"model":"gpt-4-0613","content":"Hello"}\n\n'
+            yield b"data: [DONE]\n\n"
+
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = AsyncMock(
-            return_value=[
-                b'data: {"model":"gpt-4-0613","content":"Hello"}\n\n',
-                b"data: [DONE]\n\n",
-            ]
-        )
+        mock_response.aiter_bytes = mock_aiter_bytes
 
         chunks = []
         async for chunk in stream_response(mock_response, "gpt-4", "test-provider"):
@@ -133,8 +133,11 @@ class TestStreamResponse:
         """Test streaming response with usage information"""
         usage_chunk = b'data: {"model":"gpt-4-0613","usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}\n\n'
 
+        async def mock_aiter_bytes():
+            yield usage_chunk
+
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = AsyncMock(return_value=[usage_chunk])
+        mock_response.aiter_bytes = mock_aiter_bytes
 
         chunks = []
         async for chunk in stream_response(mock_response, "gpt-4", "test-provider"):
@@ -146,14 +149,14 @@ class TestStreamResponse:
     @pytest.mark.asyncio
     async def test_stream_response_without_usage_fallback(self):
         """Test fallback token counting when provider doesn't return usage"""
+
+        async def mock_aiter_bytes():
+            yield b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n'
+            yield b"data: [DONE]\n\n"
+
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = AsyncMock(
-            return_value=[
-                b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
-                b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
-                b"data: [DONE]\n\n",
-            ]
-        )
+        mock_response.aiter_bytes = mock_aiter_bytes
 
         request_data = {"messages": [{"role": "user", "content": "Test message"}]}
 
@@ -169,14 +172,14 @@ class TestStreamResponse:
     @pytest.mark.asyncio
     async def test_stream_response_with_null_usage(self):
         """Test fallback when usage is null"""
+
+        async def mock_aiter_bytes():
+            yield b'data: {"choices":[{"delta":{"content":"Test"}}]}\n\n'
+            yield b'data: {"usage":null}\n\n'
+            yield b"data: [DONE]\n\n"
+
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = AsyncMock(
-            return_value=[
-                b'data: {"choices":[{"delta":{"content":"Test"}}]}\n\n',
-                b'data: {"usage":null}\n\n',
-                b"data: [DONE]\n\n",
-            ]
-        )
+        mock_response.aiter_bytes = mock_aiter_bytes
 
         request_data = {"messages": [{"role": "user", "content": "Hello"}]}
 
@@ -191,8 +194,12 @@ class TestStreamResponse:
     @pytest.mark.asyncio
     async def test_stream_response_completes(self):
         """Test that stream completes successfully"""
+
+        async def mock_aiter_bytes():
+            yield b"data: test\n\n"
+
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = AsyncMock(return_value=[b"data: test\n\n"])
+        mock_response.aiter_bytes = mock_aiter_bytes
 
         chunks = []
         async for chunk in stream_response(mock_response, None, "test-provider"):
@@ -203,15 +210,20 @@ class TestStreamResponse:
     @pytest.mark.asyncio
     async def test_stream_response_error_handling(self):
         """Test error handling in stream response"""
+
+        async def mock_aiter_bytes():
+            raise Exception("Stream error")
+            yield  # Make it a generator
+
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = AsyncMock(side_effect=Exception("Stream error"))
+        mock_response.aiter_bytes = mock_aiter_bytes
 
         chunks = []
         async for chunk in stream_response(mock_response, None, "test-provider"):
             chunks.append(chunk)
 
-        # Should handle error gracefully
-        assert len(chunks) == 0
+        # Should handle error gracefully and yield error event
+        assert len(chunks) == 1
 
 
 @pytest.mark.unit
@@ -360,8 +372,13 @@ class TestStreamingEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_stream(self):
         """Test handling empty stream"""
+
+        async def mock_aiter_bytes():
+            return
+            yield  # Make it a generator
+
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = AsyncMock(return_value=[])
+        mock_response.aiter_bytes = mock_aiter_bytes
 
         chunks = []
         async for chunk in stream_response(mock_response, None, "test-provider"):

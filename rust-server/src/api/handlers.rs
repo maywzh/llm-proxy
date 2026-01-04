@@ -294,16 +294,30 @@ pub async fn chat_completions(
 
                             let mut final_response = if is_stream {
                                 // For streaming, response is already checked for errors above
-                                // Pass input tokens for fallback calculation
-                                let sse_stream = create_sse_stream(
+                                // Pass input tokens for fallback calculation and TTFT timeout
+                                match create_sse_stream(
                                     response,
                                     model_label.clone(),
                                     provider.name.clone(),
                                     prompt_tokens_for_fallback,
+                                    state.config.ttft_timeout_secs,
                                 )
-                                .await;
-
-                                sse_stream.into_response()
+                                .await
+                                {
+                                    Ok(sse_stream) => sse_stream.into_response(),
+                                    Err(e) => {
+                                        tracing::error!(
+                                            request_id = %request_id,
+                                            provider = %provider.name,
+                                            error = %e,
+                                            "Streaming error"
+                                        );
+                                        return Ok(create_error_response(
+                                            StatusCode::GATEWAY_TIMEOUT,
+                                            e.to_string(),
+                                        ));
+                                    }
+                                }
                             } else {
                                 let response_data: serde_json::Value = match response.json().await {
                                     Ok(data) => data,
