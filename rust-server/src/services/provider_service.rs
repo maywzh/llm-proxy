@@ -50,6 +50,7 @@ impl ProviderService {
     ///     server: ServerConfig::default(),
     ///     verify_ssl: true,
     ///     request_timeout_secs: 300,
+    ///     ttft_timeout_secs: None,
     ///     master_keys: vec![],
     /// };
     /// let service = ProviderService::new(config);
@@ -212,6 +213,7 @@ mod tests {
             server: ServerConfig::default(),
             verify_ssl: true,
             request_timeout_secs: 300,
+            ttft_timeout_secs: None,
             master_keys: vec![],
         }
     }
@@ -228,6 +230,7 @@ mod tests {
             server: ServerConfig::default(),
             verify_ssl: true,
             request_timeout_secs: 300,
+            ttft_timeout_secs: None,
             master_keys: vec![],
         }
     }

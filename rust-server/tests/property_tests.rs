@@ -33,6 +33,7 @@ fn app_config_strategy() -> impl Strategy<Value = AppConfig> {
         server: ServerConfig::default(),
         verify_ssl: true,
         request_timeout_secs: 300,
+        ttft_timeout_secs: None,
         master_keys: vec![],
     })
 }
@@ -101,6 +102,7 @@ proptest! {
             server: ServerConfig::default(),
             verify_ssl: true,
             request_timeout_secs: 300,
+            ttft_timeout_secs: None,
             master_keys: vec![],
         };
 
@@ -185,6 +187,7 @@ proptest! {
             server: ServerConfig::default(),
             verify_ssl: true,
             request_timeout_secs: 300,
+            ttft_timeout_secs: None,
             master_keys: vec![],
         };
 
@@ -240,6 +243,7 @@ proptest! {
             server: ServerConfig::default(),
             verify_ssl: true,
             request_timeout_secs: 300,
+            ttft_timeout_secs: None,
             master_keys: vec![],
         };
 
@@ -325,6 +329,7 @@ mod quickcheck_tests {
             server: ServerConfig::default(),
             verify_ssl: true,
             request_timeout_secs: 300,
+            ttft_timeout_secs: None,
             master_keys: vec![],
         };
 
@@ -356,6 +361,7 @@ mod quickcheck_tests {
             server: ServerConfig::default(),
             verify_ssl: true,
             request_timeout_secs: 300,
+            ttft_timeout_secs: None,
             master_keys: vec![],
         };
 
@@ -442,6 +448,7 @@ mod complex_multi_provider_tests {
             server: ServerConfig::default(),
             verify_ssl: true,
             request_timeout_secs: 300,
+            ttft_timeout_secs: None,
             master_keys: vec![],
         };
 

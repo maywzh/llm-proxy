@@ -247,6 +247,7 @@ fn convert_runtime_to_app_config(
         server: base.server.clone(),
         verify_ssl: base.verify_ssl,
         request_timeout_secs: base.request_timeout_secs,
+        ttft_timeout_secs: base.ttft_timeout_secs,
         master_keys,
     }
 }

@@ -110,6 +110,7 @@ fn test_app_state_with_rate_limiter() {
         server: ServerConfig::default(),
         verify_ssl: true,
         request_timeout_secs: 300,
+        ttft_timeout_secs: None,
         master_keys,
     };
 
@@ -161,6 +162,7 @@ fn test_disabled_key_not_rate_limited() {
         server: ServerConfig::default(),
         verify_ssl: true,
         request_timeout_secs: 300,
+        ttft_timeout_secs: None,
         master_keys: vec![MasterKeyConfig {
             key: "disabled-key".to_string(),
             name: "Disabled Key".to_string(),
@@ -204,6 +206,7 @@ fn test_key_without_rate_limit_config() {
         server: ServerConfig::default(),
         verify_ssl: true,
         request_timeout_secs: 300,
+        ttft_timeout_secs: None,
         master_keys: vec![MasterKeyConfig {
             key: "unlimited-key".to_string(),
             name: "Unlimited Key".to_string(),
@@ -245,6 +248,7 @@ fn test_mixed_rate_limits() {
         server: ServerConfig::default(),
         verify_ssl: true,
         request_timeout_secs: 300,
+        ttft_timeout_secs: None,
         master_keys: vec![
             MasterKeyConfig {
                 key: "limited-key-1".to_string(),
