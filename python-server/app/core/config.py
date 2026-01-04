@@ -34,6 +34,9 @@ class EnvConfig:
         )
         self.db_url: Optional[str] = os.environ.get("DB_URL")
         self.admin_key: Optional[str] = os.environ.get("ADMIN_KEY")
+        # Global provider suffix that can be optionally prefixed to model names
+        # e.g., if PROVIDER_SUFFIX="Proxy", then "Proxy/gpt-4" and "gpt-4" are equivalent
+        self.provider_suffix: Optional[str] = os.environ.get("PROVIDER_SUFFIX")
 
     @classmethod
     def from_env(cls) -> "EnvConfig":

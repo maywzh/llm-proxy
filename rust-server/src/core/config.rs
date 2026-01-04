@@ -34,6 +34,11 @@ pub struct AppConfig {
     /// List of master keys with optional rate limiting
     #[serde(default)]
     pub master_keys: Vec<MasterKeyConfig>,
+
+    /// Optional provider suffix for model name prefixing
+    /// If set (e.g., "Proxy"), then "Proxy/gpt-4" is equivalent to "gpt-4"
+    #[serde(default)]
+    pub provider_suffix: Option<String>,
 }
 
 /// Configuration for a master API key with optional rate limiting.
@@ -166,6 +171,7 @@ impl AppConfig {
         let ttft_timeout_secs = std::env::var("TTFT_TIMEOUT_SECS")
             .ok()
             .and_then(|t| t.parse().ok());
+        let provider_suffix = std::env::var("PROVIDER_SUFFIX").ok();
 
         Ok(Self {
             providers: vec![],
@@ -174,6 +180,7 @@ impl AppConfig {
             request_timeout_secs,
             ttft_timeout_secs,
             master_keys: vec![],
+            provider_suffix,
         })
     }
 }
@@ -237,6 +244,7 @@ mod tests {
             std::env::remove_var("VERIFY_SSL");
             std::env::remove_var("REQUEST_TIMEOUT_SECS");
             std::env::remove_var("TTFT_TIMEOUT_SECS");
+            std::env::remove_var("PROVIDER_SUFFIX");
         }
 
         let config = AppConfig::from_env().unwrap();
@@ -247,6 +255,7 @@ mod tests {
         assert!(config.ttft_timeout_secs.is_none());
         assert!(config.providers.is_empty());
         assert!(config.master_keys.is_empty());
+        assert!(config.provider_suffix.is_none());
     }
 
     #[test]
@@ -273,6 +282,37 @@ mod tests {
             std::env::remove_var("VERIFY_SSL");
             std::env::remove_var("REQUEST_TIMEOUT_SECS");
             std::env::remove_var("TTFT_TIMEOUT_SECS");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_provider_suffix_from_env() {
+        unsafe {
+            std::env::set_var("PROVIDER_SUFFIX", "Proxy");
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(config.provider_suffix, Some("Proxy".to_string()));
+
+        unsafe {
+            std::env::remove_var("PROVIDER_SUFFIX");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_provider_suffix_empty_string() {
+        // Empty string should still be Some("")
+        unsafe {
+            std::env::set_var("PROVIDER_SUFFIX", "");
+        }
+
+        let config = AppConfig::from_env().unwrap();
+        assert_eq!(config.provider_suffix, Some("".to_string()));
+
+        unsafe {
+            std::env::remove_var("PROVIDER_SUFFIX");
         }
     }
 }

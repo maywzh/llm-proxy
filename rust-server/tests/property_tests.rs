@@ -35,6 +35,7 @@ fn app_config_strategy() -> impl Strategy<Value = AppConfig> {
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
         master_keys: vec![],
+        provider_suffix: None,
     })
 }
 
@@ -104,6 +105,7 @@ proptest! {
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
             master_keys: vec![],
+            provider_suffix: None,
         };
 
         let service = ProviderService::new(config);
@@ -189,6 +191,7 @@ proptest! {
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
             master_keys: vec![],
+            provider_suffix: None,
         };
 
         let service = ProviderService::new(config);
@@ -245,6 +248,7 @@ proptest! {
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
             master_keys: vec![],
+            provider_suffix: None,
         };
 
         let service = ProviderService::new(config);
@@ -331,6 +335,7 @@ mod quickcheck_tests {
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
             master_keys: vec![],
+            provider_suffix: None,
         };
 
         let service = ProviderService::new(config);
@@ -363,6 +368,7 @@ mod quickcheck_tests {
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
             master_keys: vec![],
+            provider_suffix: None,
         };
 
         let service = ProviderService::new(config);
@@ -450,6 +456,7 @@ mod complex_multi_provider_tests {
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
             master_keys: vec![],
+            provider_suffix: None,
         };
 
         let service = ProviderService::new(config);

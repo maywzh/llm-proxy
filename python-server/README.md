@@ -34,6 +34,7 @@ LLM Proxy 使用数据库存储配置：
 | `DB_URL` | PostgreSQL 连接字符串 | 数据库模式必需 |
 | `ADMIN_KEY` | Admin API 认证密钥 | 数据库模式必需 |
 | `PORT` | 服务端口 | 否（默认 18000）|
+| `PROVIDER_SUFFIX` | 可选的模型名称前缀。设置后，形如 `{PROVIDER_SUFFIX}/{model}` 的模型名会被处理为 `{model}` | 否 |
 
 ### 数据库迁移
 
@@ -150,6 +151,9 @@ export ADMIN_KEY='your-admin-key'
 
 # 可选：服务端口（默认 18000）
 export PORT=18000
+
+# 可选：模型名称前缀（用于统一模型名称格式）
+export PROVIDER_SUFFIX='Proxy'
 ```
 
 ### 3. 运行数据库迁移
@@ -203,6 +207,42 @@ curl http://localhost:8000/v1/chat/completions \
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
+
+### 模型名称前缀功能
+
+当设置了 `PROVIDER_SUFFIX` 环境变量时，可以使用带前缀的模型名称：
+
+```bash
+# 设置前缀
+export PROVIDER_SUFFIX=Proxy
+
+# 以下两种请求是等价的：
+# 1. 使用带前缀的模型名
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Proxy/gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# 2. 使用原始模型名
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+#### 前缀功能行为说明
+
+- 如果未设置 `PROVIDER_SUFFIX`，模型名称保持原样
+- 如果设置了 `PROVIDER_SUFFIX`（例如 "Proxy"）：
+  - `Proxy/gpt-4` → `gpt-4`（去除前缀）
+  - `gpt-4` → `gpt-4`（保持不变）
+  - `Other/gpt-4` → `Other/gpt-4`（不同前缀，保持不变）
+
+这个功能适用于需要统一模型名称格式的场景，特别是在多个代理服务之间切换时。
 
 ### 流式响应
 
