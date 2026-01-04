@@ -403,6 +403,7 @@ class DynamicConfig:
                     else None
                 ),
                 enabled=mk.is_enabled,
+                allowed_models=mk.allowed_models or [],
             )
             for mk in versioned_config.master_keys
         ]
