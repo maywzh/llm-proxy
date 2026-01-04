@@ -1,4 +1,5 @@
 """Completions API endpoints"""
+
 from typing import Optional
 import json
 
@@ -12,9 +13,15 @@ from app.api.dependencies import verify_auth, get_provider_svc
 from app.services.provider_service import ProviderService
 from app.utils.streaming import create_streaming_response, rewrite_model_in_response
 from app.core.config import get_config
+from app.core.exceptions import TTFTTimeoutError
 from app.core.http_client import get_http_client
 from app.core.metrics import TOKEN_USAGE
-from app.core.logging import get_logger, set_provider_context, clear_provider_context, get_api_key_name
+from app.core.logging import (
+    get_logger,
+    set_provider_context,
+    clear_provider_context,
+    get_api_key_name,
+)
 
 router = APIRouter()
 logger = get_logger()
@@ -22,12 +29,12 @@ logger = get_logger()
 
 def _attach_response_metadata(response, model_name: str, provider_name: str):
     """Store model/provider info on response for downstream middleware."""
-    extensions = getattr(response, 'extensions', None)
+    extensions = getattr(response, "extensions", None)
     if not isinstance(extensions, dict):
         extensions = {}
-        setattr(response, 'extensions', extensions)
-    extensions['model'] = model_name
-    extensions['provider'] = provider_name
+        setattr(response, "extensions", extensions)
+    extensions["model"] = model_name
+    extensions["provider"] = provider_name
     return response
 
 
@@ -48,20 +55,18 @@ async def _parse_stream_error(response: httpx.Response) -> dict:
     try:
         body = await response.aread()
     except Exception:
-        body = b''
+        body = b""
     if body:
         try:
-            return json.loads(body.decode('utf-8'))
+            return json.loads(body.decode("utf-8"))
         except Exception:
-            text = body.decode('utf-8', errors='replace')
+            text = body.decode("utf-8", errors="replace")
             return {"error": {"message": text or f"HTTP {response.status_code}"}}
     return {"error": {"message": f"HTTP {response.status_code}"}}
 
 
 async def proxy_completion_request(
-    request: Request,
-    endpoint: str,
-    provider_svc: ProviderService
+    request: Request, endpoint: str, provider_svc: ProviderService
 ):
     """Common logic for proxying completion requests"""
     try:
@@ -69,39 +74,41 @@ async def proxy_completion_request(
     except ClientDisconnect:
         logger.info("Client disconnected before request body was read")
         raise HTTPException(status_code=499, detail="Client closed request")
-    
-    original_model = data.get('model')
-    
+
+    original_model = data.get("model")
+
     # Select provider based on the requested model
     try:
         provider = provider_svc.get_next_provider(model=original_model)
     except ValueError as e:
         logger.error(f"Provider selection failed: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
-    
+
     # Store model and provider in request state for metrics middleware
-    request.state.model = original_model or 'unknown'
+    request.state.model = original_model or "unknown"
     request.state.provider = provider.name
-    
-    if 'model' in data and provider.model_mapping:
-        data['model'] = provider.model_mapping.get(original_model, original_model)
-    
+
+    if "model" in data and provider.model_mapping:
+        data["model"] = provider.model_mapping.get(original_model, original_model)
+
     headers = {
-        'Authorization': f"Bearer {provider.api_key}",
-        'Content-Type': 'application/json'
+        "Authorization": f"Bearer {provider.api_key}",
+        "Content-Type": "application/json",
     }
-    
+
     url = f"{provider.api_base}/{endpoint}"
-    
+
     try:
         # Set provider context for logging
         set_provider_context(provider.name)
-        
-        if data.get('stream', False):
-            logger.debug(f"Streaming request to {provider.name} for model {original_model}")
+
+        if data.get("stream", False):
+            logger.debug(
+                f"Streaming request to {provider.name} for model {original_model}"
+            )
             # Use shared HTTP client for streaming
             client = get_http_client()
-            stream_ctx = client.stream('POST', url, json=data, headers=headers)
+            stream_ctx = client.stream("POST", url, json=data, headers=headers)
             try:
                 response = await stream_ctx.__aenter__()
             except Exception:
@@ -118,103 +125,113 @@ async def proxy_completion_request(
                     )
                     await _close_stream_resources(stream_ctx)
                     error_response = JSONResponse(
-                        content=error_body,
-                        status_code=response.status_code
+                        content=error_body, status_code=response.status_code
                     )
                     return _attach_response_metadata(
-                        error_response,
-                        request.state.model,
-                        provider.name
+                        error_response, request.state.model, provider.name
                     )
 
+                config = get_config()
                 streaming_response = create_streaming_response(
                     response,
                     original_model,
                     provider.name,
-                    data
+                    data,
+                    config.ttft_timeout_secs,
                 )
                 streaming_response.background = BackgroundTask(
-                    _close_stream_resources,
-                    stream_ctx
+                    _close_stream_resources, stream_ctx
                 )
                 return _attach_response_metadata(
-                    streaming_response,
-                    request.state.model,
-                    provider.name
+                    streaming_response, request.state.model, provider.name
                 )
             except Exception:
                 await _close_stream_resources(stream_ctx)
                 raise
         else:
-            logger.debug(f"Non-streaming request to {provider.name} for model {original_model}")
+            logger.debug(
+                f"Non-streaming request to {provider.name} for model {original_model}"
+            )
             # Use shared HTTP client for non-streaming requests
             client = get_http_client()
             response = await client.post(url, json=data, headers=headers)
-                
+
             # Check if backend API returned an error status code
             # Faithfully pass through the backend error
             if response.status_code >= 400:
                 error_body = _parse_non_stream_error(response)
-                
+
                 logger.error(
                     f"Backend API returned error status {response.status_code} "
                     f"from provider {provider.name}"
                 )
                 # Faithfully return the backend's status code and error body
-                error_response = JSONResponse(content=error_body, status_code=response.status_code)
-                return _attach_response_metadata(
-                    error_response,
-                    request.state.model,
-                    provider.name
+                error_response = JSONResponse(
+                    content=error_body, status_code=response.status_code
                 )
-            
+                return _attach_response_metadata(
+                    error_response, request.state.model, provider.name
+                )
+
             response_data = response.json()
-            
+
             # Extract and record token usage
-            if 'usage' in response_data:
-                usage = response_data['usage']
-                model_name = original_model or 'unknown'
+            if "usage" in response_data:
+                usage = response_data["usage"]
+                model_name = original_model or "unknown"
                 api_key_name = get_api_key_name()
-                
-                if 'prompt_tokens' in usage:
+
+                if "prompt_tokens" in usage:
                     TOKEN_USAGE.labels(
                         model=model_name,
                         provider=provider.name,
-                        token_type='prompt',
-                        api_key_name=api_key_name
-                    ).inc(usage['prompt_tokens'])
-                
-                if 'completion_tokens' in usage:
+                        token_type="prompt",
+                        api_key_name=api_key_name,
+                    ).inc(usage["prompt_tokens"])
+
+                if "completion_tokens" in usage:
                     TOKEN_USAGE.labels(
                         model=model_name,
                         provider=provider.name,
-                        token_type='completion',
-                        api_key_name=api_key_name
-                    ).inc(usage['completion_tokens'])
-                
-                if 'total_tokens' in usage:
+                        token_type="completion",
+                        api_key_name=api_key_name,
+                    ).inc(usage["completion_tokens"])
+
+                if "total_tokens" in usage:
                     TOKEN_USAGE.labels(
                         model=model_name,
                         provider=provider.name,
-                        token_type='total',
-                        api_key_name=api_key_name
-                    ).inc(usage['total_tokens'])
-                    
+                        token_type="total",
+                        api_key_name=api_key_name,
+                    ).inc(usage["total_tokens"])
+
                     logger.debug(
                         f"Token usage - model={model_name} provider={provider.name} key={api_key_name} "
                         f"prompt={usage.get('prompt_tokens', 0)} "
                         f"completion={usage.get('completion_tokens', 0)} "
                         f"total={usage.get('total_tokens', 0)}"
                     )
-            
+
             response_data = rewrite_model_in_response(response_data, original_model)
-            success_response = JSONResponse(content=response_data, status_code=response.status_code)
-            return _attach_response_metadata(
-                success_response,
-                request.state.model,
-                provider.name
+            success_response = JSONResponse(
+                content=response_data, status_code=response.status_code
             )
-                
+            return _attach_response_metadata(
+                success_response, request.state.model, provider.name
+            )
+
+    except TTFTTimeoutError as e:
+        logger.error(f"TTFT timeout for provider {provider.name}: {str(e)}")
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "error": {
+                    "message": f"TTFT timeout: first token not received within {e.timeout_secs} seconds",
+                    "type": "timeout_error",
+                    "code": "ttft_timeout",
+                }
+            },
+        )
     except httpx.RemoteProtocolError as e:
         logger.error(
             f"Remote protocol error for provider {provider.name}: {str(e)} - "
@@ -222,17 +239,21 @@ async def proxy_completion_request(
         )
         raise HTTPException(
             status_code=502,
-            detail=f"Provider {provider.name} connection closed unexpectedly"
+            detail=f"Provider {provider.name} connection closed unexpectedly",
         )
     except httpx.TimeoutException as e:
         logger.error(f"Timeout error for provider {provider.name}: {str(e)}")
         raise HTTPException(status_code=504, detail="Gateway timeout")
     except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error for provider {provider.name}: {e.response.status_code} - {str(e)}")
+        logger.error(
+            f"HTTP error for provider {provider.name}: {e.response.status_code} - {str(e)}"
+        )
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except httpx.RequestError as e:
         logger.error(f"Network request error for provider {provider.name}: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Provider {provider.name} network error")
+        raise HTTPException(
+            status_code=502, detail=f"Provider {provider.name} network error"
+        )
     except Exception as e:
         logger.exception(f"Unexpected error for provider {provider.name}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -241,21 +262,21 @@ async def proxy_completion_request(
         clear_provider_context()
 
 
-@router.post('/chat/completions')
+@router.post("/chat/completions")
 async def chat_completions(
     request: Request,
     _: None = Depends(verify_auth),
-    provider_svc: ProviderService = Depends(get_provider_svc)
+    provider_svc: ProviderService = Depends(get_provider_svc),
 ):
     """Proxy chat completions requests to providers"""
-    return await proxy_completion_request(request, 'chat/completions', provider_svc)
+    return await proxy_completion_request(request, "chat/completions", provider_svc)
 
 
-@router.post('/completions')
+@router.post("/completions")
 async def completions(
     request: Request,
     _: None = Depends(verify_auth),
-    provider_svc: ProviderService = Depends(get_provider_svc)
+    provider_svc: ProviderService = Depends(get_provider_svc),
 ):
     """Proxy completions requests to providers"""
-    return await proxy_completion_request(request, 'completions', provider_svc)
+    return await proxy_completion_request(request, "completions", provider_svc)

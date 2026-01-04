@@ -58,6 +58,11 @@ class AppConfig(BaseModel):
         gt=0,
         description="Request timeout in seconds for upstream providers",
     )
+    ttft_timeout_secs: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Time To First Token timeout in seconds. If None or 0, TTFT timeout is disabled.",
+    )
     master_keys: list[MasterKeyConfig] = Field(
         default_factory=list,
         description="List of master keys with optional rate limiting",

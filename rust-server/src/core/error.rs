@@ -40,6 +40,13 @@ pub enum AppError {
     #[error("Gateway timeout")]
     Timeout,
 
+    /// TTFT (Time To First Token) timeout errors
+    #[error("TTFT timeout: first token not received within {timeout_secs} seconds from {provider_name}")]
+    TTFTTimeout {
+        timeout_secs: u64,
+        provider_name: String,
+    },
+
     /// Rate limit exceeded errors
     #[error("Rate limit exceeded: {0}")]
     RateLimitExceeded(String),
@@ -56,6 +63,9 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Determine if this is a TTFT timeout (before moving self)
+        let is_ttft_timeout = matches!(&self, AppError::TTFTTimeout { .. });
+
         let (status, error_message) = match self {
             AppError::Config(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::Request(e) => {
@@ -74,6 +84,10 @@ impl IntoResponse for AppError {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "Gateway timeout".to_string()),
+            AppError::TTFTTimeout { timeout_secs, provider_name } => (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("TTFT timeout: first token not received within {} seconds from {}", timeout_secs, provider_name),
+            ),
             AppError::RateLimitExceeded(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
             AppError::ClientDisconnect => {
                 // HTTP 499 is a non-standard status code used by nginx for "Client Closed Request"
@@ -87,13 +101,23 @@ impl IntoResponse for AppError {
             AppError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
 
-        let body = Json(json!({
-            "error": {
-                "message": error_message,
-                "type": "error",
-                "code": status.as_u16()
-            }
-        }));
+        let body = if is_ttft_timeout {
+            Json(json!({
+                "error": {
+                    "message": error_message,
+                    "type": "timeout_error",
+                    "code": "ttft_timeout"
+                }
+            }))
+        } else {
+            Json(json!({
+                "error": {
+                    "message": error_message,
+                    "type": "error",
+                    "code": status.as_u16()
+                }
+            }))
+        };
 
         (status, body).into_response()
     }
@@ -137,6 +161,28 @@ mod tests {
         let err = AppError::Timeout;
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    #[test]
+    fn test_ttft_timeout_response() {
+        let err = AppError::TTFTTimeout {
+            timeout_secs: 30,
+            provider_name: "test-provider".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    #[test]
+    fn test_ttft_timeout_display() {
+        let err = AppError::TTFTTimeout {
+            timeout_secs: 30,
+            provider_name: "test-provider".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "TTFT timeout: first token not received within 30 seconds from test-provider"
+        );
     }
 
     #[test]

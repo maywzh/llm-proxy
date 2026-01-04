@@ -26,6 +26,11 @@ pub struct AppConfig {
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,
 
+    /// TTFT (Time To First Token) timeout in seconds
+    /// If set, returns an error if the first token doesn't arrive within this timeout
+    #[serde(default)]
+    pub ttft_timeout_secs: Option<u64>,
+
     /// List of master keys with optional rate limiting
     #[serde(default)]
     pub master_keys: Vec<MasterKeyConfig>,
@@ -158,12 +163,16 @@ impl AppConfig {
             .ok()
             .and_then(|t| t.parse().ok())
             .unwrap_or_else(default_request_timeout);
+        let ttft_timeout_secs = std::env::var("TTFT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|t| t.parse().ok());
 
         Ok(Self {
             providers: vec![],
             server: ServerConfig { host, port },
             verify_ssl,
             request_timeout_secs,
+            ttft_timeout_secs,
             master_keys: vec![],
         })
     }
@@ -227,6 +236,7 @@ mod tests {
             std::env::remove_var("PORT");
             std::env::remove_var("VERIFY_SSL");
             std::env::remove_var("REQUEST_TIMEOUT_SECS");
+            std::env::remove_var("TTFT_TIMEOUT_SECS");
         }
 
         let config = AppConfig::from_env().unwrap();
@@ -234,6 +244,7 @@ mod tests {
         assert_eq!(config.server.port, 18000);
         assert!(config.verify_ssl);
         assert_eq!(config.request_timeout_secs, 300);
+        assert!(config.ttft_timeout_secs.is_none());
         assert!(config.providers.is_empty());
         assert!(config.master_keys.is_empty());
     }
@@ -246,6 +257,7 @@ mod tests {
             std::env::set_var("PORT", "9000");
             std::env::set_var("VERIFY_SSL", "false");
             std::env::set_var("REQUEST_TIMEOUT_SECS", "60");
+            std::env::set_var("TTFT_TIMEOUT_SECS", "30");
         }
 
         let config = AppConfig::from_env().unwrap();
@@ -253,12 +265,14 @@ mod tests {
         assert_eq!(config.server.port, 9000);
         assert!(!config.verify_ssl);
         assert_eq!(config.request_timeout_secs, 60);
+        assert_eq!(config.ttft_timeout_secs, Some(30));
 
         unsafe {
             std::env::remove_var("HOST");
             std::env::remove_var("PORT");
             std::env::remove_var("VERIFY_SSL");
             std::env::remove_var("REQUEST_TIMEOUT_SECS");
+            std::env::remove_var("TTFT_TIMEOUT_SECS");
         }
     }
 }

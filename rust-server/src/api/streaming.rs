@@ -4,10 +4,11 @@
 //! model name rewriting and token usage tracking.
 
 use crate::api::models::Usage;
+use crate::core::error::AppError;
 use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
 use axum::body::Body;
-use axum::response::Response as AxumResponse;
+use axum::response::{IntoResponse, Response as AxumResponse};
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use reqwest::Response;
@@ -15,7 +16,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // Global cache for BPE encoders to avoid repeated initialization
 lazy_static::lazy_static! {
@@ -137,7 +138,7 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
     }
 }
 
-/// Create an SSE stream from a provider response with token counting.
+/// Create an SSE stream from a provider response with token counting and optional TTFT timeout.
 ///
 /// This function uses `unfold` to maintain state sequentially - NO synchronization needed!
 /// Each stream processes chunks sequentially, so state is local and lock-free.
@@ -150,19 +151,69 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
 /// * `original_model` - Model name from the original request
 /// * `provider_name` - Name of the provider for metrics
 /// * `input_tokens` - Optional input token count for fallback calculation
+/// * `ttft_timeout_secs` - Optional TTFT timeout in seconds
 pub async fn create_sse_stream(
     response: Response,
     original_model: String,
     provider_name: String,
     input_tokens: Option<usize>,
-) -> AxumResponse {
-    let stream = response.bytes_stream();
+    ttft_timeout_secs: Option<u64>,
+) -> Result<AxumResponse, AppError> {
+    let mut stream = response.bytes_stream();
     
     // Get api_key_name from context
     let api_key_name = get_api_key_name();
     
+    // Handle TTFT timeout for the first chunk
+    let first_chunk = if let Some(timeout_secs) = ttft_timeout_secs {
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), stream.next()).await {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                tracing::warn!(
+                    "TTFT timeout: first token not received within {} seconds from {}",
+                    timeout_secs,
+                    provider_name
+                );
+                return Err(AppError::TTFTTimeout {
+                    timeout_secs,
+                    provider_name,
+                });
+            }
+        }
+    } else {
+        stream.next().await
+    };
+
+    // Process the first chunk if available
+    let (first_chunk_data, stream_ended) = match first_chunk {
+        Some(Ok(bytes)) => (Some(bytes), false),
+        Some(Err(e)) => {
+            tracing::error!("Stream error on first chunk: {}", e);
+            let error_event = json!({
+                "error": {
+                    "message": e.to_string(),
+                    "type": "stream_error",
+                    "code": "provider_error"
+                }
+            });
+            let error_message = format!(
+                "event: error\ndata: {}\n\ndata: [DONE]\n\n",
+                error_event
+            );
+            let body = Body::from(error_message);
+            return Ok(AxumResponse::builder()
+                .status(200)
+                .header("Content-Type", "text/event-stream")
+                .header("Cache-Control", "no-cache")
+                .header("Connection", "keep-alive")
+                .body(body)
+                .unwrap());
+        }
+        None => (None, true),
+    };
+
     // Create initial state - all local, no Arc/Atomic needed!
-    let initial_state = StreamState::new(
+    let mut initial_state = StreamState::new(
         stream,
         input_tokens.unwrap_or(0),
         original_model,
@@ -170,93 +221,216 @@ pub async fn create_sse_stream(
         api_key_name,
     );
 
-    // Use unfold to process stream with sequential state updates
-    let byte_stream = futures::stream::unfold(initial_state, |mut state| async move {
+    // If we have a first chunk, we need to process it and prepend to the stream
+    let byte_stream = if let Some(first_bytes) = first_chunk_data {
+        // Process the first chunk through the same logic
+        let first_output = process_chunk(&mut initial_state, first_bytes);
+        
+        // Create a stream that yields the first chunk, then continues with the rest
+        let first_stream = futures::stream::once(async move { Ok::<Vec<u8>, std::io::Error>(first_output) });
+        let rest_stream = futures::stream::unfold(initial_state, |mut state| async move {
+            match state.stream.next().await {
+                Some(Ok(bytes)) => {
+                    let output = process_chunk(&mut state, bytes);
+                    Some((Ok(output), state))
+                }
+                Some(Err(e)) => {
+                    tracing::error!("Stream error: {}", e);
+                    let error_event = json!({
+                        "error": {
+                            "message": e.to_string(),
+                            "type": "stream_error",
+                            "code": "provider_error"
+                        }
+                    });
+                    let error_message = format!(
+                        "event: error\ndata: {}\n\ndata: [DONE]\n\n",
+                        error_event
+                    );
+                    
+                    let terminated_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
+                        Box::pin(futures::stream::empty());
+                    let mut final_state = state;
+                    final_state.stream = terminated_stream;
+                    
+                    Some((Ok(error_message.into_bytes()), final_state))
+                }
+                None => {
+                    finalize_stream(&state);
+                    None
+                }
+            }
+        });
+        
+        Box::pin(first_stream.chain(rest_stream)) as Pin<Box<dyn Stream<Item = Result<Vec<u8>, std::io::Error>> + Send>>
+    } else if stream_ended {
+        // Stream ended immediately
+        finalize_stream(&initial_state);
+        Box::pin(futures::stream::empty()) as Pin<Box<dyn Stream<Item = Result<Vec<u8>, std::io::Error>> + Send>>
+    } else {
+        // No first chunk data but stream didn't end - shouldn't happen
+        Box::pin(futures::stream::empty()) as Pin<Box<dyn Stream<Item = Result<Vec<u8>, std::io::Error>> + Send>>
+    };
+
+    let body = Body::from_stream(byte_stream);
+
+    Ok(AxumResponse::builder()
+        .status(200)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(body)
+        .unwrap())
+}
+
+/// Process a chunk of streaming data
+fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
+    // Fast check: Does this chunk contain SSE data?
+    let has_data_line = bytes.windows(6).any(|w| w == b"data: ");
+    if !has_data_line {
+        return bytes.to_vec();
+    }
+    
+    // Parse and process chunk, rewrite model field
+    let chunk_str = String::from_utf8_lossy(&bytes);
+    let mut rewritten_lines = Vec::new();
+    let mut chunk_modified = false;
+    
+    for line in chunk_str.split('\n') {
+        if !line.starts_with("data: ") || line == "data: [DONE]" {
+            rewritten_lines.push(line.to_string());
+            continue;
+        }
+        
+        let json_str = line[6..].trim();
+        if json_str.is_empty() || !json_str.ends_with('}') {
+            rewritten_lines.push(line.to_string());
+            continue;
+        }
+        
+        if let Ok(mut json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
+            // Rewrite model field to original model (like Python does)
+            if json_obj.get("model").is_some() {
+                json_obj["model"] = serde_json::Value::String(state.original_model.clone());
+                chunk_modified = true;
+            }
+            
+            // Check for usage first
+            if !state.usage_found {
+                if let Some(usage_value) = json_obj.get("usage") {
+                    if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
+                        record_token_usage(&usage, &state.original_model, &state.provider_name, &state.api_key_name);
+                        state.usage_found = true;
+                    }
+                }
+            }
+            
+            // Token counting - direct state modification, no locks!
+            if !state.usage_found {
+                let contents = extract_stream_text(&json_obj);
+                if !contents.is_empty() {
+                    let now = Instant::now();
+                    
+                    // Record provider TTFT
+                    if state.provider_first_token_time.is_none() {
+                        state.provider_first_token_time = Some(now);
+                        let provider_ttft = (now - state.start_time).as_secs_f64();
+                        let metrics = get_metrics();
+                        metrics.ttft.with_label_values(&["provider", &state.original_model, &state.provider_name]).observe(provider_ttft);
+                        
+                        tracing::debug!(
+                            "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
+                            state.original_model,
+                            state.provider_name,
+                            provider_ttft
+                        );
+                    }
+                    
+                    // Accumulate tokens - simple addition, no atomics!
+                    for content in contents {
+                        state.output_tokens += count_tokens(&content, &state.original_model);
+                    }
+                }
+            }
+            
+            // Rebuild the line with rewritten JSON
+            let rewritten_json = serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
+            rewritten_lines.push(format!("data: {}", rewritten_json));
+        } else {
+            rewritten_lines.push(line.to_string());
+        }
+    }
+    
+    // Return rewritten chunk if modified, otherwise original
+    if chunk_modified {
+        rewritten_lines.join("\n").into_bytes()
+    } else {
+        bytes.to_vec()
+    }
+}
+
+/// Finalize stream and record metrics
+fn finalize_stream(state: &StreamState) {
+    if !state.usage_found && state.output_tokens > 0 {
+        record_fallback_token_usage(
+            state.input_tokens,
+            state.output_tokens,
+            &state.original_model,
+            &state.provider_name,
+            &state.api_key_name,
+        );
+        
+        // Calculate and record TPS
+        let total_duration = state.start_time.elapsed().as_secs_f64();
+        if total_duration > 0.0 {
+            let metrics = get_metrics();
+            
+            // Provider TPS
+            if let Some(provider_first_time) = state.provider_first_token_time {
+                let provider_duration = provider_first_time.elapsed().as_secs_f64();
+                if provider_duration > 0.0 {
+                    let provider_tps = state.output_tokens as f64 / provider_duration;
+                    metrics
+                        .tokens_per_second
+                        .with_label_values(&["provider", &state.original_model, &state.provider_name])
+                        .observe(provider_tps);
+                    
+                    tracing::info!(
+                        "Provider TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
+                        state.original_model,
+                        state.provider_name,
+                        state.output_tokens,
+                        provider_duration,
+                        provider_tps
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Create an SSE stream from a provider response with token counting (legacy version without TTFT timeout).
+///
+/// This is a convenience wrapper that calls create_sse_stream with no TTFT timeout.
+pub async fn create_sse_stream_legacy(
+    response: Response,
+    original_model: String,
+    provider_name: String,
+    input_tokens: Option<usize>,
+) -> AxumResponse {
+    match create_sse_stream(response, original_model.clone(), provider_name.clone(), input_tokens, None).await {
+        Ok(response) => response,
+        Err(e) => e.into_response(),
+    }
+}
+
+// Use unfold to process stream with sequential state updates (kept for reference but no longer used directly)
+#[allow(dead_code)]
+fn create_stream_unfold(initial_state: StreamState) -> impl Stream<Item = Result<Vec<u8>, std::io::Error>> {
+    futures::stream::unfold(initial_state, |mut state| async move {
         match state.stream.next().await {
             Some(Ok(bytes)) => {
-                // Fast check: Does this chunk contain SSE data?
-                let has_data_line = bytes.windows(6).any(|w| w == b"data: ");
-                if !has_data_line {
-                    return Some((Ok::<Vec<u8>, std::io::Error>(bytes.to_vec()), state));
-                }
-                
-                // Parse and process chunk, rewrite model field
-                let chunk_str = String::from_utf8_lossy(&bytes);
-                let mut rewritten_lines = Vec::new();
-                let mut chunk_modified = false;
-                
-                for line in chunk_str.split('\n') {
-                    if !line.starts_with("data: ") || line == "data: [DONE]" {
-                        rewritten_lines.push(line.to_string());
-                        continue;
-                    }
-                    
-                    let json_str = line[6..].trim();
-                    if json_str.is_empty() || !json_str.ends_with('}') {
-                        rewritten_lines.push(line.to_string());
-                        continue;
-                    }
-                    
-                    if let Ok(mut json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
-                        // Rewrite model field to original model (like Python does)
-                        if json_obj.get("model").is_some() {
-                            json_obj["model"] = serde_json::Value::String(state.original_model.clone());
-                            chunk_modified = true;
-                        }
-                        
-                        // Check for usage first
-                        if !state.usage_found {
-                            if let Some(usage_value) = json_obj.get("usage") {
-                                if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
-                                    record_token_usage(&usage, &state.original_model, &state.provider_name, &state.api_key_name);
-                                    state.usage_found = true;
-                                }
-                            }
-                        }
-                        
-                        // Token counting - direct state modification, no locks!
-                        if !state.usage_found {
-                            let contents = extract_stream_text(&json_obj);
-                            if !contents.is_empty() {
-                                let now = Instant::now();
-                                
-                                // Record provider TTFT
-                                if state.provider_first_token_time.is_none() {
-                                    state.provider_first_token_time = Some(now);
-                                    let provider_ttft = (now - state.start_time).as_secs_f64();
-                                    let metrics = get_metrics();
-                                    metrics.ttft.with_label_values(&["provider", &state.original_model, &state.provider_name]).observe(provider_ttft);
-                                    
-                                    tracing::debug!(
-                                        "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
-                                        state.original_model,
-                                        state.provider_name,
-                                        provider_ttft
-                                    );
-                                }
-                                
-                                // Accumulate tokens - simple addition, no atomics!
-                                for content in contents {
-                                    state.output_tokens += count_tokens(&content, &state.original_model);
-                                }
-                            }
-                        }
-                        
-                        // Rebuild the line with rewritten JSON
-                        let rewritten_json = serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
-                        rewritten_lines.push(format!("data: {}", rewritten_json));
-                    } else {
-                        rewritten_lines.push(line.to_string());
-                    }
-                }
-                
-                // Return rewritten chunk if modified, otherwise original
-                let output = if chunk_modified {
-                    rewritten_lines.join("\n").into_bytes()
-                } else {
-                    bytes.to_vec()
-                };
-                
+                let output = process_chunk(&mut state, bytes);
                 Some((Ok(output), state))
             }
             Some(Err(e)) => {
@@ -273,7 +447,6 @@ pub async fn create_sse_stream(
                     error_event
                 );
                 
-                // Replace stream with empty stream to terminate on next iteration
                 let terminated_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
                     Box::pin(futures::stream::empty());
                 let mut final_state = state;
@@ -282,57 +455,11 @@ pub async fn create_sse_stream(
                 Some((Ok(error_message.into_bytes()), final_state))
             }
             None => {
-                // Stream ended - record fallback tokens if needed
-                if !state.usage_found && state.output_tokens > 0 {
-                    record_fallback_token_usage(
-                        state.input_tokens,
-                        state.output_tokens,
-                        &state.original_model,
-                        &state.provider_name,
-                        &state.api_key_name,
-                    );
-                    
-                    // Calculate and record TPS
-                    let total_duration = state.start_time.elapsed().as_secs_f64();
-                    if total_duration > 0.0 {
-                        let metrics = get_metrics();
-                        
-                        // Provider TPS
-                        if let Some(provider_first_time) = state.provider_first_token_time {
-                            let provider_duration = provider_first_time.elapsed().as_secs_f64();
-                            if provider_duration > 0.0 {
-                                let provider_tps = state.output_tokens as f64 / provider_duration;
-                                metrics
-                                    .tokens_per_second
-                                    .with_label_values(&["provider", &state.original_model, &state.provider_name])
-                                    .observe(provider_tps);
-                                
-                                tracing::info!(
-                                    "Provider TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
-                                    state.original_model,
-                                    state.provider_name,
-                                    state.output_tokens,
-                                    provider_duration,
-                                    provider_tps
-                                );
-                            }
-                        }
-                    }
-                }
+                finalize_stream(&state);
                 None
             }
         }
-    });
-
-    let body = Body::from_stream(byte_stream);
-
-    AxumResponse::builder()
-        .status(200)
-        .header("Content-Type", "text/event-stream")
-        .header("Cache-Control", "no-cache")
-        .header("Connection", "keep-alive")
-        .body(body)
-        .unwrap()
+    })
 }
 
 fn extract_text_segments(value: &Value) -> Vec<String> {
