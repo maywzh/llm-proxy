@@ -112,6 +112,7 @@ fn test_app_state_with_rate_limiter() {
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
         master_keys,
+        provider_suffix: None,
     };
 
     let provider_service = ProviderService::new(config.clone());
@@ -174,6 +175,7 @@ fn test_disabled_key_not_rate_limited() {
             enabled: false,
             allowed_models: vec![],
         }],
+        provider_suffix: None,
     };
 
     let rate_limiter = RateLimiter::new();
@@ -215,6 +217,7 @@ fn test_key_without_rate_limit_config() {
             enabled: true,
             allowed_models: vec![],
         }],
+        provider_suffix: None,
     };
 
     let rate_limiter = RateLimiter::new();
@@ -249,6 +252,7 @@ fn test_mixed_rate_limits() {
         verify_ssl: true,
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
+        provider_suffix: None,
         master_keys: vec![
             MasterKeyConfig {
                 key: "limited-key-1".to_string(),

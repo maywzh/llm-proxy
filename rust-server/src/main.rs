@@ -249,6 +249,7 @@ fn convert_runtime_to_app_config(
         request_timeout_secs: base.request_timeout_secs,
         ttft_timeout_secs: base.ttft_timeout_secs,
         master_keys,
+        provider_suffix: base.provider_suffix.clone(),
     }
 }
 
