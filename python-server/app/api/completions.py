@@ -12,7 +12,7 @@ from starlette.requests import ClientDisconnect
 from app.api.dependencies import verify_auth, get_provider_svc
 from app.services.provider_service import ProviderService
 from app.utils.streaming import create_streaming_response, rewrite_model_in_response
-from app.core.config import get_config
+from app.core.config import get_config, get_env_config
 from app.core.exceptions import TTFTTimeoutError
 from app.core.http_client import get_http_client
 from app.core.metrics import TOKEN_USAGE
@@ -25,6 +25,30 @@ from app.core.logging import (
 
 router = APIRouter()
 logger = get_logger()
+
+
+def _strip_provider_suffix(model: str) -> str:
+    """Strip the global provider suffix from model name if present.
+
+    If PROVIDER_SUFFIX is set (e.g., "Proxy"), then model names like
+    "Proxy/gpt-4" will be converted to "gpt-4". Model names without
+    the prefix (e.g., "gpt-4") are returned unchanged.
+
+    Args:
+        model: The model name, possibly with provider suffix prefix
+
+    Returns:
+        The model name with provider suffix stripped if it was present
+    """
+    env_config = get_env_config()
+    provider_suffix = env_config.provider_suffix
+
+    if provider_suffix and "/" in model:
+        prefix, base_model = model.split("/", 1)
+        if prefix == provider_suffix:
+            return base_model
+
+    return model
 
 
 def _attach_response_metadata(response, model_name: str, provider_name: str):
@@ -77,19 +101,25 @@ async def proxy_completion_request(
 
     original_model = data.get("model")
 
-    # Select provider based on the requested model
+    # Strip provider suffix if present (e.g., "Proxy/gpt-4" -> "gpt-4")
+    effective_model = (
+        _strip_provider_suffix(original_model) if original_model else original_model
+    )
+
+    # Select provider based on the effective model (without provider suffix)
     try:
-        provider = provider_svc.get_next_provider(model=original_model)
+        provider = provider_svc.get_next_provider(model=effective_model)
     except ValueError as e:
         logger.error(f"Provider selection failed: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Store model and provider in request state for metrics middleware
-    request.state.model = original_model or "unknown"
+    # Store effective model (without provider suffix) and provider in request state for metrics
+    request.state.model = effective_model or "unknown"
     request.state.provider = provider.name
 
     if "model" in data and provider.model_mapping:
-        data["model"] = provider.model_mapping.get(original_model, original_model)
+        # Use effective_model for model_mapping lookup
+        data["model"] = provider.model_mapping.get(effective_model, effective_model)
 
     headers = {
         "Authorization": f"Bearer {provider.api_key}",
@@ -104,7 +134,7 @@ async def proxy_completion_request(
 
         if data.get("stream", False):
             logger.debug(
-                f"Streaming request to {provider.name} for model {original_model}"
+                f"Streaming request to {provider.name} for model {effective_model}"
             )
             # Use shared HTTP client for streaming
             client = get_http_client()
@@ -134,7 +164,7 @@ async def proxy_completion_request(
                 config = get_config()
                 streaming_response = create_streaming_response(
                     response,
-                    original_model,
+                    effective_model,
                     provider.name,
                     data,
                     config.ttft_timeout_secs,
@@ -150,7 +180,7 @@ async def proxy_completion_request(
                 raise
         else:
             logger.debug(
-                f"Non-streaming request to {provider.name} for model {original_model}"
+                f"Non-streaming request to {provider.name} for model {effective_model}"
             )
             # Use shared HTTP client for non-streaming requests
             client = get_http_client()
@@ -178,7 +208,8 @@ async def proxy_completion_request(
             # Extract and record token usage
             if "usage" in response_data:
                 usage = response_data["usage"]
-                model_name = original_model or "unknown"
+                # Use effective_model (without provider suffix) for metrics
+                model_name = effective_model or "unknown"
                 api_key_name = get_api_key_name()
 
                 if "prompt_tokens" in usage:
@@ -212,7 +243,8 @@ async def proxy_completion_request(
                         f"total={usage.get('total_tokens', 0)}"
                     )
 
-            response_data = rewrite_model_in_response(response_data, original_model)
+            # Use effective_model in response so client sees model without provider suffix
+            response_data = rewrite_model_in_response(response_data, effective_model)
             success_response = JSONResponse(
                 content=response_data, status_code=response.status_code
             )

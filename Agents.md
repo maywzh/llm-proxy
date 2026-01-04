@@ -341,6 +341,7 @@ erDiagram
 | `VERIFY_SSL` | Verify SSL certificates | No (default: true) |
 | `REQUEST_TIMEOUT_SECS` | Request timeout | No (default: 300) |
 | `TTFT_TIMEOUT_SECS` | Time to first token timeout | No |
+| `PROVIDER_SUFFIX` | Optional prefix for model names. When set, model names like `{PROVIDER_SUFFIX}/{model}` are treated as `{model}` | No |
 
 ### Docker
 

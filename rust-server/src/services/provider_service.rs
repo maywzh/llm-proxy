@@ -52,6 +52,7 @@ impl ProviderService {
     ///     request_timeout_secs: 300,
     ///     ttft_timeout_secs: None,
     ///     master_keys: vec![],
+    ///     provider_suffix: None,
     /// };
     /// let service = ProviderService::new(config);
     /// ```
@@ -215,6 +216,7 @@ mod tests {
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
             master_keys: vec![],
+            provider_suffix: None,
         }
     }
 
@@ -232,6 +234,7 @@ mod tests {
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
             master_keys: vec![],
+            provider_suffix: None,
         }
     }
 

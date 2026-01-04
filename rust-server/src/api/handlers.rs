@@ -91,6 +91,26 @@ fn get_key_name(key_config: &Option<MasterKeyConfig>) -> String {
         .unwrap_or_else(|| "anonymous".to_string())
 }
 
+/// Strip the provider suffix from model name if configured.
+///
+/// If provider_suffix is set (e.g., "Proxy"), then:
+/// - "Proxy/gpt-4" -> "gpt-4"
+/// - "gpt-4" -> "gpt-4" (unchanged)
+/// - "Other/gpt-4" -> "Other/gpt-4" (unchanged, different prefix)
+fn strip_provider_suffix(model: &str, provider_suffix: Option<&str>) -> String {
+    match provider_suffix {
+        Some(suffix) if !suffix.is_empty() => {
+            let prefix = format!("{}/", suffix);
+            if model.starts_with(&prefix) {
+                model[prefix.len()..].to_string()
+            } else {
+                model.to_string()
+            }
+        }
+        _ => model.to_string(),
+    }
+}
+
 /// Handle chat completion requests.
 ///
 /// Supports both streaming and non-streaming responses.
@@ -136,15 +156,20 @@ pub async fn chat_completions(
                         .get("model")
                         .and_then(|m| m.as_str())
                         .map(|m| m.to_string());
-                    let model_label = original_model
+                    
+                    // Strip provider suffix if configured (e.g., "Proxy/gpt-4" -> "gpt-4")
+                    let effective_model = original_model.as_ref().map(|m| {
+                        strip_provider_suffix(m, state.config.provider_suffix.as_deref())
+                    });
+                    let model_label = effective_model
                         .clone()
                         .unwrap_or_else(|| "unknown".to_string());
 
-                    // Select provider based on the requested model
+                    // Select provider based on the effective model (with suffix stripped)
                     // Return 400 (Bad Request) if no provider available, not 500
                     let provider = match state
                         .provider_service
-                        .get_next_provider(original_model.as_deref())
+                        .get_next_provider(effective_model.as_deref())
                     {
                         Ok(p) => p,
                         Err(err) => {
@@ -158,13 +183,21 @@ pub async fn chat_completions(
                         }
                     };
 
-                    // Map model if needed
-                    if let Some(orig) = original_model.as_ref() {
-                        if let Some(mapped) = provider.model_mapping.get(orig) {
+                    // Map model if needed (use effective_model for mapping lookup)
+                    if let Some(eff_model) = effective_model.as_ref() {
+                        if let Some(mapped) = provider.model_mapping.get(eff_model) {
                             if let Some(obj) = payload.as_object_mut() {
                                 obj.insert(
                                     "model".to_string(),
                                     serde_json::Value::String(mapped.clone()),
+                                );
+                            }
+                        } else if original_model.as_ref() != effective_model.as_ref() {
+                            // If no mapping found but we stripped a prefix, update the model in payload
+                            if let Some(obj) = payload.as_object_mut() {
+                                obj.insert(
+                                    "model".to_string(),
+                                    serde_json::Value::String(eff_model.clone()),
                                 );
                             }
                         }
@@ -180,7 +213,7 @@ pub async fn chat_completions(
                         .get("messages")
                         .and_then(|m| m.as_array())
                         .map(|messages| {
-                            let count_model = original_model.as_deref().unwrap_or("gpt-3.5-turbo");
+                            let count_model = effective_model.as_deref().unwrap_or("gpt-3.5-turbo");
                             calculate_message_tokens(messages, count_model)
                         });
 
@@ -407,10 +440,15 @@ pub async fn completions(
                     }
 
                     // Extract model from payload if available
-                    let model = payload.get("model").and_then(|m| m.as_str());
-                    let model_label = model.unwrap_or("unknown").to_string();
+                    let original_model = payload.get("model").and_then(|m| m.as_str());
+                    
+                    // Strip provider suffix if configured (e.g., "Proxy/gpt-4" -> "gpt-4")
+                    let effective_model = original_model.map(|m| {
+                        strip_provider_suffix(m, state.config.provider_suffix.as_deref())
+                    });
+                    let model_label = effective_model.as_deref().unwrap_or("unknown").to_string();
 
-                    let provider = match state.provider_service.get_next_provider(model) {
+                    let provider = match state.provider_service.get_next_provider(effective_model.as_deref()) {
                         Ok(p) => p,
                         Err(err) => {
                             tracing::error!(
@@ -725,5 +763,99 @@ fn build_error_response(
         .extensions_mut()
         .insert(ApiKeyName(api_key_name.to_string()));
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_provider_suffix_with_matching_prefix() {
+        // When provider_suffix is "Proxy", "Proxy/gpt-4" should become "gpt-4"
+        assert_eq!(
+            strip_provider_suffix("Proxy/gpt-4", Some("Proxy")),
+            "gpt-4"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_without_prefix() {
+        // When model doesn't have the prefix, it should remain unchanged
+        assert_eq!(
+            strip_provider_suffix("gpt-4", Some("Proxy")),
+            "gpt-4"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_different_prefix() {
+        // When model has a different prefix, it should remain unchanged
+        assert_eq!(
+            strip_provider_suffix("Other/gpt-4", Some("Proxy")),
+            "Other/gpt-4"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_no_suffix_configured() {
+        // When no provider_suffix is configured, model should remain unchanged
+        assert_eq!(
+            strip_provider_suffix("Proxy/gpt-4", None),
+            "Proxy/gpt-4"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_empty_suffix() {
+        // When provider_suffix is empty string, model should remain unchanged
+        assert_eq!(
+            strip_provider_suffix("Proxy/gpt-4", Some("")),
+            "Proxy/gpt-4"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_complex_model_name() {
+        // Test with more complex model names
+        assert_eq!(
+            strip_provider_suffix("Proxy/gpt-4-turbo-preview", Some("Proxy")),
+            "gpt-4-turbo-preview"
+        );
+        assert_eq!(
+            strip_provider_suffix("Proxy/claude-3-opus-20240229", Some("Proxy")),
+            "claude-3-opus-20240229"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_nested_slashes() {
+        // Test with model names that have slashes in them
+        assert_eq!(
+            strip_provider_suffix("Proxy/org/model-name", Some("Proxy")),
+            "org/model-name"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_case_sensitive() {
+        // Prefix matching should be case-sensitive
+        assert_eq!(
+            strip_provider_suffix("proxy/gpt-4", Some("Proxy")),
+            "proxy/gpt-4"
+        );
+        assert_eq!(
+            strip_provider_suffix("PROXY/gpt-4", Some("Proxy")),
+            "PROXY/gpt-4"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_partial_match() {
+        // Should not strip if it's only a partial match (no slash)
+        assert_eq!(
+            strip_provider_suffix("Proxygpt-4", Some("Proxy")),
+            "Proxygpt-4"
+        );
+    }
 }
 

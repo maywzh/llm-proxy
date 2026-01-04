@@ -84,12 +84,14 @@ The server supports flexible configuration through environment variables and YAM
 LLM Proxy supports two configuration modes:
 
 ### YAML Mode (Default)
+
 - Do not set `DB_URL` environment variable
 - Use `config.yaml` file for configuration
 - Suitable for development and simple deployments
 - Configuration changes require server restart
 
 ### Database Mode
+
 - Set `DB_URL` and `ADMIN_KEY` environment variables
 - Configuration stored in PostgreSQL database
 - Supports runtime hot-reload without restart
@@ -103,6 +105,7 @@ LLM Proxy supports two configuration modes:
 | `DB_URL` | PostgreSQL connection string | Required for database mode |
 | `ADMIN_KEY` | Admin API authentication key | Required for database mode |
 | `PORT` | Server port | No (default: 18000) |
+| `PROVIDER_SUFFIX` | Optional prefix for model names. When set, model names like `{PROVIDER_SUFFIX}/{model}` are treated as `{model}` | No |
 
 ### Database Migration
 
@@ -244,6 +247,7 @@ The server supports three configuration methods with the following priority (hig
 | `HOST` | Server bind address | `0.0.0.0` | `127.0.0.1` |
 | `PORT` | Server port | `18000` | `8080` |
 | `VERIFY_SSL` | Verify SSL certs | `true` | `false` |
+| `PROVIDER_SUFFIX` | Model name prefix | None | `Proxy` |
 
 ### Example Configuration
 
@@ -340,6 +344,44 @@ Content-Type: application/json
   "stream": false
 }
 ```
+
+### Model Name Prefix Feature
+
+When `PROVIDER_SUFFIX` environment variable is set, you can use prefixed model names:
+
+```bash
+# Set the provider suffix
+export PROVIDER_SUFFIX=Proxy
+
+# Both of these requests are equivalent:
+# 1. Using prefixed model name
+curl -X POST http://localhost:18000/v1/chat/completions \
+  -H "Authorization: Bearer <master_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Proxy/gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# 2. Using original model name
+curl -X POST http://localhost:18000/v1/chat/completions \
+  -H "Authorization: Bearer <master_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+#### Prefix Behavior
+
+- If `PROVIDER_SUFFIX` is not set, model names are used as-is
+- If `PROVIDER_SUFFIX` is set (e.g., "Proxy"):
+  - `Proxy/gpt-4` → `gpt-4` (prefix stripped)
+  - `gpt-4` → `gpt-4` (unchanged)
+  - `Other/gpt-4` → `Other/gpt-4` (unchanged, different prefix)
+
+This feature is useful for standardizing model name formats, especially when switching between different proxy services.
 
 ### List Models
 

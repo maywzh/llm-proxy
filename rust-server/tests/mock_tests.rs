@@ -53,6 +53,7 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
         request_timeout_secs: timeout_secs,
         ttft_timeout_secs: None,
         master_keys: vec![],
+        provider_suffix: None,
     };
 
     let provider_service = ProviderService::new(config.clone());

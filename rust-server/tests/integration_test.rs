@@ -106,6 +106,7 @@ fn create_test_config_no_auth() -> AppConfig {
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
         master_keys: vec![],
+        provider_suffix: None,
     }
 }
 
