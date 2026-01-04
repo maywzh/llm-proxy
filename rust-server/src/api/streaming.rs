@@ -268,8 +268,18 @@ pub async fn create_sse_stream(
                         "code": "provider_error"
                     }
                 });
-                let error_message = format!("event: error\ndata: {}\n\n", error_event);
-                Some((Ok(error_message.into_bytes()), state))
+                let error_message = format!(
+                    "event: error\ndata: {}\n\ndata: [DONE]\n\n",
+                    error_event
+                );
+                
+                // Replace stream with empty stream to terminate on next iteration
+                let terminated_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
+                    Box::pin(futures::stream::empty());
+                let mut final_state = state;
+                final_state.stream = terminated_stream;
+                
+                Some((Ok(error_message.into_bytes()), final_state))
             }
             None => {
                 // Stream ended - record fallback tokens if needed
