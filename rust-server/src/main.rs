@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
 };
 use llm_proxy_rust::{
-    admin_router, AdminApiDoc,
+    admin_router, CombinedApiDoc,
     api::{chat_completions, completions, list_models, metrics_handler, AdminState, AppState},
     core::{
         admin_logging_middleware, init_metrics, AppConfig, Database, DatabaseConfig,
@@ -147,9 +147,9 @@ fn build_router(
     let admin_routes = admin_router(admin_state)
         .layer(axum::middleware::from_fn(admin_logging_middleware));
 
-    // Swagger UI for API documentation
+    // Swagger UI for API documentation (includes both V1 and Admin APIs)
     let swagger_ui = SwaggerUi::new("/swagger-ui")
-        .url("/api-docs/openapi.json", AdminApiDoc::openapi());
+        .url("/api-docs/openapi.json", CombinedApiDoc::openapi());
 
     // Get current config
     let config = dynamic_config.get_full();
@@ -238,6 +238,7 @@ fn convert_runtime_to_app_config(
                 }
             }),
             enabled: k.is_enabled,
+            allowed_models: k.allowed_models.clone(),
         })
         .collect();
 

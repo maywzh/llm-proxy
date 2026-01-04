@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use utoipa::ToSchema;
 
 /// Provider information for internal use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,7 +18,17 @@ pub struct Provider {
 }
 
 /// Chat completion request following OpenAI API format.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "model": "gpt-4",
+    "messages": [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello!"}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 1000,
+    "stream": false
+}))]
 pub struct ChatCompletionRequest {
     /// Model identifier
     pub model: String,
@@ -39,11 +50,13 @@ pub struct ChatCompletionRequest {
 
     /// Additional provider-specific parameters
     #[serde(flatten)]
+    #[schema(additional_properties)]
     pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// A single message in a conversation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({"role": "user", "content": "Hello!"}))]
 pub struct Message {
     /// Role: "system", "user", or "assistant"
     pub role: String,
@@ -53,7 +66,19 @@ pub struct Message {
 }
 
 /// Chat completion response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "id": "chatcmpl-abc123",
+    "object": "chat.completion",
+    "created": 1677858242,
+    "model": "gpt-4",
+    "choices": [{
+        "index": 0,
+        "message": {"role": "assistant", "content": "Hello! How can I help you today?"},
+        "finish_reason": "stop"
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+}))]
 pub struct ChatCompletionResponse {
     pub id: String,
     pub object: String,
@@ -66,7 +91,7 @@ pub struct ChatCompletionResponse {
 }
 
 /// A single choice in the response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Choice {
     pub index: u32,
     pub message: Message,
@@ -74,7 +99,8 @@ pub struct Choice {
 }
 
 /// Token usage statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}))]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -82,7 +108,7 @@ pub struct Usage {
 }
 
 /// Streaming response chunk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct StreamChunk {
     pub id: String,
     pub object: String,
@@ -95,7 +121,7 @@ pub struct StreamChunk {
 }
 
 /// A single choice in a streaming response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct StreamChoice {
     pub index: u32,
     pub delta: Delta,
@@ -103,7 +129,7 @@ pub struct StreamChoice {
 }
 
 /// Delta content in streaming responses.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Delta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
@@ -113,7 +139,8 @@ pub struct Delta {
 }
 
 /// Model information.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({"id": "gpt-4", "object": "model", "created": 1677610602, "owned_by": "system"}))]
 pub struct ModelInfo {
     pub id: String,
     pub object: String,
@@ -122,10 +149,39 @@ pub struct ModelInfo {
 }
 
 /// List of available models.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "object": "list",
+    "data": [
+        {"id": "gpt-4", "object": "model", "created": 1677610602, "owned_by": "system"},
+        {"id": "gpt-3.5-turbo", "object": "model", "created": 1677610602, "owned_by": "system"}
+    ]
+}))]
 pub struct ModelList {
     pub object: String,
     pub data: Vec<ModelInfo>,
+}
+
+/// Error response for API errors.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "error": {
+        "message": "Invalid API key",
+        "type": "error",
+        "code": 401
+    }
+}))]
+pub struct ApiErrorResponse {
+    pub error: ApiErrorDetail,
+}
+
+/// Error detail in API error responses.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ApiErrorDetail {
+    pub message: String,
+    #[serde(rename = "type")]
+    pub error_type: String,
+    pub code: u16,
 }
 
 #[cfg(test)]

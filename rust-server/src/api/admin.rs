@@ -19,7 +19,7 @@ use crate::core::database::{
     MasterKeyEntity, ProviderEntity, UpdateMasterKey, UpdateProvider,
 };
 
-/// OpenAPI documentation for Admin API
+/// OpenAPI documentation for Admin API (admin endpoints only)
 #[derive(OpenApi)]
 #[openapi(
     paths(
@@ -74,6 +74,122 @@ use crate::core::database::{
     modifiers(&SecurityAddon)
 )]
 pub struct AdminApiDoc;
+
+/// OpenAPI documentation for V1 API (OpenAI-compatible endpoints)
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        crate::api::handlers::chat_completions,
+        crate::api::handlers::completions,
+        crate::api::handlers::list_models,
+    ),
+    components(
+        schemas(
+            crate::api::models::ChatCompletionRequest,
+            crate::api::models::ChatCompletionResponse,
+            crate::api::models::Message,
+            crate::api::models::Choice,
+            crate::api::models::Usage,
+            crate::api::models::ModelList,
+            crate::api::models::ModelInfo,
+            crate::api::models::ApiErrorResponse,
+            crate::api::models::ApiErrorDetail,
+        )
+    ),
+    tags(
+        (name = "completions", description = "OpenAI-compatible completion endpoints"),
+        (name = "models", description = "OpenAI-compatible model listing endpoints")
+    ),
+    info(
+        title = "LLM Proxy V1 API",
+        version = "1.0.0",
+        description = "OpenAI-compatible API endpoints for chat completions and model listing.",
+        license(name = "MIT")
+    ),
+    servers(
+        (url = "http://127.0.0.1:17999", description = "Local development server"),
+        (url = "http://localhost:17999", description = "Local development server (localhost)")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    modifiers(&SecurityAddon)
+)]
+pub struct V1ApiDoc;
+
+/// Combined OpenAPI documentation for all APIs
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        // Admin API paths
+        validate_admin_key,
+        list_providers,
+        create_provider,
+        get_provider,
+        update_provider,
+        delete_provider,
+        list_master_keys,
+        create_master_key,
+        get_master_key,
+        update_master_key,
+        delete_master_key,
+        get_config_version,
+        reload_config,
+        // V1 API paths
+        crate::api::handlers::chat_completions,
+        crate::api::handlers::completions,
+        crate::api::handlers::list_models,
+    ),
+    components(
+        schemas(
+            // Admin API schemas
+            AuthValidateResponse,
+            ProviderListResponse,
+            ProviderResponse,
+            CreateProviderRequest,
+            UpdateProviderRequest,
+            MasterKeyListResponse,
+            MasterKeyResponse,
+            CreateMasterKeyRequest,
+            UpdateMasterKeyRequest,
+            ConfigVersionResponse,
+            AdminErrorResponse,
+            // V1 API schemas
+            crate::api::models::ChatCompletionRequest,
+            crate::api::models::ChatCompletionResponse,
+            crate::api::models::Message,
+            crate::api::models::Choice,
+            crate::api::models::Usage,
+            crate::api::models::ModelList,
+            crate::api::models::ModelInfo,
+            crate::api::models::ApiErrorResponse,
+            crate::api::models::ApiErrorDetail,
+        )
+    ),
+    tags(
+        (name = "completions", description = "OpenAI-compatible completion endpoints"),
+        (name = "models", description = "OpenAI-compatible model listing endpoints"),
+        (name = "auth", description = "Authentication endpoints"),
+        (name = "providers", description = "Provider management endpoints"),
+        (name = "master-keys", description = "Master key management endpoints"),
+        (name = "config", description = "Configuration management endpoints")
+    ),
+    info(
+        title = "LLM Proxy API",
+        version = "1.0.0",
+        description = "LLM Proxy API with OpenAI-compatible endpoints and Admin API for configuration management.",
+        license(name = "MIT")
+    ),
+    servers(
+        (url = "http://127.0.0.1:17999", description = "Local development server"),
+        (url = "http://localhost:17999", description = "Local development server (localhost)")
+    ),
+    security(
+        ("bearer_auth" = [])
+    ),
+    modifiers(&SecurityAddon)
+)]
+pub struct CombinedApiDoc;
 
 struct SecurityAddon;
 

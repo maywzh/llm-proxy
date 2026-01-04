@@ -96,6 +96,7 @@ fn test_app_state_with_rate_limiter() {
             burst_size: 10,
         }),
         enabled: true,
+        allowed_models: vec![],
     }];
 
     let config = AppConfig {
@@ -169,6 +170,7 @@ fn test_disabled_key_not_rate_limited() {
                 burst_size: 5,
             }),
             enabled: false,
+            allowed_models: vec![],
         }],
     };
 
@@ -208,6 +210,7 @@ fn test_key_without_rate_limit_config() {
             description: Some("No rate limit".to_string()),
             rate_limit: None,
             enabled: true,
+            allowed_models: vec![],
         }],
     };
 
@@ -252,6 +255,7 @@ fn test_mixed_rate_limits() {
                     burst_size: 5,
                 }),
                 enabled: true,
+                allowed_models: vec![],
             },
             MasterKeyConfig {
                 key: "unlimited-key-1".to_string(),
@@ -259,6 +263,7 @@ fn test_mixed_rate_limits() {
                 description: Some("No rate limit".to_string()),
                 rate_limit: None,
                 enabled: true,
+                allowed_models: vec![],
             },
             MasterKeyConfig {
                 key: "limited-key-2".to_string(),
@@ -269,6 +274,7 @@ fn test_mixed_rate_limits() {
                     burst_size: 10,
                 }),
                 enabled: true,
+                allowed_models: vec![],
             },
             MasterKeyConfig {
                 key: "unlimited-key-2".to_string(),
@@ -276,6 +282,7 @@ fn test_mixed_rate_limits() {
                 description: Some("No rate limit".to_string()),
                 rate_limit: None,
                 enabled: true,
+                allowed_models: vec![],
             },
         ],
     };

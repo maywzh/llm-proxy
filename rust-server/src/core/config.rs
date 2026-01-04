@@ -34,7 +34,7 @@ pub struct AppConfig {
 /// Configuration for a master API key with optional rate limiting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasterKeyConfig {
-    /// The actual API key
+    /// The actual API key (or key hash when loaded from database)
     pub key: String,
 
     /// Human-readable name for the key
@@ -51,6 +51,10 @@ pub struct MasterKeyConfig {
     /// Whether this key is enabled
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+
+    /// List of models this key can access (empty = all models allowed)
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
 }
 
 /// Rate limiting configuration for a master key.
