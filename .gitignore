@@ -59,3 +59,4 @@ Desktop.ini
 # Linux
 .directory
 plans/
+**/.env*
