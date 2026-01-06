@@ -24,6 +24,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
+use chrono::Local;
 
 fn main() -> Result<()> {
     // Load .env file if present (before reading any environment variables)
@@ -49,14 +50,24 @@ fn main() -> Result<()> {
     runtime.block_on(async_main())
 }
 
+/// Custom time formatter that uses local timezone (respects TZ environment variable)
+struct LocalTime;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        let now = Local::now();
+        write!(w, "{}", now.format("%Y-%m-%d %H:%M:%S"))
+    }
+}
+
 async fn async_main() -> Result<()> {
-    // Initialize logging
+    // Initialize logging with local timezone (respects TZ environment variable)
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,llm_proxy_rust=debug".into()),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_timer(LocalTime))
         .init();
 
     // Initialize metrics
