@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { generateApiKey } from '../api/client';
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  Loader2,
+  AlertCircle,
+  X,
+  Check,
+  Shuffle,
+} from 'lucide-react';
 import type { Provider, ProviderFormData, ProviderUpdate } from '../types';
 
 const Providers: React.FC = () => {
@@ -11,6 +21,7 @@ const Providers: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<Provider | null>(null);
   const [formData, setFormData] = useState<ProviderFormData>({
     provider_key: '',
     provider_type: 'openai',
@@ -67,8 +78,8 @@ const Providers: React.FC = () => {
   };
 
   const handleCreate = () => {
-    setShowCreateForm(true);
     resetForm();
+    setShowCreateForm(true);
   };
 
   const handleEdit = (provider: Provider) => {
@@ -130,19 +141,12 @@ const Providers: React.FC = () => {
   const handleDelete = async (provider: Provider) => {
     if (!apiClient) return;
 
-    if (
-      !confirm(
-        `Are you sure you want to delete provider "${provider.provider_key}"?`
-      )
-    ) {
-      return;
-    }
-
     setLoading(true);
     setError(null);
 
     try {
       await apiClient.deleteProvider(provider.id);
+      setDeleteConfirm(null);
       await loadProviders();
     } catch (err) {
       setError(
@@ -200,8 +204,12 @@ const Providers: React.FC = () => {
             Manage your LLM provider configurations
           </p>
         </div>
-        <button onClick={handleCreate} className="btn btn-primary">
-          + Add Provider
+        <button
+          onClick={handleCreate}
+          className="btn btn-primary flex items-center space-x-2"
+        >
+          <Plus className="w-5 h-5" />
+          <span>Add Provider</span>
         </button>
       </div>
 
@@ -218,20 +226,10 @@ const Providers: React.FC = () => {
 
       {/* Error Display */}
       {error && (
-        <div className="bg-red-50 border-l-4 border-red-400 p-4">
+        <div className="alert-error">
           <div className="flex">
             <div className="shrink-0">
-              <svg
-                className="h-5 w-5 text-red-400"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                  clipRule="evenodd"
-                ></path>
-              </svg>
+              <AlertCircle className="h-5 w-5 text-red-400" />
             </div>
             <div className="ml-3">
               <p className="text-sm text-red-700">{error}</p>
@@ -241,37 +239,33 @@ const Providers: React.FC = () => {
                 onClick={() => setError(null)}
                 className="text-red-400 hover:text-red-600"
               >
-                <svg
-                  className="h-5 w-5"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                    clipRule="evenodd"
-                  ></path>
-                </svg>
+                <X className="h-5 w-5" />
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Create/Edit Form */}
+      {/* Create/Edit Form Modal */}
       {showCreateForm && (
-        <div className="card">
-          <h2 className="text-lg font-semibold mb-4">
-            {editingProvider ? 'Edit Provider' : 'Create New Provider'}
-          </h2>
+        <div className="modal-overlay" onClick={resetForm}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {editingProvider ? 'Edit Provider' : 'Add Provider'}
+              </h3>
+              <button
+                onClick={resetForm}
+                className="btn-icon"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="modal-body space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label
-                  htmlFor="provider_key"
-                  className="block text-sm font-medium text-gray-700"
-                >
+                <label htmlFor="provider_key" className="label">
                   Provider Key
                 </label>
                 <input
@@ -292,10 +286,7 @@ const Providers: React.FC = () => {
               </div>
 
               <div>
-                <label
-                  htmlFor="provider_type"
-                  className="block text-sm font-medium text-gray-700"
-                >
+                <label htmlFor="provider_type" className="label">
                   Provider Type
                 </label>
                 <select
@@ -320,10 +311,7 @@ const Providers: React.FC = () => {
             </div>
 
             <div>
-              <label
-                htmlFor="api_base"
-                className="block text-sm font-medium text-gray-700"
-              >
+              <label htmlFor="api_base" className="label">
                 API Base URL
               </label>
               <input
@@ -340,10 +328,7 @@ const Providers: React.FC = () => {
             </div>
 
             <div>
-              <label
-                htmlFor="api_key"
-                className="block text-sm font-medium text-gray-700"
-              >
+              <label htmlFor="api_key" className="label">
                 API Key {editingProvider ? '(leave empty to keep current)' : ''}
               </label>
               <div className="flex space-x-2">
@@ -363,19 +348,16 @@ const Providers: React.FC = () => {
                 <button
                   type="button"
                   onClick={generateRandomKey}
-                  className="btn btn-secondary"
+                  className="btn btn-secondary flex items-center space-x-2"
                   title="Generate random key"
                 >
-                  🎲
+                  <Shuffle className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
             <div>
-              <label
-                htmlFor="model_mapping"
-                className="block text-sm font-medium text-gray-700"
-              >
+              <label htmlFor="model_mapping" className="label">
                 Model Mapping (optional)
               </label>
               <textarea
@@ -386,7 +368,7 @@ const Providers: React.FC = () => {
                 rows={3}
                 placeholder="gpt-4=gpt-4-turbo&#10;gpt-3.5-turbo=gpt-3.5-turbo-16k"
               />
-              <p className="text-xs text-gray-500 mt-1">
+              <p className="helper-text">
                 One mapping per line in format: source_model=target_model
               </p>
             </div>
@@ -402,7 +384,7 @@ const Providers: React.FC = () => {
                     is_enabled: e.target.checked,
                   }))
                 }
-                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
               />
               <label
                 htmlFor="is_enabled"
@@ -412,7 +394,9 @@ const Providers: React.FC = () => {
               </label>
             </div>
 
-            <div className="flex justify-end space-x-3">
+            </form>
+
+            <div className="modal-footer">
               <button
                 type="button"
                 onClick={resetForm}
@@ -422,168 +406,169 @@ const Providers: React.FC = () => {
               </button>
               <button
                 type="submit"
-                className="btn btn-primary"
+                onClick={handleSubmit}
+                className="btn btn-primary flex items-center space-x-2"
                 disabled={loading}
               >
-                {loading && (
-                  <svg
-                    className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    ></circle>
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    ></path>
-                  </svg>
-                )}
-                {editingProvider ? 'Update' : 'Create'} Provider
+                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>{editingProvider ? 'Update' : 'Create'} Provider</span>
               </button>
             </div>
-          </form>
+          </div>
         </div>
       )}
 
       {/* Providers List */}
       <div className="card">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-semibold">
-            Providers ({filteredProviders.length})
-          </h2>
+        <div className="card-header flex justify-between items-center">
+          <h2 className="card-title">Providers ({filteredProviders.length})</h2>
           {loading && (
             <div className="flex items-center text-gray-500">
-              <svg
-                className="animate-spin -ml-1 mr-3 h-5 w-5"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                ></circle>
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-              Loading...
+              <Loader2 className="w-5 h-5 animate-spin mr-2" />
+              <span className="text-sm">Loading...</span>
             </div>
           )}
         </div>
 
-        {filteredProviders.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">
-            {searchTerm
-              ? 'No providers match your search.'
-              : 'No providers configured yet.'}
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Provider
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Type
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    API Base
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Models
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {filteredProviders.map(provider => (
-                  <tr key={provider.id}>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-gray-900">
-                        {provider.provider_key}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        ID: {provider.id}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                        {provider.provider_type}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div
-                        className="text-sm text-gray-900 max-w-xs truncate"
-                        title={provider.api_base}
-                      >
-                        {provider.api_base}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-500">
-                        {Object.keys(provider.model_mapping).length} mappings
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <button
-                        onClick={() => handleToggleStatus(provider)}
-                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium transition-colors ${
-                          provider.is_enabled
-                            ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                            : 'bg-red-100 text-red-800 hover:bg-red-200'
-                        }`}
-                      >
-                        {provider.is_enabled ? 'Enabled' : 'Disabled'}
-                      </button>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <div className="flex justify-end space-x-2">
-                        <button
-                          onClick={() => handleEdit(provider)}
-                          className="text-blue-600 hover:text-blue-900"
-                          title="Edit provider"
-                        >
-                          ✏️
-                        </button>
-                        <button
-                          onClick={() => handleDelete(provider)}
-                          className="text-red-600 hover:text-red-900"
-                          title="Delete provider"
-                        >
-                          🗑️
-                        </button>
-                      </div>
-                    </td>
+        <div className="card-body p-0">
+          {filteredProviders.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              {searchTerm
+                ? 'No providers match your search.'
+                : 'No providers configured yet.'}
+            </div>
+          ) : (
+            <div className="table-container">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Type</th>
+                    <th>API Base</th>
+                    <th>Models</th>
+                    <th>Status</th>
+                    <th className="text-right">Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                </thead>
+                <tbody>
+                  {filteredProviders.map(provider => (
+                    <tr key={provider.id}>
+                      <td>
+                        <div className="text-sm font-medium text-gray-900">
+                          {provider.provider_key}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          ID: {provider.id}
+                        </div>
+                      </td>
+                      <td>
+                        <span className="badge badge-info">
+                          {provider.provider_type}
+                        </span>
+                      </td>
+                      <td>
+                        <div
+                          className="text-sm text-gray-900 max-w-xs truncate"
+                          title={provider.api_base}
+                        >
+                          {provider.api_base}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="text-sm text-gray-500">
+                          {Object.keys(provider.model_mapping).length} mappings
+                        </div>
+                      </td>
+                      <td>
+                        <button
+                          onClick={() => handleToggleStatus(provider)}
+                          className={`badge transition-colors ${
+                            provider.is_enabled
+                              ? 'badge-success hover:opacity-80'
+                              : 'badge-danger hover:opacity-80'
+                          }`}
+                        >
+                          {provider.is_enabled ? (
+                            <>
+                              <Check className="w-3 h-3 mr-1" />
+                              Enabled
+                            </>
+                          ) : (
+                            <>
+                              <X className="w-3 h-3 mr-1" />
+                              Disabled
+                            </>
+                          )}
+                        </button>
+                      </td>
+                      <td>
+                        <div className="flex justify-end space-x-2">
+                          <button
+                            onClick={() => handleEdit(provider)}
+                            className="btn-icon text-primary-600 hover:text-primary-900"
+                            title="Edit provider"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setDeleteConfirm(provider)}
+                            className="btn-icon text-red-600 hover:text-red-900"
+                            title="Delete provider"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="modal-overlay" onClick={() => setDeleteConfirm(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Delete Provider
+              </h3>
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="btn-icon"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="text-sm text-gray-600">
+                Are you sure you want to delete provider{' '}
+                <strong>{deleteConfirm.provider_key}</strong>? This action
+                cannot be undone.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDelete(deleteConfirm)}
+                className="btn btn-danger flex items-center space-x-2"
+                disabled={loading}
+              >
+                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>Delete</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

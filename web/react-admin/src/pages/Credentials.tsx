@@ -1,6 +1,17 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { generateApiKey } from '../api/client';
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  Loader2,
+  AlertCircle,
+  X,
+  Check,
+  Shuffle,
+  RefreshCw,
+} from 'lucide-react';
 import type { Credential, CredentialFormData } from '../types';
 
 const Credentials: React.FC = () => {
@@ -13,6 +24,9 @@ const Credentials: React.FC = () => {
   const [editingCredential, setEditingCredential] = useState<Credential | null>(
     null
   );
+  const [deleteConfirm, setDeleteConfirm] = useState<Credential | null>(null);
+  const [rotateConfirm, setRotateConfirm] = useState<Credential | null>(null);
+  const [newRotatedKey, setNewRotatedKey] = useState<string | null>(null);
   const [formData, setFormData] = useState<CredentialFormData>({
     key: '',
     name: '',
@@ -66,8 +80,8 @@ const Credentials: React.FC = () => {
   };
 
   const handleCreate = () => {
-    setShowCreateForm(true);
     resetForm();
+    setShowCreateForm(true);
     setFormData(prev => ({ ...prev, key: generateApiKey() }));
   };
 
@@ -132,19 +146,12 @@ const Credentials: React.FC = () => {
   const handleDelete = async (credential: Credential) => {
     if (!apiClient) return;
 
-    if (
-      !confirm(
-        `Are you sure you want to delete credential "${credential.name}"?`
-      )
-    ) {
-      return;
-    }
-
     setLoading(true);
     setError(null);
 
     try {
       await apiClient.deleteCredential(credential.id);
+      setDeleteConfirm(null);
       await loadCredentials();
     } catch (err) {
       setError(
@@ -176,23 +183,14 @@ const Credentials: React.FC = () => {
   const handleRotate = async (credential: Credential) => {
     if (!apiClient) return;
 
-    if (
-      !confirm(
-        `Are you sure you want to rotate the key for "${credential.name}"? The old key will be invalidated.`
-      )
-    ) {
-      return;
-    }
-
     setLoading(true);
     setError(null);
 
     try {
       const response = await apiClient.rotateCredential(credential.id);
+      setNewRotatedKey(response.new_key);
+      setRotateConfirm(null);
       await loadCredentials();
-      alert(
-        `New key generated: ${response.new_key}\n\nSave this key securely. It will not be shown again.`
-      );
     } catch (err) {
       setError(
         err instanceof Error ? err.message : 'Failed to rotate credential'
@@ -219,8 +217,12 @@ const Credentials: React.FC = () => {
             Manage API credentials for client authentication
           </p>
         </div>
-        <button onClick={handleCreate} className="btn btn-primary">
-          + Add Credential
+        <button
+          onClick={handleCreate}
+          className="btn btn-primary flex items-center space-x-2"
+        >
+          <Plus className="w-5 h-5" />
+          <span>Add Credential</span>
         </button>
       </div>
 
@@ -237,20 +239,10 @@ const Credentials: React.FC = () => {
 
       {/* Error Display */}
       {error && (
-        <div className="bg-red-50 border-l-4 border-red-400 p-4">
+        <div className="alert-error">
           <div className="flex">
             <div className="shrink-0">
-              <svg
-                className="h-5 w-5 text-red-400"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                  clipRule="evenodd"
-                ></path>
-              </svg>
+              <AlertCircle className="h-5 w-5 text-red-400" />
             </div>
             <div className="ml-3">
               <p className="text-sm text-red-700">{error}</p>
@@ -260,153 +252,141 @@ const Credentials: React.FC = () => {
                 onClick={() => setError(null)}
                 className="text-red-400 hover:text-red-600"
               >
-                <svg
-                  className="h-5 w-5"
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                    clipRule="evenodd"
-                  ></path>
-                </svg>
+                <X className="h-5 w-5" />
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Create/Edit Form */}
+      {/* Create/Edit Form Modal */}
       {showCreateForm && (
-        <div className="card">
-          <h2 className="text-lg font-semibold mb-4">
-            {editingCredential ? 'Edit Credential' : 'Create New Credential'}
-          </h2>
+        <div className="modal-overlay" onClick={resetForm}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {editingCredential ? 'Edit Credential' : 'Add Credential'}
+              </h3>
+              <button onClick={resetForm} className="btn-icon">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label
-                  htmlFor="name"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Name
-                </label>
-                <input
-                  id="name"
-                  type="text"
-                  value={formData.name}
-                  onChange={e =>
-                    setFormData(prev => ({ ...prev, name: e.target.value }))
-                  }
-                  className="input"
-                  placeholder="e.g., Production Credential"
-                  required
-                />
+            <form onSubmit={handleSubmit} className="modal-body space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="name" className="label">
+                    Name
+                  </label>
+                  <input
+                    id="name"
+                    type="text"
+                    value={formData.name}
+                    onChange={e =>
+                      setFormData(prev => ({ ...prev, name: e.target.value }))
+                    }
+                    className="input"
+                    placeholder="e.g., Production Credential"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="rate_limit" className="label">
+                    Rate Limit (requests per second)
+                  </label>
+                  <input
+                    id="rate_limit"
+                    type="number"
+                    value={formData.rate_limit || ''}
+                    onChange={e =>
+                      setFormData(prev => ({
+                        ...prev,
+                        rate_limit: e.target.value
+                          ? parseInt(e.target.value)
+                          : null,
+                      }))
+                    }
+                    className="input"
+                    placeholder="100"
+                    min="1"
+                  />
+                </div>
               </div>
 
+              {!editingCredential && (
+                <div>
+                  <label htmlFor="key" className="label">
+                    API Key
+                  </label>
+                  <div className="flex space-x-2">
+                    <input
+                      id="key"
+                      type="text"
+                      value={formData.key}
+                      onChange={e =>
+                        setFormData(prev => ({ ...prev, key: e.target.value }))
+                      }
+                      className="input flex-1 font-mono text-sm"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData(prev => ({
+                          ...prev,
+                          key: generateApiKey(),
+                        }))
+                      }
+                      className="btn btn-secondary flex items-center space-x-2"
+                      title="Generate new key"
+                    >
+                      <Shuffle className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div>
-                <label
-                  htmlFor="rate_limit"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Rate Limit (requests per second)
+                <label htmlFor="allowed_models" className="label">
+                  Allowed Models (optional)
                 </label>
+                <textarea
+                  id="allowed_models"
+                  value={allowedModelsText}
+                  onChange={e => setAllowedModelsText(e.target.value)}
+                  className="input"
+                  rows={3}
+                  placeholder="gpt-4&#10;gpt-3.5-turbo&#10;claude-3-sonnet"
+                />
+                <p className="helper-text">
+                  One model per line. Leave empty to allow all models.
+                </p>
+              </div>
+
+              <div className="flex items-center">
                 <input
-                  id="rate_limit"
-                  type="number"
-                  value={formData.rate_limit || ''}
+                  id="is_enabled"
+                  type="checkbox"
+                  checked={formData.is_enabled}
                   onChange={e =>
                     setFormData(prev => ({
                       ...prev,
-                      rate_limit: e.target.value
-                        ? parseInt(e.target.value)
-                        : null,
+                      is_enabled: e.target.checked,
                     }))
                   }
-                  className="input"
-                  placeholder="100"
-                  min="1"
+                  className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
                 />
-              </div>
-            </div>
-
-            {!editingCredential && (
-              <div>
                 <label
-                  htmlFor="key"
-                  className="block text-sm font-medium text-gray-700"
+                  htmlFor="is_enabled"
+                  className="ml-2 block text-sm text-gray-900"
                 >
-                  API Key
+                  Enable this credential
                 </label>
-                <div className="flex space-x-2">
-                  <input
-                    id="key"
-                    type="text"
-                    value={formData.key}
-                    onChange={e =>
-                      setFormData(prev => ({ ...prev, key: e.target.value }))
-                    }
-                    className="input flex-1 font-mono text-sm"
-                    required
-                  />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData(prev => ({ ...prev, key: generateApiKey() }))
-                    }
-                    className="btn btn-secondary"
-                    title="Generate new key"
-                  >
-                    🎲
-                  </button>
-                </div>
               </div>
-            )}
+            </form>
 
-            <div>
-              <label
-                htmlFor="allowed_models"
-                className="block text-sm font-medium text-gray-700"
-              >
-                Allowed Models (optional)
-              </label>
-              <textarea
-                id="allowed_models"
-                value={allowedModelsText}
-                onChange={e => setAllowedModelsText(e.target.value)}
-                className="input"
-                rows={3}
-                placeholder="gpt-4&#10;gpt-3.5-turbo&#10;claude-3-sonnet"
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                One model per line. Leave empty to allow all models.
-              </p>
-            </div>
-
-            <div className="flex items-center">
-              <input
-                id="is_enabled"
-                type="checkbox"
-                checked={formData.is_enabled}
-                onChange={e =>
-                  setFormData(prev => ({
-                    ...prev,
-                    is_enabled: e.target.checked,
-                  }))
-                }
-                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-              />
-              <label
-                htmlFor="is_enabled"
-                className="ml-2 block text-sm text-gray-900"
-              >
-                Enable this credential
-              </label>
-            </div>
-
-            <div className="flex justify-end space-x-3">
+            <div className="modal-footer">
               <button
                 type="button"
                 onClick={resetForm}
@@ -416,176 +396,273 @@ const Credentials: React.FC = () => {
               </button>
               <button
                 type="submit"
-                className="btn btn-primary"
+                onClick={handleSubmit}
+                className="btn btn-primary flex items-center space-x-2"
                 disabled={loading}
               >
-                {loading && (
-                  <svg
-                    className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    ></circle>
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    ></path>
-                  </svg>
-                )}
-                {editingCredential ? 'Update' : 'Create'} Credential
+                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>
+                  {editingCredential ? 'Update' : 'Create'} Credential
+                </span>
               </button>
             </div>
-          </form>
+          </div>
         </div>
       )}
 
       {/* Credentials List */}
       <div className="card">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-semibold">
+        <div className="card-header flex justify-between items-center">
+          <h2 className="card-title">
             Credentials ({filteredCredentials.length})
           </h2>
           {loading && (
             <div className="flex items-center text-gray-500">
-              <svg
-                className="animate-spin -ml-1 mr-3 h-5 w-5"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                ></circle>
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-              Loading...
+              <Loader2 className="w-5 h-5 animate-spin mr-2" />
+              <span className="text-sm">Loading...</span>
             </div>
           )}
         </div>
 
-        {filteredCredentials.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">
-            {searchTerm
-              ? 'No credentials match your search.'
-              : 'No credentials configured yet.'}
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Name
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Key Preview
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Models
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Rate Limit
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {filteredCredentials.map(credential => (
-                  <tr key={credential.id}>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-gray-900">
-                        {credential.name}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        ID: {credential.id}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <code className="text-sm bg-gray-100 px-2 py-1 rounded">
-                        {credential.key_preview}
-                      </code>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-500">
-                        {credential.allowed_models.length === 0
-                          ? 'All models'
-                          : `${credential.allowed_models.length} models`}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-500">
-                        {credential.rate_limit
-                          ? `${credential.rate_limit}/s`
-                          : 'No limit'}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <button
-                        onClick={() => handleToggleStatus(credential)}
-                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium transition-colors ${
-                          credential.is_enabled
-                            ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                            : 'bg-red-100 text-red-800 hover:bg-red-200'
-                        }`}
-                      >
-                        {credential.is_enabled ? 'Enabled' : 'Disabled'}
-                      </button>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <div className="flex justify-end space-x-2">
-                        <button
-                          onClick={() => handleEdit(credential)}
-                          className="text-blue-600 hover:text-blue-900"
-                          title="Edit credential"
-                        >
-                          ✏️
-                        </button>
-                        <button
-                          onClick={() => handleRotate(credential)}
-                          className="text-yellow-600 hover:text-yellow-900"
-                          title="Rotate key"
-                        >
-                          🔄
-                        </button>
-                        <button
-                          onClick={() => handleDelete(credential)}
-                          className="text-red-600 hover:text-red-900"
-                          title="Delete credential"
-                        >
-                          🗑️
-                        </button>
-                      </div>
-                    </td>
+        <div className="card-body p-0">
+          {filteredCredentials.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              {searchTerm
+                ? 'No credentials match your search.'
+                : 'No credentials configured yet.'}
+            </div>
+          ) : (
+            <div className="table-container">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Key Preview</th>
+                    <th>Models</th>
+                    <th>Rate Limit</th>
+                    <th>Status</th>
+                    <th className="text-right">Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                </thead>
+                <tbody>
+                  {filteredCredentials.map(credential => (
+                    <tr key={credential.id}>
+                      <td>
+                        <div className="text-sm font-medium text-gray-900">
+                          {credential.name}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          ID: {credential.id}
+                        </div>
+                      </td>
+                      <td>
+                        <code className="text-sm bg-gray-100 px-2 py-1 rounded font-mono">
+                          {credential.key_preview}
+                        </code>
+                      </td>
+                      <td>
+                        <div className="text-sm text-gray-500">
+                          {credential.allowed_models.length === 0
+                            ? 'All models'
+                            : `${credential.allowed_models.length} models`}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="text-sm text-gray-500">
+                          {credential.rate_limit
+                            ? `${credential.rate_limit}/s`
+                            : 'No limit'}
+                        </div>
+                      </td>
+                      <td>
+                        <button
+                          onClick={() => handleToggleStatus(credential)}
+                          className={`badge transition-colors ${
+                            credential.is_enabled
+                              ? 'badge-success hover:opacity-80'
+                              : 'badge-danger hover:opacity-80'
+                          }`}
+                        >
+                          {credential.is_enabled ? (
+                            <>
+                              <Check className="w-3 h-3 mr-1" />
+                              Enabled
+                            </>
+                          ) : (
+                            <>
+                              <X className="w-3 h-3 mr-1" />
+                              Disabled
+                            </>
+                          )}
+                        </button>
+                      </td>
+                      <td>
+                        <div className="flex justify-end space-x-2">
+                          <button
+                            onClick={() => handleEdit(credential)}
+                            className="btn-icon text-primary-600 hover:text-primary-900"
+                            title="Edit credential"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setRotateConfirm(credential)}
+                            className="btn-icon text-yellow-600 hover:text-yellow-900"
+                            title="Rotate key"
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setDeleteConfirm(credential)}
+                            className="btn-icon text-red-600 hover:text-red-900"
+                            title="Delete credential"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="modal-overlay" onClick={() => setDeleteConfirm(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Delete Credential
+              </h3>
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="btn-icon"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="text-sm text-gray-600">
+                Are you sure you want to delete credential{' '}
+                <strong>{deleteConfirm.name}</strong>? This action cannot be
+                undone.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDelete(deleteConfirm)}
+                className="btn btn-danger flex items-center space-x-2"
+                disabled={loading}
+              >
+                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>Delete</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rotate Confirmation Modal */}
+      {rotateConfirm && (
+        <div className="modal-overlay" onClick={() => setRotateConfirm(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Rotate API Key
+              </h3>
+              <button
+                onClick={() => setRotateConfirm(null)}
+                className="btn-icon"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="text-sm text-gray-600">
+                Are you sure you want to rotate the key for{' '}
+                <strong>{rotateConfirm.name}</strong>? The old key will be
+                invalidated immediately.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                onClick={() => setRotateConfirm(null)}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleRotate(rotateConfirm)}
+                className="btn btn-primary flex items-center space-x-2"
+                disabled={loading}
+              >
+                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>Rotate Key</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Key Display Modal */}
+      {newRotatedKey && (
+        <div className="modal-overlay" onClick={() => setNewRotatedKey(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="text-lg font-semibold text-gray-900">
+                New API Key Generated
+              </h3>
+              <button
+                onClick={() => setNewRotatedKey(null)}
+                className="btn-icon"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="alert-success mb-4">
+                <p className="text-sm text-green-700 font-medium">
+                  Key rotated successfully!
+                </p>
+              </div>
+              <p className="text-sm text-gray-600 mb-3">
+                Save this key securely. It will not be shown again.
+              </p>
+              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                <code className="text-sm font-mono break-all">
+                  {newRotatedKey}
+                </code>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(newRotatedKey);
+                }}
+                className="btn btn-secondary"
+              >
+                Copy to Clipboard
+              </button>
+              <button
+                onClick={() => setNewRotatedKey(null)}
+                className="btn btn-primary"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
