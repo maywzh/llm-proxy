@@ -4,12 +4,12 @@ import type {
   ProviderUpdate,
   ProviderListResponse,
   ProviderCreateResponse,
-  MasterKey,
-  MasterKeyCreate,
-  MasterKeyUpdate,
-  MasterKeyListResponse,
-  MasterKeyCreateResponse,
-  MasterKeyRotateResponse,
+  Credential,
+  CredentialCreate,
+  CredentialUpdate,
+  CredentialListResponse,
+  CredentialCreateResponse,
+  CredentialRotateResponse,
   ConfigVersionResponse,
   ConfigReloadResponse,
   UpdateResponse,
@@ -90,10 +90,8 @@ export class ApiClient {
     return this.request<ProviderListResponse>('/admin/v1/providers');
   }
 
-  async getProvider(id: string): Promise<Provider> {
-    return this.request<Provider>(
-      `/admin/v1/providers/${encodeURIComponent(id)}`
-    );
+  async getProvider(id: number): Promise<Provider> {
+    return this.request<Provider>(`/admin/v1/providers/${id}`);
   }
 
   async createProvider(
@@ -106,30 +104,27 @@ export class ApiClient {
   }
 
   async updateProvider(
-    id: string,
+    id: number,
     update: ProviderUpdate
   ): Promise<UpdateResponse> {
-    return this.request<UpdateResponse>(
-      `/admin/v1/providers/${encodeURIComponent(id)}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify(update),
-      }
-    );
+    return this.request<UpdateResponse>(`/admin/v1/providers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(update),
+    });
   }
 
-  async deleteProvider(id: string): Promise<void> {
-    await this.request<void>(`/admin/v1/providers/${encodeURIComponent(id)}`, {
+  async deleteProvider(id: number): Promise<void> {
+    await this.request<void>(`/admin/v1/providers/${id}`, {
       method: 'DELETE',
     });
   }
 
   async setProviderStatus(
-    id: string,
+    id: number,
     enabled: boolean
   ): Promise<StatusUpdateResponse> {
     return this.request<StatusUpdateResponse>(
-      `/admin/v1/providers/${encodeURIComponent(id)}/status`,
+      `/admin/v1/providers/${id}/status`,
       {
         method: 'PATCH',
         body: JSON.stringify({ enabled }),
@@ -137,54 +132,46 @@ export class ApiClient {
     );
   }
 
-  // Master Key Management
-  async listMasterKeys(): Promise<MasterKeyListResponse> {
-    return this.request<MasterKeyListResponse>('/admin/v1/master-keys');
+  // Credential Management
+  async listCredentials(): Promise<CredentialListResponse> {
+    return this.request<CredentialListResponse>('/admin/v1/credentials');
   }
 
-  async getMasterKey(id: string): Promise<MasterKey> {
-    return this.request<MasterKey>(
-      `/admin/v1/master-keys/${encodeURIComponent(id)}`
-    );
+  async getCredential(id: number): Promise<Credential> {
+    return this.request<Credential>(`/admin/v1/credentials/${id}`);
   }
 
-  async createMasterKey(
-    key: MasterKeyCreate
-  ): Promise<MasterKeyCreateResponse> {
-    return this.request<MasterKeyCreateResponse>('/admin/v1/master-keys', {
+  async createCredential(
+    credential: CredentialCreate
+  ): Promise<CredentialCreateResponse> {
+    return this.request<CredentialCreateResponse>('/admin/v1/credentials', {
       method: 'POST',
-      body: JSON.stringify(key),
+      body: JSON.stringify(credential),
     });
   }
 
-  async updateMasterKey(
-    id: string,
-    update: MasterKeyUpdate
+  async updateCredential(
+    id: number,
+    update: CredentialUpdate
   ): Promise<UpdateResponse> {
-    return this.request<UpdateResponse>(
-      `/admin/v1/master-keys/${encodeURIComponent(id)}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify(update),
-      }
-    );
+    return this.request<UpdateResponse>(`/admin/v1/credentials/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(update),
+    });
   }
 
-  async deleteMasterKey(id: string): Promise<void> {
-    await this.request<void>(
-      `/admin/v1/master-keys/${encodeURIComponent(id)}`,
-      {
-        method: 'DELETE',
-      }
-    );
+  async deleteCredential(id: number): Promise<void> {
+    await this.request<void>(`/admin/v1/credentials/${id}`, {
+      method: 'DELETE',
+    });
   }
 
-  async setMasterKeyStatus(
-    id: string,
+  async setCredentialStatus(
+    id: number,
     enabled: boolean
   ): Promise<StatusUpdateResponse> {
     return this.request<StatusUpdateResponse>(
-      `/admin/v1/master-keys/${encodeURIComponent(id)}/status`,
+      `/admin/v1/credentials/${id}/status`,
       {
         method: 'PATCH',
         body: JSON.stringify({ enabled }),
@@ -192,9 +179,9 @@ export class ApiClient {
     );
   }
 
-  async rotateMasterKey(id: string): Promise<MasterKeyRotateResponse> {
-    return this.request<MasterKeyRotateResponse>(
-      `/admin/v1/master-keys/${encodeURIComponent(id)}/rotate`,
+  async rotateCredential(id: number): Promise<CredentialRotateResponse> {
+    return this.request<CredentialRotateResponse>(
+      `/admin/v1/credentials/${id}/rotate`,
       {
         method: 'POST',
       }

@@ -31,9 +31,9 @@ pub struct AppConfig {
     #[serde(default)]
     pub ttft_timeout_secs: Option<u64>,
 
-    /// List of master keys with optional rate limiting
+    /// List of credentials with optional rate limiting
     #[serde(default)]
-    pub master_keys: Vec<MasterKeyConfig>,
+    pub credentials: Vec<CredentialConfig>,
 
     /// Optional provider suffix for model name prefixing
     /// If set (e.g., "Proxy"), then "Proxy/gpt-4" is equivalent to "gpt-4"
@@ -41,13 +41,13 @@ pub struct AppConfig {
     pub provider_suffix: Option<String>,
 }
 
-/// Configuration for a master API key with optional rate limiting.
+/// Configuration for a credential with optional rate limiting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MasterKeyConfig {
-    /// The actual API key (or key hash when loaded from database)
-    pub key: String,
+pub struct CredentialConfig {
+    /// The actual credential key (or key hash when loaded from database)
+    pub credential_key: String,
 
-    /// Human-readable name for the key
+    /// Human-readable name for the credential
     pub name: String,
 
     /// Optional description
@@ -58,16 +58,16 @@ pub struct MasterKeyConfig {
     #[serde(default)]
     pub rate_limit: Option<RateLimitConfig>,
 
-    /// Whether this key is enabled
+    /// Whether this credential is enabled
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
-    /// List of models this key can access (empty = all models allowed)
+    /// List of models this credential can access (empty = all models allowed)
     #[serde(default)]
     pub allowed_models: Vec<String>,
 }
 
-/// Rate limiting configuration for a master key.
+/// Rate limiting configuration for a credential.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
     /// Maximum requests per second
@@ -179,7 +179,7 @@ impl AppConfig {
             verify_ssl,
             request_timeout_secs,
             ttft_timeout_secs,
-            master_keys: vec![],
+            credentials: vec![],
             provider_suffix,
         })
     }
@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(config.request_timeout_secs, 300);
         assert!(config.ttft_timeout_secs.is_none());
         assert!(config.providers.is_empty());
-        assert!(config.master_keys.is_empty());
+        assert!(config.credentials.is_empty());
         assert!(config.provider_suffix.is_none());
     }
 

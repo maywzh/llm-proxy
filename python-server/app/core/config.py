@@ -1,7 +1,7 @@
 """Configuration management for the LLM proxy server.
 
 This module handles configuration loading from environment variables.
-Dynamic configuration (providers, master keys) is loaded from the database.
+Dynamic configuration (providers, credentials) is loaded from the database.
 """
 
 import os
@@ -22,7 +22,7 @@ def _str_to_bool(value: str) -> bool:
 class EnvConfig:
     """Server configuration from environment variables.
 
-    Providers and master keys are loaded from the database, not from config files.
+    Providers and credentials are loaded from the database, not from config files.
     """
 
     def __init__(self):
@@ -70,7 +70,7 @@ def get_config() -> AppConfig:
     env = EnvConfig()
     return AppConfig(
         providers=[],
-        master_keys=[],
+        credentials=[],
         server=ServerConfig(host=env.host, port=env.port),
         verify_ssl=env.verify_ssl,
         request_timeout_secs=env.request_timeout_secs,

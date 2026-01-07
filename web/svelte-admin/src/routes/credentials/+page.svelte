@@ -1,14 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { masterKeys, loading, errors, actions } from '$lib/stores';
+  import { credentials, loading, errors, actions } from '$lib/stores';
   import { generateApiKey } from '$lib/api';
-  import type { MasterKey, MasterKeyFormData } from '$lib/types';
+  import type { Credential, CredentialFormData } from '$lib/types';
 
   let searchTerm = $state('');
   let showCreateForm = $state(false);
-  let editingKey: MasterKey | null = $state(null);
-  let formData: MasterKeyFormData = $state({
-    id: '',
+  let editingCredential: Credential | null = $state(null);
+  let formData: CredentialFormData = $state({
     key: '',
     name: '',
     allowed_models: [],
@@ -18,20 +17,19 @@
   let allowedModelsText = $state('');
 
   onMount(() => {
-    actions.loadMasterKeys();
+    actions.loadCredentials();
   });
 
-  const filteredKeys = $derived(
-    $masterKeys.filter(
-      key =>
-        key.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        key.name.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredCredentials = $derived(
+    $credentials.filter(
+      credential =>
+        credential.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        credential.key_preview.toLowerCase().includes(searchTerm.toLowerCase())
     )
   );
 
   function resetForm() {
     formData = {
-      id: '',
       key: '',
       name: '',
       allowed_models: [],
@@ -39,7 +37,7 @@
       is_enabled: true,
     };
     allowedModelsText = '';
-    editingKey = null;
+    editingCredential = null;
     showCreateForm = false;
   }
 
@@ -49,17 +47,16 @@
     formData.key = generateApiKey();
   }
 
-  function handleEdit(key: MasterKey) {
-    editingKey = key;
+  function handleEdit(credential: Credential) {
+    editingCredential = credential;
     formData = {
-      id: key.id,
       key: '', // Don't populate for security
-      name: key.name,
-      allowed_models: key.allowed_models,
-      rate_limit: key.rate_limit,
-      is_enabled: key.is_enabled,
+      name: credential.name,
+      allowed_models: credential.allowed_models,
+      rate_limit: credential.rate_limit,
+      is_enabled: credential.is_enabled,
     };
-    allowedModelsText = key.allowed_models.join('\n');
+    allowedModelsText = credential.allowed_models.join('\n');
     showCreateForm = true;
   }
 
@@ -70,7 +67,7 @@
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
-    if (editingKey) {
+    if (editingCredential) {
       const updateData: any = {
         name: formData.name,
         allowed_models: formData.allowed_models,
@@ -78,31 +75,38 @@
         is_enabled: formData.is_enabled,
       };
 
-      const success = await actions.updateMasterKey(editingKey.id, updateData);
+      const success = await actions.updateCredential(
+        editingCredential.id,
+        updateData
+      );
       if (success) resetForm();
     } else {
-      const success = await actions.createMasterKey(formData);
+      const success = await actions.createCredential(formData);
       if (success) resetForm();
     }
   }
 
-  async function handleDelete(key: MasterKey) {
-    if (confirm(`Are you sure you want to delete master key "${key.name}"?`)) {
-      await actions.deleteMasterKey(key.id);
+  async function handleDelete(credential: Credential) {
+    if (
+      confirm(
+        `Are you sure you want to delete credential "${credential.name}"?`
+      )
+    ) {
+      await actions.deleteCredential(credential.id);
     }
   }
 
-  async function handleToggleStatus(key: MasterKey) {
-    await actions.toggleMasterKeyStatus(key.id, !key.is_enabled);
+  async function handleToggleStatus(credential: Credential) {
+    await actions.toggleCredentialStatus(credential.id, !credential.is_enabled);
   }
 
-  async function handleRotate(key: MasterKey) {
+  async function handleRotate(credential: Credential) {
     if (
       confirm(
-        `Are you sure you want to rotate the key for "${key.name}"? The old key will be invalidated.`
+        `Are you sure you want to rotate the key for "${credential.name}"? The old key will be invalidated.`
       )
     ) {
-      const newKey = await actions.rotateMasterKey(key.id);
+      const newKey = await actions.rotateCredential(credential.id);
       if (newKey) {
         alert(
           `New key generated: ${newKey}\n\nSave this key securely. It will not be shown again.`
@@ -113,30 +117,30 @@
 </script>
 
 <svelte:head>
-  <title>Master Keys - LLM Proxy Admin</title>
+  <title>Credentials - LLM Proxy Admin</title>
 </svelte:head>
 
 <div class="space-y-6">
   <div class="flex justify-between items-center">
     <div>
-      <h1 class="text-2xl font-bold text-gray-900">Master Keys</h1>
+      <h1 class="text-2xl font-bold text-gray-900">Credentials</h1>
       <p class="text-gray-600">Manage API keys for client authentication</p>
     </div>
     <button onclick={handleCreate} class="btn btn-primary">
-      + Add Master Key
+      + Add Credential
     </button>
   </div>
 
   <div class="max-w-md">
     <input
       type="text"
-      placeholder="Search master keys..."
+      placeholder="Search credentials..."
       bind:value={searchTerm}
       class="input"
     />
   </div>
 
-  {#if $errors.masterKeys}
+  {#if $errors.credentials}
     <div class="bg-red-50 border-l-4 border-red-400 p-4">
       <div class="flex">
         <div class="shrink-0">
@@ -153,11 +157,11 @@
           </svg>
         </div>
         <div class="ml-3">
-          <p class="text-sm text-red-700">{$errors.masterKeys}</p>
+          <p class="text-sm text-red-700">{$errors.credentials}</p>
         </div>
         <div class="ml-auto pl-3">
           <button
-            onclick={() => actions.clearError('masterKeys')}
+            onclick={() => actions.clearError('credentials')}
             class="text-red-400 hover:text-red-600"
             aria-label="Close error message"
           >
@@ -177,7 +181,7 @@
   {#if showCreateForm}
     <div class="card">
       <h2 class="text-lg font-semibold mb-4">
-        {editingKey ? 'Edit Master Key' : 'Create New Master Key'}
+        {editingCredential ? 'Edit Credential' : 'Create New Credential'}
       </h2>
 
       <form
@@ -187,38 +191,21 @@
         }}
         class="space-y-4"
       >
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label for="id" class="block text-sm font-medium text-gray-700"
-              >Key ID</label
-            >
-            <input
-              id="id"
-              type="text"
-              bind:value={formData.id}
-              disabled={!!editingKey}
-              class="input"
-              placeholder="e.g., key-1"
-              required
-            />
-          </div>
-
-          <div>
-            <label for="name" class="block text-sm font-medium text-gray-700"
-              >Name</label
-            >
-            <input
-              id="name"
-              type="text"
-              bind:value={formData.name}
-              class="input"
-              placeholder="e.g., Production Key"
-              required
-            />
-          </div>
+        <div>
+          <label for="name" class="block text-sm font-medium text-gray-700"
+            >Name</label
+          >
+          <input
+            id="name"
+            type="text"
+            bind:value={formData.name}
+            class="input"
+            placeholder="e.g., Production Key"
+            required
+          />
         </div>
 
-        {#if !editingKey}
+        {#if !editingCredential}
           <div>
             <label for="key" class="block text-sm font-medium text-gray-700"
               >API Key</label
@@ -287,7 +274,7 @@
             class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
           />
           <label for="is_enabled" class="ml-2 block text-sm text-gray-900">
-            Enable this master key
+            Enable this credential
           </label>
         </div>
 
@@ -298,9 +285,9 @@
           <button
             type="submit"
             class="btn btn-primary"
-            disabled={$loading.masterKeys}
+            disabled={$loading.credentials}
           >
-            {#if $loading.masterKeys}
+            {#if $loading.credentials}
               <svg
                 class="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
                 xmlns="http://www.w3.org/2000/svg"
@@ -322,7 +309,7 @@
                 ></path>
               </svg>
             {/if}
-            {editingKey ? 'Update' : 'Create'} Master Key
+            {editingCredential ? 'Update' : 'Create'} Credential
           </button>
         </div>
       </form>
@@ -331,8 +318,10 @@
 
   <div class="card">
     <div class="flex justify-between items-center mb-4">
-      <h2 class="text-lg font-semibold">Master Keys ({filteredKeys.length})</h2>
-      {#if $loading.masterKeys}
+      <h2 class="text-lg font-semibold">
+        Credentials ({filteredCredentials.length})
+      </h2>
+      {#if $loading.credentials}
         <div class="flex items-center text-gray-500">
           <svg
             class="animate-spin -ml-1 mr-3 h-5 w-5"
@@ -359,11 +348,11 @@
       {/if}
     </div>
 
-    {#if filteredKeys.length === 0}
+    {#if filteredCredentials.length === 0}
       <div class="text-center py-8 text-gray-500">
         {searchTerm
-          ? 'No master keys match your search.'
-          : 'No master keys configured yet.'}
+          ? 'No credentials match your search.'
+          : 'No credentials configured yet.'}
       </div>
     {:else}
       <div class="overflow-x-auto">
@@ -397,40 +386,42 @@
             </tr>
           </thead>
           <tbody class="bg-white divide-y divide-gray-200">
-            {#each filteredKeys as key}
+            {#each filteredCredentials as credential}
               <tr>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <div class="text-sm font-medium text-gray-900">
-                    {key.name}
+                    {credential.name}
                   </div>
-                  <div class="text-sm text-gray-500">{key.id}</div>
+                  <div class="text-sm text-gray-500">ID: {credential.id}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <code class="text-sm bg-gray-100 px-2 py-1 rounded"
-                    >{key.key_preview}</code
+                    >{credential.key_preview}</code
                   >
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <div class="text-sm text-gray-500">
-                    {key.allowed_models.length === 0
+                    {credential.allowed_models.length === 0
                       ? 'All models'
-                      : `${key.allowed_models.length} models`}
+                      : `${credential.allowed_models.length} models`}
                   </div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <div class="text-sm text-gray-500">
-                    {key.rate_limit ? `${key.rate_limit}/s` : 'No limit'}
+                    {credential.rate_limit
+                      ? `${credential.rate_limit}/s`
+                      : 'No limit'}
                   </div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <button
-                    onclick={() => handleToggleStatus(key)}
+                    onclick={() => handleToggleStatus(credential)}
                     class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium transition-colors
-                      {key.is_enabled
+                      {credential.is_enabled
                       ? 'bg-green-100 text-green-800 hover:bg-green-200'
                       : 'bg-red-100 text-red-800 hover:bg-red-200'}"
                   >
-                    {key.is_enabled ? 'Enabled' : 'Disabled'}
+                    {credential.is_enabled ? 'Enabled' : 'Disabled'}
                   </button>
                 </td>
                 <td
@@ -438,23 +429,23 @@
                 >
                   <div class="flex justify-end space-x-2">
                     <button
-                      onclick={() => handleEdit(key)}
+                      onclick={() => handleEdit(credential)}
                       class="text-blue-600 hover:text-blue-900"
-                      title="Edit master key"
+                      title="Edit credential"
                     >
                       ✏️
                     </button>
                     <button
-                      onclick={() => handleRotate(key)}
+                      onclick={() => handleRotate(credential)}
                       class="text-yellow-600 hover:text-yellow-900"
                       title="Rotate key"
                     >
                       🔄
                     </button>
                     <button
-                      onclick={() => handleDelete(key)}
+                      onclick={() => handleDelete(credential)}
                       class="text-red-600 hover:text-red-900"
-                      title="Delete master key"
+                      title="Delete credential"
                     >
                       🗑️
                     </button>

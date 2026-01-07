@@ -1,4 +1,5 @@
 """Tests for database module"""
+
 import pytest
 from unittest.mock import patch
 
@@ -93,20 +94,20 @@ class TestInitResult:
         """Test default values"""
         result = InitResult()
         assert result.providers == []
-        assert result.master_keys == []
+        assert result.credentials == []
         assert result.version == 0
 
     def test_with_values(self):
         """Test with provided values"""
         providers = [{"id": "test"}]
-        master_keys = [{"id": "key1"}]
+        credentials = [{"id": "key1"}]
         result = InitResult(
             providers=providers,
-            master_keys=master_keys,
+            credentials=credentials,
             version=5,
         )
         assert result.providers == providers
-        assert result.master_keys == master_keys
+        assert result.credentials == credentials
         assert result.version == 5
 
 

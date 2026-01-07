@@ -21,7 +21,7 @@ class TestGetConfig:
         config = get_config()
         assert isinstance(config, AppConfig)
         assert len(config.providers) == 0
-        assert len(config.master_keys) == 0
+        assert len(config.credentials) == 0
 
     def test_set_config_updates_cached_config(self, clear_config_cache):
         """Test that set_config updates the cached configuration"""

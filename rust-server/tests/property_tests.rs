@@ -34,7 +34,7 @@ fn app_config_strategy() -> impl Strategy<Value = AppConfig> {
         verify_ssl: true,
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
-        master_keys: vec![],
+        credentials: vec![],
         provider_suffix: None,
     })
 }
@@ -104,7 +104,7 @@ proptest! {
             verify_ssl: true,
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
-            master_keys: vec![],
+            credentials: vec![],
             provider_suffix: None,
         };
 
@@ -190,7 +190,7 @@ proptest! {
             verify_ssl: true,
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
-            master_keys: vec![],
+            credentials: vec![],
             provider_suffix: None,
         };
 
@@ -247,7 +247,7 @@ proptest! {
             verify_ssl: true,
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
-            master_keys: vec![],
+            credentials: vec![],
             provider_suffix: None,
         };
 
@@ -272,16 +272,26 @@ proptest! {
         prop_assert_eq!(models_vec.len(), unique_count);
     }
 
-    /// Property: Provider selection is deterministic for same RNG state
+    /// Property: Provider selection uses randomness (with enough samples)
     #[test]
     fn prop_selection_uses_randomness(config in app_config_strategy()) {
         prop_assume!(config.providers.len() > 1);
 
+        // Calculate total weight and minimum expected selections for lowest weight provider
+        let total_weight: u32 = config.providers.iter().map(|p| p.weight).sum();
+        let min_weight: u32 = config.providers.iter().map(|p| p.weight).min().unwrap();
+        
+        // Calculate how many samples we need to have a reasonable chance of seeing all providers
+        // With weight ratio of min_weight/total_weight, we need enough samples
+        // Use a larger sample size to account for extreme weight ratios
+        let expected_min_ratio = min_weight as f64 / total_weight as f64;
+        let sample_size = std::cmp::max(1000, (10.0 / expected_min_ratio) as usize);
+
         let service = ProviderService::new(config);
 
-        // Collect 100 selections
+        // Collect selections
         let mut selections = vec![];
-        for _ in 0..100 {
+        for _ in 0..sample_size {
             selections.push(service.get_next_provider(None).unwrap().name);
         }
 
@@ -291,7 +301,10 @@ proptest! {
 
         prop_assert!(
             unique_selections.len() > 1,
-            "All selections were the same, expected variation"
+            "All {} selections were the same, expected variation (min_weight={}, total_weight={})",
+            sample_size,
+            min_weight,
+            total_weight
         );
     }
 }
@@ -334,7 +347,7 @@ mod quickcheck_tests {
             verify_ssl: true,
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
-            master_keys: vec![],
+            credentials: vec![],
             provider_suffix: None,
         };
 
@@ -367,7 +380,7 @@ mod quickcheck_tests {
             verify_ssl: true,
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
-            master_keys: vec![],
+            credentials: vec![],
             provider_suffix: None,
         };
 
@@ -455,7 +468,7 @@ mod complex_multi_provider_tests {
             verify_ssl: true,
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
-            master_keys: vec![],
+            credentials: vec![],
             provider_suffix: None,
         };
 

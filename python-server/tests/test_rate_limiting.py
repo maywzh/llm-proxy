@@ -6,9 +6,9 @@ from typing import List
 import pytest
 from fastapi import HTTPException
 
-from app.models.config import MasterKeyConfig, RateLimitConfig, ServerConfig
+from app.models.config import CredentialConfig, RateLimitConfig, ServerConfig
 from app.core.rate_limiter import RateLimiter
-from app.core.security import verify_master_key
+from app.core.security import verify_credential_key
 from app.core.config import get_config
 from app.core.database import hash_key
 
@@ -59,42 +59,42 @@ class TestRateLimiter:
         assert limiter.check_rate_limit("unknown-key") is True
 
 
-class TestVerifyMasterKey:
-    """Test verify_master_key function"""
+class TestVerifyCredentialKey:
+    """Test verify_credential_key function"""
 
-    def test_no_master_keys_configured(self, monkeypatch):
-        """Test when no master keys are configured"""
+    def test_no_credentials_configured(self, monkeypatch):
+        """Test when no credentials are configured"""
 
-        # Mock config with no master keys
+        # Mock config with no credentials
         class MockConfig:
-            master_keys = []
+            credentials = []
 
         monkeypatch.setattr("app.core.security.get_config", lambda: MockConfig())
 
         # Should allow access without authentication
-        is_valid, key_config = verify_master_key(None)
+        is_valid, credential_config = verify_credential_key(None)
         assert is_valid is True
-        assert key_config is None
+        assert credential_config is None
 
-    def test_master_keys_valid(self, monkeypatch):
-        """Test new master_keys with valid key (hashed)"""
+    def test_credentials_valid(self, monkeypatch):
+        """Test credentials with valid key (hashed)"""
         raw_key_1 = "sk-key-1"
         raw_key_2 = "sk-key-2"
-        test_master_keys = [
-            MasterKeyConfig(
-                key=hash_key(raw_key_1),
+        test_credentials = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key_1),
                 name="key-1",
                 rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
             ),
-            MasterKeyConfig(
-                key=hash_key(raw_key_2),
+            CredentialConfig(
+                credential_key=hash_key(raw_key_2),
                 name="key-2",
                 rate_limit=RateLimitConfig(requests_per_second=5, burst_size=10),
             ),
         ]
 
         class MockConfig:
-            master_keys = test_master_keys
+            credentials = test_credentials
 
         monkeypatch.setattr("app.core.security.get_config", lambda: MockConfig())
 
@@ -103,48 +103,48 @@ class TestVerifyMasterKey:
 
         init_rate_limiter()
 
-        is_valid, key_config = verify_master_key(f"Bearer {raw_key_1}")
+        is_valid, credential_config = verify_credential_key(f"Bearer {raw_key_1}")
         assert is_valid is True
-        assert key_config is not None
-        assert key_config.name == "key-1"
+        assert credential_config is not None
+        assert credential_config.name == "key-1"
 
-    def test_master_keys_invalid(self, monkeypatch):
-        """Test new master_keys with invalid key"""
+    def test_credentials_invalid(self, monkeypatch):
+        """Test credentials with invalid key"""
         raw_key = "sk-key-1"
-        test_master_keys = [
-            MasterKeyConfig(
-                key=hash_key(raw_key),
+        test_credentials = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
                 rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
             )
         ]
 
         class MockConfig:
-            master_keys = test_master_keys
+            credentials = test_credentials
 
         monkeypatch.setattr("app.core.security.get_config", lambda: MockConfig())
 
         with pytest.raises(HTTPException) as exc_info:
-            verify_master_key("Bearer wrong-key")
+            verify_credential_key("Bearer wrong-key")
 
         assert exc_info.value.status_code == 401
 
-    def test_master_keys_missing_header(self, monkeypatch):
-        """Test new master_keys with missing authorization header"""
+    def test_credentials_missing_header(self, monkeypatch):
+        """Test credentials with missing authorization header"""
         raw_key = "sk-key-1"
-        test_master_keys = [
-            MasterKeyConfig(
-                key=hash_key(raw_key),
+        test_credentials = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
                 rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
             )
         ]
 
         class MockConfig:
-            master_keys = test_master_keys
+            credentials = test_credentials
 
         monkeypatch.setattr("app.core.security.get_config", lambda: MockConfig())
 
         with pytest.raises(HTTPException) as exc_info:
-            verify_master_key(None)
+            verify_credential_key(None)
 
         assert exc_info.value.status_code == 401
 
@@ -152,16 +152,16 @@ class TestVerifyMasterKey:
         """Test rate limit enforcement"""
         raw_key = "sk-key-1"
         hashed_key = hash_key(raw_key)
-        test_master_keys = [
-            MasterKeyConfig(
-                key=hashed_key,
+        test_credentials = [
+            CredentialConfig(
+                credential_key=hashed_key,
                 name="key-1",
                 rate_limit=RateLimitConfig(requests_per_second=2, burst_size=2),
             )
         ]
 
         class MockConfig:
-            master_keys = test_master_keys
+            credentials = test_credentials
 
         monkeypatch.setattr("app.core.security.get_config", lambda: MockConfig())
 
@@ -171,15 +171,15 @@ class TestVerifyMasterKey:
         init_rate_limiter()
 
         # First 2 requests should succeed
-        is_valid, key_config = verify_master_key(f"Bearer {raw_key}")
+        is_valid, credential_config = verify_credential_key(f"Bearer {raw_key}")
         assert is_valid is True
 
-        is_valid, key_config = verify_master_key(f"Bearer {raw_key}")
+        is_valid, credential_config = verify_credential_key(f"Bearer {raw_key}")
         assert is_valid is True
 
         # Third request should fail with 429
         with pytest.raises(HTTPException) as exc_info:
-            verify_master_key(f"Bearer {raw_key}")
+            verify_credential_key(f"Bearer {raw_key}")
 
         assert exc_info.value.status_code == 429
         assert "Rate limit exceeded" in exc_info.value.detail
@@ -192,21 +192,21 @@ class TestRateLimitingIntegration:
         """Test that multiple keys have independent rate limits"""
         raw_fast_key = "sk-fast-key"
         raw_slow_key = "sk-slow-key"
-        test_master_keys = [
-            MasterKeyConfig(
-                key=hash_key(raw_fast_key),
+        test_credentials = [
+            CredentialConfig(
+                credential_key=hash_key(raw_fast_key),
                 name="fast-key",
                 rate_limit=RateLimitConfig(requests_per_second=100, burst_size=100),
             ),
-            MasterKeyConfig(
-                key=hash_key(raw_slow_key),
+            CredentialConfig(
+                credential_key=hash_key(raw_slow_key),
                 name="slow-key",
                 rate_limit=RateLimitConfig(requests_per_second=2, burst_size=2),
             ),
         ]
 
         class MockConfig:
-            master_keys = test_master_keys
+            credentials = test_credentials
 
         monkeypatch.setattr("app.core.security.get_config", lambda: MockConfig())
 
@@ -216,38 +216,38 @@ class TestRateLimitingIntegration:
         init_rate_limiter()
 
         # Exhaust slow key
-        verify_master_key(f"Bearer {raw_slow_key}")
-        verify_master_key(f"Bearer {raw_slow_key}")
+        verify_credential_key(f"Bearer {raw_slow_key}")
+        verify_credential_key(f"Bearer {raw_slow_key}")
 
         with pytest.raises(HTTPException) as exc_info:
-            verify_master_key(f"Bearer {raw_slow_key}")
+            verify_credential_key(f"Bearer {raw_slow_key}")
         assert exc_info.value.status_code == 429
 
         # Fast key should still work
-        is_valid, key_config = verify_master_key(f"Bearer {raw_fast_key}")
+        is_valid, credential_config = verify_credential_key(f"Bearer {raw_fast_key}")
         assert is_valid is True
-        assert key_config is not None
-        assert key_config.name == "fast-key"
+        assert credential_config is not None
+        assert credential_config.name == "fast-key"
 
     def test_unlimited_key_no_rate_limit(self, monkeypatch):
         """Test that keys without rate_limit field have unlimited requests"""
         raw_unlimited_key = "sk-unlimited-key"
         raw_limited_key = "sk-limited-key"
-        test_master_keys = [
-            MasterKeyConfig(
-                key=hash_key(raw_unlimited_key),
+        test_credentials = [
+            CredentialConfig(
+                credential_key=hash_key(raw_unlimited_key),
                 name="unlimited-key",
                 rate_limit=None,  # No rate limiting
             ),
-            MasterKeyConfig(
-                key=hash_key(raw_limited_key),
+            CredentialConfig(
+                credential_key=hash_key(raw_limited_key),
                 name="limited-key",
                 rate_limit=RateLimitConfig(requests_per_second=2, burst_size=2),
             ),
         ]
 
         class MockConfig:
-            master_keys = test_master_keys
+            credentials = test_credentials
 
         monkeypatch.setattr("app.core.security.get_config", lambda: MockConfig())
 
@@ -258,17 +258,19 @@ class TestRateLimitingIntegration:
 
         # Unlimited key should allow many requests
         for _ in range(100):
-            is_valid, key_config = verify_master_key(f"Bearer {raw_unlimited_key}")
+            is_valid, credential_config = verify_credential_key(
+                f"Bearer {raw_unlimited_key}"
+            )
             assert is_valid is True
-            assert key_config is not None
-            assert key_config.name == "unlimited-key"
+            assert credential_config is not None
+            assert credential_config.name == "unlimited-key"
 
         # Limited key should be rate limited
-        verify_master_key(f"Bearer {raw_limited_key}")
-        verify_master_key(f"Bearer {raw_limited_key}")
+        verify_credential_key(f"Bearer {raw_limited_key}")
+        verify_credential_key(f"Bearer {raw_limited_key}")
 
         with pytest.raises(HTTPException) as exc_info:
-            verify_master_key(f"Bearer {raw_limited_key}")
+            verify_credential_key(f"Bearer {raw_limited_key}")
         assert exc_info.value.status_code == 429
 
     def test_mixed_rate_limits(self, monkeypatch):
@@ -277,27 +279,31 @@ class TestRateLimitingIntegration:
         raw_key_2 = "sk-key-2"
         raw_key_3 = "sk-key-3"
         raw_key_4 = "sk-key-4"
-        test_master_keys = [
-            MasterKeyConfig(
-                key=hash_key(raw_key_1),
+        test_credentials = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key_1),
                 name="key-1",
                 rate_limit=RateLimitConfig(requests_per_second=10, burst_size=10),
             ),
-            MasterKeyConfig(
-                key=hash_key(raw_key_2), name="key-2", rate_limit=None  # Unlimited
+            CredentialConfig(
+                credential_key=hash_key(raw_key_2),
+                name="key-2",
+                rate_limit=None,  # Unlimited
             ),
-            MasterKeyConfig(
-                key=hash_key(raw_key_3),
+            CredentialConfig(
+                credential_key=hash_key(raw_key_3),
                 name="key-3",
                 rate_limit=RateLimitConfig(requests_per_second=5, burst_size=5),
             ),
-            MasterKeyConfig(
-                key=hash_key(raw_key_4), name="key-4", rate_limit=None  # Unlimited
+            CredentialConfig(
+                credential_key=hash_key(raw_key_4),
+                name="key-4",
+                rate_limit=None,  # Unlimited
             ),
         ]
 
         class MockConfig:
-            master_keys = test_master_keys
+            credentials = test_credentials
 
         monkeypatch.setattr("app.core.security.get_config", lambda: MockConfig())
 
@@ -308,13 +314,13 @@ class TestRateLimitingIntegration:
 
         # Unlimited keys should work without limits
         for _ in range(50):
-            verify_master_key(f"Bearer {raw_key_2}")
-            verify_master_key(f"Bearer {raw_key_4}")
+            verify_credential_key(f"Bearer {raw_key_2}")
+            verify_credential_key(f"Bearer {raw_key_4}")
 
         # Limited keys should be rate limited
         for _ in range(10):
-            verify_master_key(f"Bearer {raw_key_1}")
+            verify_credential_key(f"Bearer {raw_key_1}")
 
         with pytest.raises(HTTPException) as exc_info:
-            verify_master_key(f"Bearer {raw_key_1}")
+            verify_credential_key(f"Bearer {raw_key_1}")
         assert exc_info.value.status_code == 429
