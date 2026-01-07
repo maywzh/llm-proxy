@@ -5,8 +5,12 @@
   import { browser } from '$app/environment';
   import '../app.css';
   import { auth, actions, configVersion, errors } from '$lib/stores';
+  import { Plug, Key, RefreshCw, LogOut, Menu, X } from 'lucide-svelte';
 
   let { children }: { children: Snippet } = $props();
+
+  let isMobileMenuOpen = $state(false);
+  let isReloading = $state(false);
 
   // Initialize auth on mount
   onMount(() => {
@@ -36,8 +40,13 @@
     goto('/login');
   }
 
-  function handleReloadConfig() {
-    actions.reloadConfig();
+  async function handleReloadConfig() {
+    isReloading = true;
+    try {
+      await actions.reloadConfig();
+    } finally {
+      isReloading = false;
+    }
   }
 
   function clearError(type: keyof typeof $errors) {
@@ -46,140 +55,207 @@
 
   // Navigation items
   const navItems = [
-    { href: '/providers', label: 'Providers', icon: '🔌' },
-    { href: '/credentials', label: 'Credentials', icon: '🔑' },
+    { href: '/providers', label: 'Providers', icon: Plug },
+    { href: '/credentials', label: 'Credentials', icon: Key },
   ];
 </script>
 
 <div class="min-h-screen bg-gray-50">
   {#if $auth.isAuthenticated}
-    <!-- Header -->
-    <header class="bg-white shadow-sm border-b border-gray-200">
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex justify-between items-center h-16">
-          <!-- Logo and Title -->
-          <div class="flex items-center">
-            <h1 class="text-xl font-semibold text-gray-900">LLM Proxy Admin</h1>
-          </div>
-
-          <!-- Navigation -->
-          <nav class="hidden md:flex space-x-8">
-            {#each navItems as item}
-              <a
-                href={item.href}
-                class="flex items-center space-x-2 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-200
-                  {$page.url.pathname === item.href
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'}"
-              >
-                <span>{item.icon}</span>
-                <span>{item.label}</span>
-              </a>
-            {/each}
-          </nav>
-
-          <!-- Config Version and Actions -->
-          <div class="flex items-center space-x-4">
-            {#if $configVersion}
-              <div class="text-sm text-gray-500">
-                v{$configVersion.version}
-              </div>
-            {/if}
-
-            <button
-              onclick={handleReloadConfig}
-              class="btn btn-secondary text-sm"
-              title="Reload Configuration"
+    <!-- Sidebar - Desktop -->
+    <aside class="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
+      <div class="flex flex-col flex-grow bg-gray-900 overflow-y-auto">
+        <!-- Logo -->
+        <div
+          class="flex items-center flex-shrink-0 px-4 py-5 border-b border-gray-800"
+        >
+          <div class="flex items-center space-x-3">
+            <div
+              class="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center"
             >
-              🔄 Reload
-            </button>
-
-            <button onclick={handleLogout} class="btn btn-secondary text-sm">
-              Logout
-            </button>
+              <Plug class="w-5 h-5 text-white" />
+            </div>
+            <span class="text-xl font-semibold text-white"> LLM Proxy </span>
           </div>
         </div>
 
-        <!-- Mobile Navigation -->
-        <div class="md:hidden pb-3">
-          <nav class="flex space-x-4">
-            {#each navItems as item}
-              <a
-                href={item.href}
-                class="flex items-center space-x-2 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-200
-                  {$page.url.pathname === item.href
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'}"
-              >
-                <span>{item.icon}</span>
-                <span>{item.label}</span>
-              </a>
-            {/each}
-          </nav>
+        <!-- Navigation -->
+        <nav class="flex-1 px-2 py-4 space-y-1">
+          {#each navItems as item}
+            {@const Icon = item.icon}
+            {@const isActive = $page.url.pathname === item.href}
+            <a
+              href={item.href}
+              class="sidebar-nav-item {isActive ? 'active' : ''}"
+            >
+              <Icon class="w-5 h-5" />
+              <span>{item.label}</span>
+            </a>
+          {/each}
+        </nav>
+
+        <!-- User Section -->
+        <div class="flex-shrink-0 border-t border-gray-800 p-4">
+          <button
+            onclick={handleLogout}
+            class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg"
+          >
+            <LogOut class="w-5 h-5" />
+            <span>Logout</span>
+          </button>
         </div>
       </div>
-    </header>
+    </aside>
 
-    <!-- Error Notifications -->
-    {#if $errors.general}
-      <div class="bg-red-50 border-l-4 border-red-400 p-4 mx-4 mt-4">
-        <div class="flex">
-          <div class="shrink-0">
-            <svg
-              class="h-5 w-5 text-red-400"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path
-                fill-rule="evenodd"
-                d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                clip-rule="evenodd"
-              />
-            </svg>
-          </div>
-          <div class="ml-3">
-            <p class="text-sm text-red-700">{$errors.general}</p>
-          </div>
-          <div class="ml-auto pl-3">
+    <!-- Mobile Sidebar -->
+    {#if isMobileMenuOpen}
+      <div class="lg:hidden">
+        <div
+          class="fixed inset-0 bg-black bg-opacity-50 z-40"
+          onclick={() => (isMobileMenuOpen = false)}
+          onkeydown={e => e.key === 'Escape' && (isMobileMenuOpen = false)}
+          role="button"
+          tabindex="0"
+          aria-label="Close menu"
+        ></div>
+        <aside
+          class="fixed inset-y-0 left-0 flex flex-col w-64 bg-gray-900 z-50"
+        >
+          <div
+            class="flex items-center justify-between px-4 py-5 border-b border-gray-800"
+          >
+            <div class="flex items-center space-x-3">
+              <div
+                class="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center"
+              >
+                <Plug class="w-5 h-5 text-white" />
+              </div>
+              <span class="text-xl font-semibold text-white"> LLM Proxy </span>
+            </div>
             <button
-              onclick={() => clearError('general')}
-              class="text-red-400 hover:text-red-600"
-              aria-label="Close error message"
+              onclick={() => (isMobileMenuOpen = false)}
+              class="text-gray-400 hover:text-white"
             >
-              <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path
-                  fill-rule="evenodd"
-                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                  clip-rule="evenodd"
-                />
-              </svg>
+              <X class="w-6 h-6" />
             </button>
           </div>
-        </div>
+
+          <nav class="flex-1 px-2 py-4 space-y-1">
+            {#each navItems as item}
+              {@const Icon = item.icon}
+              {@const isActive = $page.url.pathname === item.href}
+              <a
+                href={item.href}
+                onclick={() => (isMobileMenuOpen = false)}
+                class="sidebar-nav-item {isActive ? 'active' : ''}"
+              >
+                <Icon class="w-5 h-5" />
+                <span>{item.label}</span>
+              </a>
+            {/each}
+          </nav>
+
+          <div class="flex-shrink-0 border-t border-gray-800 p-4">
+            <button
+              onclick={handleLogout}
+              class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg"
+            >
+              <LogOut class="w-5 h-5" />
+              <span>Logout</span>
+            </button>
+          </div>
+        </aside>
       </div>
     {/if}
 
     <!-- Main Content -->
-    <main class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-      {@render children()}
-    </main>
+    <div class="lg:pl-64 flex flex-col flex-1">
+      <!-- Top Header -->
+      <header
+        class="sticky top-0 z-30 bg-white shadow-sm border-b border-gray-200"
+      >
+        <div class="px-4 sm:px-6 lg:px-8">
+          <div class="flex items-center justify-between h-16">
+            <!-- Mobile menu button -->
+            <button
+              onclick={() => (isMobileMenuOpen = true)}
+              class="lg:hidden btn-icon"
+            >
+              <Menu class="w-6 h-6" />
+            </button>
+
+            <!-- Page title - hidden on mobile, shown on desktop -->
+            <div class="hidden lg:block">
+              <h1 class="text-xl font-semibold text-gray-900">
+                {navItems.find(item => item.href === $page.url.pathname)
+                  ?.label || 'Admin'}
+              </h1>
+            </div>
+
+            <!-- Right side actions -->
+            <div class="flex items-center space-x-4 ml-auto">
+              {#if $configVersion}
+                <span class="badge badge-info">
+                  v{$configVersion.version}
+                </span>
+              {/if}
+
+              <button
+                onclick={handleReloadConfig}
+                disabled={isReloading}
+                class="btn btn-secondary text-sm flex items-center space-x-2"
+                title="Reload Configuration"
+              >
+                <RefreshCw
+                  class="w-4 h-4 {isReloading ? 'animate-spin' : ''}"
+                />
+                <span class="hidden sm:inline">Reload</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Error Notifications -->
+      {#if $errors.general}
+        <div class="alert-error mx-4 mt-4">
+          <div class="flex">
+            <div class="shrink-0">
+              <svg
+                class="h-5 w-5 text-red-400"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fill-rule="evenodd"
+                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                  clip-rule="evenodd"
+                />
+              </svg>
+            </div>
+            <div class="ml-3">
+              <p class="text-sm text-red-700">{$errors.general}</p>
+            </div>
+            <div class="ml-auto pl-3">
+              <button
+                onclick={() => clearError('general')}
+                class="text-red-400 hover:text-red-600"
+                aria-label="Close error message"
+              >
+                <X class="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      <!-- Main Content Area -->
+      <main class="flex-1 py-6 px-4 sm:px-6 lg:px-8">
+        {@render children()}
+      </main>
+    </div>
   {:else}
     <!-- Login Layout -->
-    <div
-      class="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8"
-    >
-      <div class="max-w-md w-full space-y-8">
-        <div>
-          <h2 class="mt-6 text-center text-3xl font-extrabold text-gray-900">
-            LLM Proxy Admin
-          </h2>
-          <p class="mt-2 text-center text-sm text-gray-600">
-            Sign in to manage your LLM proxy configuration
-          </p>
-        </div>
-
-        {@render children()}
-      </div>
-    </div>
+    {@render children()}
   {/if}
 </div>
