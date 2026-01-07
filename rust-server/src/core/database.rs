@@ -170,7 +170,7 @@ impl Database {
     pub async fn load_providers(&self) -> Result<Vec<ProviderEntity>, sqlx::Error> {
         let providers = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
             FROM providers
             WHERE is_enabled = true
             ORDER BY id
@@ -185,7 +185,7 @@ impl Database {
     pub async fn load_all_providers(&self) -> Result<Vec<ProviderEntity>, sqlx::Error> {
         let providers = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
             FROM providers
             ORDER BY id
             "#,
@@ -195,11 +195,11 @@ impl Database {
         Ok(providers)
     }
 
-    /// Get provider by ID
-    pub async fn get_provider(&self, id: &str) -> Result<Option<ProviderEntity>, sqlx::Error> {
+    /// Get provider by ID (auto-increment integer)
+    pub async fn get_provider(&self, id: i32) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let provider = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
             FROM providers
             WHERE id = $1
             "#,
@@ -210,16 +210,31 @@ impl Database {
         Ok(provider)
     }
 
+    /// Get provider by provider_key (unique string identifier)
+    pub async fn get_provider_by_key(&self, provider_key: &str) -> Result<Option<ProviderEntity>, sqlx::Error> {
+        let provider = sqlx::query_as::<_, ProviderEntity>(
+            r#"
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            FROM providers
+            WHERE provider_key = $1
+            "#,
+        )
+        .bind(provider_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(provider)
+    }
+
     /// Create a new provider
     pub async fn create_provider(&self, provider: &CreateProvider) -> Result<ProviderEntity, sqlx::Error> {
         let entity = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            INSERT INTO providers (id, provider_type, api_base, api_key, model_mapping, is_enabled)
+            INSERT INTO providers (provider_key, provider_type, api_base, api_key, model_mapping, is_enabled)
             VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
             "#,
         )
-        .bind(&provider.id)
+        .bind(&provider.provider_key)
         .bind(&provider.provider_type)
         .bind(&provider.api_base)
         .bind(&provider.api_key)
@@ -231,7 +246,7 @@ impl Database {
     }
 
     /// Update an existing provider
-    pub async fn update_provider(&self, id: &str, update: &UpdateProvider) -> Result<Option<ProviderEntity>, sqlx::Error> {
+    pub async fn update_provider(&self, id: i32, update: &UpdateProvider) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let entity = sqlx::query_as::<_, ProviderEntity>(
             r#"
             UPDATE providers
@@ -242,7 +257,7 @@ impl Database {
                 is_enabled = COALESCE($6, is_enabled),
                 updated_at = NOW()
             WHERE id = $1
-            RETURNING id, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
             "#,
         )
         .bind(id)
@@ -257,7 +272,7 @@ impl Database {
     }
 
     /// Delete a provider
-    pub async fn delete_provider(&self, id: &str) -> Result<bool, sqlx::Error> {
+    pub async fn delete_provider(&self, id: i32) -> Result<bool, sqlx::Error> {
         let result = sqlx::query("DELETE FROM providers WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
@@ -265,106 +280,105 @@ impl Database {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Load all enabled master keys from database
-    pub async fn load_master_keys(&self) -> Result<Vec<MasterKeyEntity>, sqlx::Error> {
-        let keys = sqlx::query_as::<_, MasterKeyEntity>(
+    /// Load all enabled credentials from database
+    pub async fn load_credentials(&self) -> Result<Vec<CredentialEntity>, sqlx::Error> {
+        let credentials = sqlx::query_as::<_, CredentialEntity>(
             r#"
-            SELECT id, key_hash, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
-            FROM master_keys
+            SELECT id, credential_key, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
+            FROM credentials
             WHERE is_enabled = true
             ORDER BY id
             "#,
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(keys)
+        Ok(credentials)
     }
 
-    /// Load all master keys (including disabled)
-    pub async fn load_all_master_keys(&self) -> Result<Vec<MasterKeyEntity>, sqlx::Error> {
-        let keys = sqlx::query_as::<_, MasterKeyEntity>(
+    /// Load all credentials (including disabled)
+    pub async fn load_all_credentials(&self) -> Result<Vec<CredentialEntity>, sqlx::Error> {
+        let credentials = sqlx::query_as::<_, CredentialEntity>(
             r#"
-            SELECT id, key_hash, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
-            FROM master_keys
+            SELECT id, credential_key, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
+            FROM credentials
             ORDER BY id
             "#,
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(keys)
+        Ok(credentials)
     }
 
-    /// Get master key by ID
-    pub async fn get_master_key(&self, id: &str) -> Result<Option<MasterKeyEntity>, sqlx::Error> {
-        let key = sqlx::query_as::<_, MasterKeyEntity>(
+    /// Get credential by ID (auto-increment integer)
+    pub async fn get_credential(&self, id: i32) -> Result<Option<CredentialEntity>, sqlx::Error> {
+        let credential = sqlx::query_as::<_, CredentialEntity>(
             r#"
-            SELECT id, key_hash, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
-            FROM master_keys
+            SELECT id, credential_key, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
+            FROM credentials
             WHERE id = $1
             "#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(key)
+        Ok(credential)
     }
 
-    /// Get master key by key hash (for authentication)
-    pub async fn get_master_key_by_hash(&self, key_hash: &str) -> Result<Option<MasterKeyEntity>, sqlx::Error> {
-        let key = sqlx::query_as::<_, MasterKeyEntity>(
+    /// Get credential by credential_key hash (for authentication)
+    pub async fn get_credential_by_key(&self, credential_key: &str) -> Result<Option<CredentialEntity>, sqlx::Error> {
+        let credential = sqlx::query_as::<_, CredentialEntity>(
             r#"
-            SELECT id, key_hash, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
-            FROM master_keys
-            WHERE key_hash = $1 AND is_enabled = true
+            SELECT id, credential_key, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
+            FROM credentials
+            WHERE credential_key = $1 AND is_enabled = true
             "#,
         )
-        .bind(key_hash)
+        .bind(credential_key)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(key)
+        Ok(credential)
     }
 
-    /// Create a new master key
-    pub async fn create_master_key(&self, key: &CreateMasterKey) -> Result<MasterKeyEntity, sqlx::Error> {
-        let key_hash = hash_key(&key.key);
-        let entity = sqlx::query_as::<_, MasterKeyEntity>(
+    /// Create a new credential
+    pub async fn create_credential(&self, credential: &CreateCredential) -> Result<CredentialEntity, sqlx::Error> {
+        let credential_key = hash_key(&credential.key);
+        let entity = sqlx::query_as::<_, CredentialEntity>(
             r#"
-            INSERT INTO master_keys (id, key_hash, name, allowed_models, rate_limit, is_enabled)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, key_hash, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
+            INSERT INTO credentials (credential_key, name, allowed_models, rate_limit, is_enabled)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, credential_key, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
             "#,
         )
-        .bind(&key.id)
-        .bind(&key_hash)
-        .bind(&key.name)
-        .bind(&key.allowed_models)
-        .bind(key.rate_limit)
-        .bind(key.is_enabled)
+        .bind(&credential_key)
+        .bind(&credential.name)
+        .bind(sqlx::types::Json(&credential.allowed_models))
+        .bind(credential.rate_limit)
+        .bind(credential.is_enabled)
         .fetch_one(&self.pool)
         .await?;
         Ok(entity)
     }
 
-    /// Update an existing master key
-    pub async fn update_master_key(&self, id: &str, update: &UpdateMasterKey) -> Result<Option<MasterKeyEntity>, sqlx::Error> {
-        let key_hash = update.key.as_ref().map(|k| hash_key(k));
-        let entity = sqlx::query_as::<_, MasterKeyEntity>(
+    /// Update an existing credential
+    pub async fn update_credential(&self, id: i32, update: &UpdateCredential) -> Result<Option<CredentialEntity>, sqlx::Error> {
+        let credential_key = update.key.as_ref().map(|k| hash_key(k));
+        let entity = sqlx::query_as::<_, CredentialEntity>(
             r#"
-            UPDATE master_keys
-            SET key_hash = COALESCE($2, key_hash),
+            UPDATE credentials
+            SET credential_key = COALESCE($2, credential_key),
                 name = COALESCE($3, name),
                 allowed_models = COALESCE($4, allowed_models),
                 rate_limit = COALESCE($5, rate_limit),
                 is_enabled = COALESCE($6, is_enabled),
                 updated_at = NOW()
             WHERE id = $1
-            RETURNING id, key_hash, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
+            RETURNING id, credential_key, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
             "#,
         )
         .bind(id)
-        .bind(key_hash)
+        .bind(credential_key)
         .bind(&update.name)
-        .bind(&update.allowed_models)
+        .bind(update.allowed_models.as_ref().map(|m| sqlx::types::Json(m)))
         .bind(update.rate_limit)
         .bind(update.is_enabled)
         .fetch_optional(&self.pool)
@@ -372,9 +386,9 @@ impl Database {
         Ok(entity)
     }
 
-    /// Delete a master key
-    pub async fn delete_master_key(&self, id: &str) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM master_keys WHERE id = $1")
+    /// Delete a credential
+    pub async fn delete_credential(&self, id: i32) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM credentials WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -385,7 +399,8 @@ impl Database {
 /// Provider entity from database
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
-    "id": "openai-1",
+    "id": 1,
+    "provider_key": "openai-1",
     "provider_type": "openai",
     "api_base": "https://api.openai.com/v1",
     "api_key": "sk-***",
@@ -395,8 +410,10 @@ impl Database {
     "updated_at": "2024-01-01T00:00:00Z"
 }))]
 pub struct ProviderEntity {
-    /// Unique provider identifier
-    pub id: String,
+    /// Auto-increment provider ID
+    pub id: i32,
+    /// Unique provider key identifier
+    pub provider_key: String,
     /// Provider type (e.g., "openai", "azure", "anthropic")
     pub provider_type: String,
     /// Base URL for the provider API
@@ -418,7 +435,7 @@ pub struct ProviderEntity {
 /// Create provider request
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
-    "id": "openai-1",
+    "provider_key": "openai-1",
     "provider_type": "openai",
     "api_base": "https://api.openai.com/v1",
     "api_key": "sk-your-api-key",
@@ -426,8 +443,8 @@ pub struct ProviderEntity {
     "is_enabled": true
 }))]
 pub struct CreateProvider {
-    /// Unique provider identifier
-    pub id: String,
+    /// Unique provider key identifier
+    pub provider_key: String,
     /// Provider type (e.g., "openai", "azure", "anthropic")
     pub provider_type: String,
     /// Base URL for the provider API
@@ -461,30 +478,31 @@ pub struct UpdateProvider {
     pub is_enabled: Option<bool>,
 }
 
-/// Master key entity from database
+/// Credential entity from database
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
-    "id": "key-1",
-    "key_hash": "abc123...",
-    "name": "Production Key",
+    "id": 1,
+    "credential_key": "abc123...",
+    "name": "Production Credential",
     "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
     "rate_limit": 100,
     "is_enabled": true,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
 }))]
-pub struct MasterKeyEntity {
-    /// Unique key identifier
-    pub id: String,
-    /// SHA-256 hash of the key
-    pub key_hash: String,
-    /// Human-readable name for the key
+pub struct CredentialEntity {
+    /// Auto-increment credential ID
+    pub id: i32,
+    /// SHA-256 hash of the credential key
+    pub credential_key: String,
+    /// Human-readable name for the credential
     pub name: String,
-    /// List of models this key can access (empty = all models)
+    /// List of models this credential can access (empty = all models)
+    #[sqlx(json)]
     pub allowed_models: Vec<String>,
     /// Rate limit in requests per second (null = unlimited)
     pub rate_limit: Option<i32>,
-    /// Whether this key is enabled
+    /// Whether this credential is enabled
     pub is_enabled: bool,
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
@@ -492,50 +510,47 @@ pub struct MasterKeyEntity {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Create master key request
+/// Create credential request
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
-    "id": "key-1",
-    "key": "sk-your-master-key",
-    "name": "Production Key",
+    "key": "sk-your-credential-key",
+    "name": "Production Credential",
     "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
     "rate_limit": 100,
     "is_enabled": true
 }))]
-pub struct CreateMasterKey {
-    /// Unique key identifier
-    pub id: String,
+pub struct CreateCredential {
     /// The actual key value (will be hashed for storage)
     pub key: String,
-    /// Human-readable name for the key
+    /// Human-readable name for the credential
     pub name: String,
-    /// List of models this key can access (empty = all models)
+    /// List of models this credential can access (empty = all models)
     #[serde(default)]
     pub allowed_models: Vec<String>,
     /// Rate limit in requests per second (null = unlimited)
     pub rate_limit: Option<i32>,
-    /// Whether this key is enabled (default: true)
+    /// Whether this credential is enabled (default: true)
     #[serde(default = "default_true")]
     pub is_enabled: bool,
 }
 
-/// Update master key request
+/// Update credential request
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
-    "name": "Updated Key Name",
+    "name": "Updated Credential Name",
     "rate_limit": 200,
     "is_enabled": false
 }))]
-pub struct UpdateMasterKey {
+pub struct UpdateCredential {
     /// New key value (will be hashed for storage)
     pub key: Option<String>,
-    /// Human-readable name for the key
+    /// Human-readable name for the credential
     pub name: Option<String>,
-    /// List of models this key can access (empty = all models)
+    /// List of models this credential can access (empty = all models)
     pub allowed_models: Option<Vec<String>>,
     /// Rate limit in requests per second (null = unlimited)
     pub rate_limit: Option<i32>,
-    /// Whether this key is enabled
+    /// Whether this credential is enabled
     pub is_enabled: Option<bool>,
 }
 
@@ -564,7 +579,7 @@ pub fn create_key_preview(key: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     pub providers: Vec<ProviderEntity>,
-    pub master_keys: Vec<MasterKeyEntity>,
+    pub credentials: Vec<CredentialEntity>,
     pub version: i64,
     pub loaded_at: DateTime<Utc>,
 }
@@ -572,12 +587,12 @@ pub struct RuntimeConfig {
 impl RuntimeConfig {
     pub async fn load_from_db(db: &Database) -> Result<Self, sqlx::Error> {
         let providers = db.load_providers().await?;
-        let master_keys = db.load_master_keys().await?;
+        let credentials = db.load_credentials().await?;
         let version = db.get_config_version().await?;
 
         Ok(Self {
             providers,
-            master_keys,
+            credentials,
             version,
             loaded_at: Utc::now(),
         })

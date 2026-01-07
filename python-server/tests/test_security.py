@@ -2,24 +2,24 @@
 
 import pytest
 
-from app.core.security import verify_master_key, init_rate_limiter
+from app.core.security import verify_credential_key, init_rate_limiter
 from app.core.database import hash_key
 from app.models.config import (
     AppConfig,
     ProviderConfig,
-    MasterKeyConfig,
+    CredentialConfig,
     RateLimitConfig,
 )
 
 
 @pytest.mark.unit
-class TestVerifyMasterKey:
-    """Test master API key verification (database mode with hashed keys)"""
+class TestVerifyCredentialKey:
+    """Test credential API key verification (database mode with hashed keys)"""
 
-    def test_verify_when_no_master_keys_configured(
+    def test_verify_when_no_credentials_configured(
         self, monkeypatch, clear_config_cache
     ):
-        """Test verification succeeds when no master keys are configured"""
+        """Test verification succeeds when no credentials are configured"""
         config = AppConfig(
             providers=[
                 ProviderConfig(
@@ -33,20 +33,20 @@ class TestVerifyMasterKey:
 
         monkeypatch.setattr(security_module, "get_config", lambda: config)
 
-        is_valid, key_id = verify_master_key(None)
+        is_valid, credential_config = verify_credential_key(None)
         assert is_valid is True
-        assert key_id is None
+        assert credential_config is None
 
-        is_valid, key_id = verify_master_key("Bearer any-key")
+        is_valid, credential_config = verify_credential_key("Bearer any-key")
         assert is_valid is True
-        assert key_id is None
+        assert credential_config is None
 
-        is_valid, key_id = verify_master_key("invalid")
+        is_valid, credential_config = verify_credential_key("invalid")
         assert is_valid is True
-        assert key_id is None
+        assert credential_config is None
 
-    def test_verify_with_valid_master_key(self, monkeypatch, clear_config_cache):
-        """Test verification succeeds with valid master key (hashed)"""
+    def test_verify_with_valid_credential_key(self, monkeypatch, clear_config_cache):
+        """Test verification succeeds with valid credential key (hashed)"""
         raw_key = "secret-key"
         hashed_key = hash_key(raw_key)
 
@@ -56,9 +56,9 @@ class TestVerifyMasterKey:
                     name="test", api_base="https://api.test.com", api_key="key"
                 )
             ],
-            master_keys=[
-                MasterKeyConfig(
-                    key=hashed_key,
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_key,
                     name="test-key",
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
                 )
@@ -71,13 +71,13 @@ class TestVerifyMasterKey:
         monkeypatch.setattr(security_module, "get_config", lambda: config)
         init_rate_limiter()
 
-        is_valid, key_config = verify_master_key(f"Bearer {raw_key}")
+        is_valid, credential_config = verify_credential_key(f"Bearer {raw_key}")
         assert is_valid is True
-        assert key_config is not None
-        assert key_config.name == "test-key"
+        assert credential_config is not None
+        assert credential_config.name == "test-key"
 
-    def test_verify_with_invalid_master_key(self, monkeypatch, clear_config_cache):
-        """Test verification fails with invalid master key"""
+    def test_verify_with_invalid_credential_key(self, monkeypatch, clear_config_cache):
+        """Test verification fails with invalid credential key"""
         from fastapi import HTTPException
 
         raw_key = "secret-key"
@@ -89,9 +89,9 @@ class TestVerifyMasterKey:
                     name="test", api_base="https://api.test.com", api_key="key"
                 )
             ],
-            master_keys=[
-                MasterKeyConfig(
-                    key=hashed_key,
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_key,
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
                 )
             ],
@@ -104,7 +104,7 @@ class TestVerifyMasterKey:
         init_rate_limiter()
 
         with pytest.raises(HTTPException) as exc_info:
-            verify_master_key("Bearer wrong-key")
+            verify_credential_key("Bearer wrong-key")
         assert exc_info.value.status_code == 401
 
     def test_verify_without_bearer_prefix(self, monkeypatch, clear_config_cache):
@@ -120,9 +120,9 @@ class TestVerifyMasterKey:
                     name="test", api_base="https://api.test.com", api_key="key"
                 )
             ],
-            master_keys=[
-                MasterKeyConfig(
-                    key=hashed_key,
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_key,
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
                 )
             ],
@@ -135,11 +135,11 @@ class TestVerifyMasterKey:
         init_rate_limiter()
 
         with pytest.raises(HTTPException) as exc_info:
-            verify_master_key("secret-key")
+            verify_credential_key("secret-key")
         assert exc_info.value.status_code == 401
 
     def test_verify_with_none_authorization(self, monkeypatch, clear_config_cache):
-        """Test verification fails with None authorization when keys are configured"""
+        """Test verification fails with None authorization when credentials are configured"""
         from fastapi import HTTPException
 
         raw_key = "secret-key"
@@ -151,9 +151,9 @@ class TestVerifyMasterKey:
                     name="test", api_base="https://api.test.com", api_key="key"
                 )
             ],
-            master_keys=[
-                MasterKeyConfig(
-                    key=hashed_key,
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_key,
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
                 )
             ],
@@ -166,11 +166,11 @@ class TestVerifyMasterKey:
         init_rate_limiter()
 
         with pytest.raises(HTTPException) as exc_info:
-            verify_master_key(None)
+            verify_credential_key(None)
         assert exc_info.value.status_code == 401
 
-    def test_verify_with_multiple_master_keys(self, monkeypatch, clear_config_cache):
-        """Test verification with multiple master keys"""
+    def test_verify_with_multiple_credentials(self, monkeypatch, clear_config_cache):
+        """Test verification with multiple credentials"""
         raw_key_1 = "key-1"
         raw_key_2 = "key-2"
         hashed_key_1 = hash_key(raw_key_1)
@@ -182,14 +182,14 @@ class TestVerifyMasterKey:
                     name="test", api_base="https://api.test.com", api_key="key"
                 )
             ],
-            master_keys=[
-                MasterKeyConfig(
-                    key=hashed_key_1,
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_key_1,
                     name="first-key",
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
                 ),
-                MasterKeyConfig(
-                    key=hashed_key_2,
+                CredentialConfig(
+                    credential_key=hashed_key_2,
                     name="second-key",
                     rate_limit=RateLimitConfig(requests_per_second=5, burst_size=10),
                 ),
@@ -202,15 +202,15 @@ class TestVerifyMasterKey:
         monkeypatch.setattr(security_module, "get_config", lambda: config)
         init_rate_limiter()
 
-        is_valid, key_config = verify_master_key(f"Bearer {raw_key_1}")
+        is_valid, credential_config = verify_credential_key(f"Bearer {raw_key_1}")
         assert is_valid is True
-        assert key_config is not None
-        assert key_config.name == "first-key"
+        assert credential_config is not None
+        assert credential_config.name == "first-key"
 
-        is_valid, key_config = verify_master_key(f"Bearer {raw_key_2}")
+        is_valid, credential_config = verify_credential_key(f"Bearer {raw_key_2}")
         assert is_valid is True
-        assert key_config is not None
-        assert key_config.name == "second-key"
+        assert credential_config is not None
+        assert credential_config.name == "second-key"
 
 
 @pytest.mark.unit
@@ -232,9 +232,9 @@ class TestSecurityIntegration:
                     name="test", api_base="https://api.test.com", api_key="key"
                 )
             ],
-            master_keys=[
-                MasterKeyConfig(
-                    key=hashed_key,
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_key,
                     name="test-key",
                     rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
                 )
@@ -257,7 +257,7 @@ class TestSecurityIntegration:
 
     @pytest.mark.asyncio
     async def test_security_disabled_allows_all(self, monkeypatch, clear_config_cache):
-        """Test that when master keys are not set, all requests are allowed"""
+        """Test that when credentials are not set, all requests are allowed"""
         from app.api.dependencies import verify_auth
 
         config = AppConfig(

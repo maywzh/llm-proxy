@@ -8,7 +8,7 @@
   let showCreateForm = $state(false);
   let editingProvider: Provider | null = $state(null);
   let formData: ProviderFormData = $state({
-    id: '',
+    provider_key: '',
     provider_type: 'openai',
     api_base: '',
     api_key: '',
@@ -25,7 +25,9 @@
   const filteredProviders = $derived(
     $providers.filter(
       provider =>
-        provider.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        provider.provider_key
+          .toLowerCase()
+          .includes(searchTerm.toLowerCase()) ||
         provider.provider_type
           .toLowerCase()
           .includes(searchTerm.toLowerCase()) ||
@@ -35,7 +37,7 @@
 
   function resetForm() {
     formData = {
-      id: '',
+      provider_key: '',
       provider_type: 'openai',
       api_base: '',
       api_key: '',
@@ -54,7 +56,7 @@
   function handleEdit(provider: Provider) {
     editingProvider = provider;
     formData = {
-      id: provider.id,
+      provider_key: provider.provider_key,
       provider_type: provider.provider_type,
       api_base: provider.api_base,
       api_key: '', // Don't populate existing key for security
@@ -96,7 +98,11 @@
   }
 
   async function handleDelete(provider: Provider) {
-    if (confirm(`Are you sure you want to delete provider "${provider.id}"?`)) {
+    if (
+      confirm(
+        `Are you sure you want to delete provider "${provider.provider_key}"?`
+      )
+    ) {
       await actions.deleteProvider(provider.id);
     }
   }
@@ -211,13 +217,16 @@
       >
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label for="id" class="block text-sm font-medium text-gray-700">
-              Provider ID
+            <label
+              for="provider_key"
+              class="block text-sm font-medium text-gray-700"
+            >
+              Provider Key
             </label>
             <input
-              id="id"
+              id="provider_key"
               type="text"
-              bind:value={formData.id}
+              bind:value={formData.provider_key}
               disabled={!!editingProvider}
               class="input"
               placeholder="e.g., openai-primary"
@@ -436,8 +445,9 @@
               <tr>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <div class="text-sm font-medium text-gray-900">
-                    {provider.id}
+                    {provider.provider_key}
                   </div>
+                  <div class="text-sm text-gray-500">ID: {provider.id}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <span

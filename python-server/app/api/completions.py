@@ -98,6 +98,9 @@ async def proxy_completion_request(
     except ClientDisconnect:
         logger.info("Client disconnected before request body was read")
         raise HTTPException(status_code=499, detail="Client closed request")
+    except json.JSONDecodeError as e:
+        logger.warning(f"Invalid JSON in request body: {str(e)}")
+        raise HTTPException(status_code=422, detail=f"Invalid JSON: {str(e)}")
 
     original_model = data.get("model")
 

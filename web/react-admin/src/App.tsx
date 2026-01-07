@@ -8,7 +8,7 @@ import { useAuth } from './contexts/AuthContext';
 import Layout from './components/Layout.tsx';
 import Login from './pages/Login.tsx';
 import Providers from './pages/Providers.tsx';
-import MasterKeys from './pages/MasterKeys.tsx';
+import Credentials from './pages/Credentials.tsx';
 
 function App() {
   const { isAuthenticated } = useAuth();
@@ -35,11 +35,11 @@ function App() {
           }
         />
         <Route
-          path="/master-keys"
+          path="/credentials"
           element={
             isAuthenticated ? (
               <Layout>
-                <MasterKeys />
+                <Credentials />
               </Layout>
             ) : (
               <Navigate to="/" replace />

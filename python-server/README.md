@@ -43,7 +43,7 @@ LLM Proxy 使用数据库存储配置：
 brew install golang-migrate
 
 # 设置数据库 URL
-export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
 
 # 运行迁移
 ./scripts/db_migrate.sh up
@@ -144,7 +144,7 @@ uv sync
 
 ```bash
 # 必需：数据库连接
-export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
 
 # 必需：Admin API 认证密钥
 export ADMIN_KEY='your-admin-key'

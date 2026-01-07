@@ -48,7 +48,7 @@ class TestEndToEndFlow:
                 ],
                 "temperature": 0.7,
             },
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         # Verify response
@@ -87,7 +87,7 @@ class TestEndToEndFlow:
                 "messages": [{"role": "user", "content": "Hi"}],
                 "stream": True,
             },
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200
@@ -105,7 +105,7 @@ class TestEndToEndFlow:
     def test_models_list_flow(self, app_client):
         """Test models listing flow"""
         response = app_client.get(
-            "/v1/models", headers={"Authorization": "Bearer test-master-key"}
+            "/v1/models", headers={"Authorization": "Bearer test-credential-key"}
         )
 
         assert response.status_code == 200
@@ -169,7 +169,7 @@ class TestProviderFailover:
             app_client.post(
                 "/v1/chat/completions",
                 json={"model": "gpt-4", "messages": []},
-                headers={"Authorization": "Bearer test-master-key"},
+                headers={"Authorization": "Bearer test-credential-key"},
             )
 
         # Both providers should receive some requests
@@ -243,7 +243,7 @@ class TestMetricsIntegration:
         response = app_client.post(
             "/v1/chat/completions",
             json={"model": "gpt-4", "messages": []},
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200
@@ -323,7 +323,7 @@ class TestErrorHandling:
         response = app_client.post(
             "/v1/chat/completions",
             json={"model": "gpt-4", "messages": []},
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 500
@@ -349,7 +349,7 @@ class TestErrorHandling:
         response = app_client.post(
             "/v1/chat/completions",
             json={"model": "gpt-4", "messages": []},
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         # Backend error is passed through faithfully with original status code
@@ -371,7 +371,7 @@ class TestErrorHandling:
         response = app_client.post(
             "/v1/chat/completions",
             json={"model": "gpt-4", "messages": []},
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         # Backend error is passed through faithfully with original status code
@@ -397,7 +397,7 @@ class TestErrorHandling:
         response = app_client.post(
             "/v1/chat/completions",
             json={"model": "gpt-4", "messages": [], "stream": True},
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         # Streaming requests should also return 500 for backend errors
@@ -420,7 +420,7 @@ class TestErrorHandling:
         response = app_client.post(
             "/v1/chat/completions",
             json={"model": "gpt-4", "messages": []},
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 504
@@ -431,7 +431,7 @@ class TestErrorHandling:
             "/v1/chat/completions",
             data="invalid json",
             headers={
-                "Authorization": "Bearer test-master-key",
+                "Authorization": "Bearer test-credential-key",
                 "Content-Type": "application/json",
             },
         )
@@ -476,7 +476,7 @@ class TestConcurrency:
             return app_client.post(
                 "/v1/chat/completions",
                 json={"model": "gpt-4", "messages": []},
-                headers={"Authorization": "Bearer test-master-key"},
+                headers={"Authorization": "Bearer test-credential-key"},
             )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -511,7 +511,7 @@ class TestModelMapping:
         response = app_client.post(
             "/v1/chat/completions",
             json={"model": "gpt-4", "messages": []},
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200
@@ -543,7 +543,7 @@ class TestModelMapping:
         response = app_client.post(
             "/v1/chat/completions",
             json={"model": "gpt-4", "messages": []},  # Original model name
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200

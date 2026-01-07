@@ -20,8 +20,8 @@ pub mod rate_limiter;
 pub use config::{AppConfig, ProviderConfig, ServerConfig};
 pub use database::{
     Database, DatabaseConfig, DynamicConfig, RuntimeConfig,
-    ProviderEntity, MasterKeyEntity, CreateProvider, UpdateProvider,
-    CreateMasterKey, UpdateMasterKey, hash_key, create_key_preview,
+    ProviderEntity, CredentialEntity, CreateProvider, UpdateProvider,
+    CreateCredential, UpdateCredential, hash_key, create_key_preview,
 };
 pub use error::{AppError, Result};
 pub use logging::{get_provider_context, PROVIDER_CONTEXT};

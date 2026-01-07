@@ -51,7 +51,7 @@ impl ProviderService {
     ///     verify_ssl: true,
     ///     request_timeout_secs: 300,
     ///     ttft_timeout_secs: None,
-    ///     master_keys: vec![],
+    ///     credentials: vec![],
     ///     provider_suffix: None,
     /// };
     /// let service = ProviderService::new(config);
@@ -215,7 +215,7 @@ mod tests {
             verify_ssl: true,
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
-            master_keys: vec![],
+            credentials: vec![],
             provider_suffix: None,
         }
     }
@@ -233,7 +233,7 @@ mod tests {
             verify_ssl: true,
             request_timeout_secs: 300,
             ttft_timeout_secs: None,
-            master_keys: vec![],
+            credentials: vec![],
             provider_suffix: None,
         }
     }

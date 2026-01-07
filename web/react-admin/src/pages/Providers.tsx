@@ -12,7 +12,7 @@ const Providers: React.FC = () => {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [formData, setFormData] = useState<ProviderFormData>({
-    id: '',
+    provider_key: '',
     provider_type: 'openai',
     api_base: '',
     api_key: '',
@@ -54,7 +54,7 @@ const Providers: React.FC = () => {
 
   const resetForm = () => {
     setFormData({
-      id: '',
+      provider_key: '',
       provider_type: 'openai',
       api_base: '',
       api_key: '',
@@ -74,7 +74,7 @@ const Providers: React.FC = () => {
   const handleEdit = (provider: Provider) => {
     setEditingProvider(provider);
     setFormData({
-      id: provider.id,
+      provider_key: provider.provider_key,
       provider_type: provider.provider_type,
       api_base: provider.api_base,
       api_key: '', // Don't populate existing key for security
@@ -110,7 +110,7 @@ const Providers: React.FC = () => {
       } else {
         // Create new provider
         await apiClient.createProvider({
-          id: formData.id,
+          provider_key: formData.provider_key,
           provider_type: formData.provider_type,
           api_base: formData.api_base,
           api_key: formData.api_key,
@@ -131,7 +131,9 @@ const Providers: React.FC = () => {
     if (!apiClient) return;
 
     if (
-      !confirm(`Are you sure you want to delete provider "${provider.id}"?`)
+      !confirm(
+        `Are you sure you want to delete provider "${provider.provider_key}"?`
+      )
     ) {
       return;
     }
@@ -183,7 +185,7 @@ const Providers: React.FC = () => {
   // Filtered providers based on search
   const filteredProviders = providers.filter(
     provider =>
-      provider.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      provider.provider_key.toLowerCase().includes(searchTerm.toLowerCase()) ||
       provider.provider_type.toLowerCase().includes(searchTerm.toLowerCase()) ||
       provider.api_base.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -267,22 +269,25 @@ const Providers: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label
-                  htmlFor="id"
+                  htmlFor="provider_key"
                   className="block text-sm font-medium text-gray-700"
                 >
-                  Provider ID
+                  Provider Key
                 </label>
                 <input
-                  id="id"
+                  id="provider_key"
                   type="text"
-                  value={formData.id}
+                  value={formData.provider_key}
                   onChange={e =>
-                    setFormData(prev => ({ ...prev, id: e.target.value }))
+                    setFormData(prev => ({
+                      ...prev,
+                      provider_key: e.target.value,
+                    }))
                   }
                   disabled={!!editingProvider}
                   className="input"
                   placeholder="e.g., openai-primary"
-                  required
+                  required={!editingProvider}
                 />
               </div>
 
@@ -518,7 +523,10 @@ const Providers: React.FC = () => {
                   <tr key={provider.id}>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-gray-900">
-                        {provider.id}
+                        {provider.provider_key}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        ID: {provider.id}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">

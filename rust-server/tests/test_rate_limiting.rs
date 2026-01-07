@@ -1,9 +1,9 @@
-//! Tests for master key rate limiting functionality.
+//! Tests for credential rate limiting functionality.
 
 use llm_proxy_rust::{
     api::AppState,
     core::{
-        config::{AppConfig, MasterKeyConfig, ProviderConfig, RateLimitConfig, ServerConfig},
+        config::{AppConfig, CredentialConfig, ProviderConfig, RateLimitConfig, ServerConfig},
         RateLimiter,
     },
     services::ProviderService,
@@ -87,8 +87,8 @@ fn test_multiple_keys_independent_limits() {
 
 #[test]
 fn test_app_state_with_rate_limiter() {
-    let master_keys = vec![MasterKeyConfig {
-        key: "test-key-1".to_string(),
+    let credentials = vec![CredentialConfig {
+        credential_key: "test-key-1".to_string(),
         name: "Test Key 1".to_string(),
         description: Some("Test key with rate limit".to_string()),
         rate_limit: Some(RateLimitConfig {
@@ -111,7 +111,7 @@ fn test_app_state_with_rate_limiter() {
         verify_ssl: true,
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
-        master_keys,
+        credentials,
         provider_suffix: None,
     };
 
@@ -119,10 +119,10 @@ fn test_app_state_with_rate_limiter() {
     let rate_limiter = Arc::new(RateLimiter::new());
 
     // Register rate limits
-    for key_config in &config.master_keys {
+    for key_config in &config.credentials {
         if key_config.enabled {
             if let Some(rate_limit) = &key_config.rate_limit {
-                rate_limiter.register_key(&key_config.key, rate_limit);
+                rate_limiter.register_key(&key_config.credential_key, rate_limit);
             }
         }
     }
@@ -164,8 +164,8 @@ fn test_disabled_key_not_rate_limited() {
         verify_ssl: true,
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
-        master_keys: vec![MasterKeyConfig {
-            key: "disabled-key".to_string(),
+        credentials: vec![CredentialConfig {
+            credential_key: "disabled-key".to_string(),
             name: "Disabled Key".to_string(),
             description: None,
             rate_limit: Some(RateLimitConfig {
@@ -181,10 +181,10 @@ fn test_disabled_key_not_rate_limited() {
     let rate_limiter = RateLimiter::new();
 
     // Don't register disabled keys
-    for key_config in &config.master_keys {
+    for key_config in &config.credentials {
         if key_config.enabled {
             if let Some(rate_limit) = &key_config.rate_limit {
-                rate_limiter.register_key(&key_config.key, rate_limit);
+                rate_limiter.register_key(&key_config.credential_key, rate_limit);
             }
         }
     }
@@ -209,8 +209,8 @@ fn test_key_without_rate_limit_config() {
         verify_ssl: true,
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
-        master_keys: vec![MasterKeyConfig {
-            key: "unlimited-key".to_string(),
+        credentials: vec![CredentialConfig {
+            credential_key: "unlimited-key".to_string(),
             name: "Unlimited Key".to_string(),
             description: Some("No rate limit".to_string()),
             rate_limit: None,
@@ -223,10 +223,10 @@ fn test_key_without_rate_limit_config() {
     let rate_limiter = RateLimiter::new();
 
     // Register only keys with rate limits
-    for key_config in &config.master_keys {
+    for key_config in &config.credentials {
         if key_config.enabled {
             if let Some(rate_limit) = &key_config.rate_limit {
-                rate_limiter.register_key(&key_config.key, rate_limit);
+                rate_limiter.register_key(&key_config.credential_key, rate_limit);
             }
         }
     }
@@ -253,9 +253,9 @@ fn test_mixed_rate_limits() {
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
         provider_suffix: None,
-        master_keys: vec![
-            MasterKeyConfig {
-                key: "limited-key-1".to_string(),
+        credentials: vec![
+            CredentialConfig {
+                credential_key: "limited-key-1".to_string(),
                 name: "Limited Key 1".to_string(),
                 description: Some("With rate limit".to_string()),
                 rate_limit: Some(RateLimitConfig {
@@ -265,16 +265,16 @@ fn test_mixed_rate_limits() {
                 enabled: true,
                 allowed_models: vec![],
             },
-            MasterKeyConfig {
-                key: "unlimited-key-1".to_string(),
+            CredentialConfig {
+                credential_key: "unlimited-key-1".to_string(),
                 name: "Unlimited Key 1".to_string(),
                 description: Some("No rate limit".to_string()),
                 rate_limit: None,
                 enabled: true,
                 allowed_models: vec![],
             },
-            MasterKeyConfig {
-                key: "limited-key-2".to_string(),
+            CredentialConfig {
+                credential_key: "limited-key-2".to_string(),
                 name: "Limited Key 2".to_string(),
                 description: Some("With different rate limit".to_string()),
                 rate_limit: Some(RateLimitConfig {
@@ -284,8 +284,8 @@ fn test_mixed_rate_limits() {
                 enabled: true,
                 allowed_models: vec![],
             },
-            MasterKeyConfig {
-                key: "unlimited-key-2".to_string(),
+            CredentialConfig {
+                credential_key: "unlimited-key-2".to_string(),
                 name: "Unlimited Key 2".to_string(),
                 description: Some("No rate limit".to_string()),
                 rate_limit: None,
@@ -298,10 +298,10 @@ fn test_mixed_rate_limits() {
     let rate_limiter = RateLimiter::new();
 
     // Register only keys with rate limits
-    for key_config in &config.master_keys {
+    for key_config in &config.credentials {
         if key_config.enabled {
             if let Some(rate_limit) = &key_config.rate_limit {
-                rate_limiter.register_key(&key_config.key, rate_limit);
+                rate_limiter.register_key(&key_config.credential_key, rate_limit);
             }
         }
     }

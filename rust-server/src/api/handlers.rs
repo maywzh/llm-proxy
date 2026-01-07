@@ -7,7 +7,7 @@ use crate::api::models::*;
 use crate::api::streaming::{
     calculate_message_tokens, create_sse_stream, rewrite_model_in_response,
 };
-use crate::core::config::MasterKeyConfig;
+use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID, API_KEY_NAME};
 use crate::core::metrics::get_metrics;
@@ -36,11 +36,11 @@ pub struct AppState {
 
 /// Verify API key authentication and check rate limits.
 ///
-/// Checks the Authorization header against configured master keys.
-/// If a master key is found, also enforces rate limiting if configured.
+/// Checks the Authorization header against configured credentials.
+/// If a credential is found, also enforces rate limiting if configured.
 ///
-/// Returns the full MasterKeyConfig for the authenticated key, or None if no auth required.
-fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<MasterKeyConfig>> {
+/// Returns the full CredentialConfig for the authenticated credential, or None if no auth required.
+fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<CredentialConfig>> {
     // Extract the provided key from Authorization header
     let provided_key = if let Some(auth_header) = headers.get("authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
@@ -57,7 +57,7 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<MasterKey
     };
 
     // Check if any authentication is required
-    if state.config.master_keys.is_empty() {
+    if state.config.credentials.is_empty() {
         return Ok(None);
     }
 
@@ -66,25 +66,25 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<MasterKey
     // Hash the provided key for comparison with stored hashes
     let provided_key_hash = hash_key(provided_key);
 
-    // Check against master_keys configuration
-    for key_config in &state.config.master_keys {
-        if key_config.enabled && key_config.key == provided_key_hash {
-            // Check rate limit for this key using the hash
-            state.rate_limiter.check_rate_limit(&key_config.key)?;
+    // Check against credentials configuration
+    for credential_config in &state.config.credentials {
+        if credential_config.enabled && credential_config.credential_key == provided_key_hash {
+            // Check rate limit for this credential using the hash
+            state.rate_limiter.check_rate_limit(&credential_config.credential_key)?;
 
             tracing::debug!(
-                key_name = %key_config.name,
-                "Request authenticated with master key"
+                credential_name = %credential_config.name,
+                "Request authenticated with credential"
             );
-            return Ok(Some(key_config.clone()));
+            return Ok(Some(credential_config.clone()));
         }
     }
 
     Err(AppError::Unauthorized)
 }
 
-/// Get the key name from an optional MasterKeyConfig
-fn get_key_name(key_config: &Option<MasterKeyConfig>) -> String {
+/// Get the key name from an optional CredentialConfig
+fn get_key_name(key_config: &Option<CredentialConfig>) -> String {
     key_config
         .as_ref()
         .map(|k| k.name.clone())

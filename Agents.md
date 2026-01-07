@@ -149,7 +149,7 @@ sequenceDiagram
     participant Provider as LLM Provider
     
     Client->>Proxy: POST /v1/chat/completions
-    Proxy->>Proxy: Verify Master Key
+    Proxy->>Proxy: Verify Credential Key
     Proxy->>Proxy: Check Rate Limit
     Proxy->>Proxy: Select Provider by Weight
     Proxy->>Proxy: Map Model Name
@@ -161,7 +161,7 @@ sequenceDiagram
 
 ### Data Flow
 
-1. **Authentication**: Master key validated against SHA-256 hash stored in database
+1. **Authentication**: Credential key validated against SHA-256 hash stored in database
 2. **Rate Limiting**: Per-key rate limits enforced using token bucket algorithm
 3. **Provider Selection**: Weighted random selection based on configured weights
 4. **Model Mapping**: Request model names mapped to provider-specific names
@@ -193,7 +193,7 @@ sequenceDiagram
 
 ### Authentication & Security
 
-- **Master Key Authentication**: Bearer token authentication
+- **Credential Authentication**: Bearer token authentication
   - Keys stored as SHA-256 hashes in database
   - Python: [`verify_auth()`](python-server/app/api/dependencies.py#L13)
   - Rust: [`verify_auth()`](rust-server/src/api/handlers.rs#L43)
@@ -204,7 +204,7 @@ sequenceDiagram
   - Rust: [`RateLimiter`](rust-server/src/core/rate_limiter.rs#L20)
 
 - **Model Access Control**: Restrict keys to specific models
-  - `allowed_models` field in master_keys table
+  - `allowed_models` field in credentials table
 
 ### Dynamic Configuration
 
@@ -216,24 +216,24 @@ sequenceDiagram
   - Admin API: `POST /admin/v1/config/reload`
 
 - **Version Tracking**: Automatic version increment on config changes
-  - Database triggers increment version on provider/key changes
+  - Database triggers increment version on provider/credential changes
 
 ### Admin API
 
-Full CRUD operations for providers and master keys:
+Full CRUD operations for providers and credentials:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/admin/v1/providers` | GET | List all providers |
 | `/admin/v1/providers` | POST | Create provider |
-| `/admin/v1/providers/{id}` | GET | Get provider |
+| `/admin/v1/providers/{id}` | GET | Get provider by ID |
 | `/admin/v1/providers/{id}` | PUT | Update provider |
 | `/admin/v1/providers/{id}` | DELETE | Delete provider |
-| `/admin/v1/master-keys` | GET | List all master keys |
-| `/admin/v1/master-keys` | POST | Create master key |
-| `/admin/v1/master-keys/{id}` | GET | Get master key |
-| `/admin/v1/master-keys/{id}` | PUT | Update master key |
-| `/admin/v1/master-keys/{id}` | DELETE | Delete master key |
+| `/admin/v1/credentials` | GET | List all credentials |
+| `/admin/v1/credentials` | POST | Create credential |
+| `/admin/v1/credentials/{id}` | GET | Get credential by ID |
+| `/admin/v1/credentials/{id}` | PUT | Update credential |
+| `/admin/v1/credentials/{id}` | DELETE | Delete credential |
 | `/admin/v1/config/version` | GET | Get config version |
 | `/admin/v1/config/reload` | POST | Reload configuration |
 | `/admin/v1/auth/validate` | POST | Validate admin key |
@@ -263,7 +263,8 @@ Full CRUD operations for providers and master keys:
 ```sql
 -- Providers table
 CREATE TABLE providers (
-    id VARCHAR(255) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    provider_key VARCHAR(255) NOT NULL UNIQUE,
     provider_type VARCHAR(50) NOT NULL,
     api_base VARCHAR(500) NOT NULL,
     api_key VARCHAR(500) NOT NULL,
@@ -273,10 +274,10 @@ CREATE TABLE providers (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Master keys table
-CREATE TABLE master_keys (
-    id VARCHAR(255) PRIMARY KEY,
-    key_hash VARCHAR(255) NOT NULL,
+-- Credentials table (API keys for client authentication)
+CREATE TABLE credentials (
+    id SERIAL PRIMARY KEY,
+    credential_key VARCHAR(255) NOT NULL UNIQUE,
     name VARCHAR(255) NOT NULL,
     allowed_models TEXT[] NOT NULL DEFAULT '{}',
     rate_limit INTEGER,
@@ -298,7 +299,8 @@ CREATE TABLE config_version (
 ```mermaid
 erDiagram
     providers {
-        varchar id PK
+        serial id PK
+        varchar provider_key UK
         varchar provider_type
         varchar api_base
         varchar api_key
@@ -308,9 +310,9 @@ erDiagram
         timestamptz updated_at
     }
     
-    master_keys {
-        varchar id PK
-        varchar key_hash
+    credentials {
+        serial id PK
+        varchar credential_key UK
         varchar name
         text_array allowed_models
         integer rate_limit
@@ -380,7 +382,7 @@ cd k8s/dev
 brew install golang-migrate
 
 # Run migrations
-export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
 migrate -path migrations -database "$DB_URL" up
 ```
 
@@ -519,33 +521,34 @@ Authorization: Bearer <admin_key>
 Content-Type: application/json
 
 {
-  "id": "openai-main",
+  "provider_key": "openai-main",
   "provider_type": "openai",
   "api_base": "https://api.openai.com/v1",
   "api_key": "sk-xxx",
   "model_mapping": {
     "gpt-4": "gpt-4-turbo"
-  },
-  "is_enabled": true
+  }
 }
 ```
 
-### Create Master Key
+Response includes auto-generated `id` field.
+
+### Create Credential
 
 ```bash
-POST /admin/v1/master-keys
+POST /admin/v1/credentials
 Authorization: Bearer <admin_key>
 Content-Type: application/json
 
 {
-  "id": "key-1",
   "key": "sk-my-secret-key",
   "name": "Production Key",
   "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
-  "rate_limit": 100,
-  "is_enabled": true
+  "rate_limit": 100
 }
 ```
+
+Response includes auto-generated `id` field.
 
 ---
 

@@ -5,7 +5,8 @@ export interface ApiError {
 
 // Provider Types
 export interface Provider {
-  id: string;
+  id: number;
+  provider_key: string;
   provider_type: string;
   api_base: string;
   model_mapping: Record<string, string>;
@@ -13,7 +14,7 @@ export interface Provider {
 }
 
 export interface ProviderCreate {
-  id: string;
+  provider_key: string;
   provider_type: string;
   api_base: string;
   api_key: string;
@@ -38,9 +39,9 @@ export interface ProviderCreateResponse {
   provider: Provider;
 }
 
-// Master Key Types
-export interface MasterKey {
-  id: string;
+// Credential Types
+export interface Credential {
+  id: number;
   name: string;
   key_preview: string;
   allowed_models: string[];
@@ -48,32 +49,32 @@ export interface MasterKey {
   is_enabled: boolean;
 }
 
-export interface MasterKeyCreate {
-  id: string;
+export interface CredentialCreate {
   key: string;
   name: string;
   allowed_models?: string[];
   rate_limit?: number | null;
 }
 
-export interface MasterKeyUpdate {
+export interface CredentialUpdate {
+  key?: string;
   name?: string;
   allowed_models?: string[];
   rate_limit?: number | null;
   is_enabled?: boolean;
 }
 
-export interface MasterKeyListResponse {
+export interface CredentialListResponse {
   version: number;
-  keys: MasterKey[];
+  credentials: Credential[];
 }
 
-export interface MasterKeyCreateResponse {
+export interface CredentialCreateResponse {
   version: number;
-  key: MasterKey;
+  credential: Credential;
 }
 
-export interface MasterKeyRotateResponse {
+export interface CredentialRotateResponse {
   version: number;
   new_key: string;
   message: string;
@@ -89,7 +90,7 @@ export interface ConfigReloadResponse {
   version: number;
   timestamp: string;
   providers_count: number;
-  master_keys_count: number;
+  credentials_count: number;
 }
 
 // Generic Response Types
@@ -124,20 +125,20 @@ export interface AuthState {
 
 export interface LoadingState {
   providers: boolean;
-  masterKeys: boolean;
+  credentials: boolean;
   config: boolean;
 }
 
 export interface ErrorState {
   providers: string | null;
-  masterKeys: string | null;
+  credentials: string | null;
   config: string | null;
   general: string | null;
 }
 
 // Form Types
 export interface ProviderFormData {
-  id: string;
+  provider_key: string;
   provider_type: string;
   api_base: string;
   api_key: string;
@@ -145,8 +146,7 @@ export interface ProviderFormData {
   is_enabled: boolean;
 }
 
-export interface MasterKeyFormData {
-  id: string;
+export interface CredentialFormData {
   key: string;
   name: string;
   allowed_models: string[];
@@ -159,10 +159,10 @@ export type ModalType =
   | 'provider-create'
   | 'provider-edit'
   | 'provider-delete'
-  | 'masterkey-create'
-  | 'masterkey-edit'
-  | 'masterkey-delete'
-  | 'masterkey-rotate'
+  | 'credential-create'
+  | 'credential-edit'
+  | 'credential-delete'
+  | 'credential-rotate'
   | null;
 
 export interface ModalState {

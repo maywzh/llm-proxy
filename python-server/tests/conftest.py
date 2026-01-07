@@ -12,7 +12,7 @@ from app.models.config import (
     AppConfig,
     ProviderConfig,
     ServerConfig,
-    MasterKeyConfig,
+    CredentialConfig,
     RateLimitConfig,
 )
 from app.services.provider_service import ProviderService
@@ -185,16 +185,16 @@ def app_with_config(test_config, monkeypatch):
     from app.core import security as security_module
     from app.services import provider_service as ps_module
 
-    raw_master_key = "test-master-key"
-    hashed_master_key = hash_key(raw_master_key)
+    raw_credential_key = "test-credential-key"
+    hashed_credential_key = hash_key(raw_credential_key)
 
     config_with_auth = AppConfig(
         providers=test_config.providers,
         server=test_config.server,
         verify_ssl=test_config.verify_ssl,
-        master_keys=[
-            MasterKeyConfig(
-                key=hashed_master_key,
+        credentials=[
+            CredentialConfig(
+                credential_key=hashed_credential_key,
                 name="test-key",
                 rate_limit=RateLimitConfig(requests_per_second=1000, burst_size=2000),
             )
