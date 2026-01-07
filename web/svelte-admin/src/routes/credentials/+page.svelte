@@ -3,10 +3,24 @@
   import { credentials, loading, errors, actions } from '$lib/stores';
   import { generateApiKey } from '$lib/api';
   import type { Credential, CredentialFormData } from '$lib/types';
+  import {
+    Plus,
+    Pencil,
+    Trash2,
+    Loader2,
+    AlertCircle,
+    X,
+    Check,
+    Shuffle,
+    RefreshCw,
+  } from 'lucide-svelte';
 
   let searchTerm = $state('');
   let showCreateForm = $state(false);
   let editingCredential: Credential | null = $state(null);
+  let deleteConfirm: Credential | null = $state(null);
+  let rotateConfirm: Credential | null = $state(null);
+  let newRotatedKey: string | null = $state(null);
   let formData: CredentialFormData = $state({
     key: '',
     name: '',
@@ -42,8 +56,8 @@
   }
 
   function handleCreate() {
-    showCreateForm = true;
     resetForm();
+    showCreateForm = true;
     formData.key = generateApiKey();
   }
 
@@ -68,7 +82,7 @@
       .filter(s => s.length > 0);
 
     if (editingCredential) {
-      const updateData: any = {
+      const updateData = {
         name: formData.name,
         allowed_models: formData.allowed_models,
         rate_limit: formData.rate_limit,
@@ -87,12 +101,9 @@
   }
 
   async function handleDelete(credential: Credential) {
-    if (
-      confirm(
-        `Are you sure you want to delete credential "${credential.name}"?`
-      )
-    ) {
-      await actions.deleteCredential(credential.id);
+    const success = await actions.deleteCredential(credential.id);
+    if (success) {
+      deleteConfirm = null;
     }
   }
 
@@ -101,18 +112,15 @@
   }
 
   async function handleRotate(credential: Credential) {
-    if (
-      confirm(
-        `Are you sure you want to rotate the key for "${credential.name}"? The old key will be invalidated.`
-      )
-    ) {
-      const newKey = await actions.rotateCredential(credential.id);
-      if (newKey) {
-        alert(
-          `New key generated: ${newKey}\n\nSave this key securely. It will not be shown again.`
-        );
-      }
+    const newKey = await actions.rotateCredential(credential.id);
+    if (newKey) {
+      newRotatedKey = newKey;
+      rotateConfirm = null;
     }
+  }
+
+  function copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text);
   }
 </script>
 
@@ -121,16 +129,24 @@
 </svelte:head>
 
 <div class="space-y-6">
+  <!-- Header -->
   <div class="flex justify-between items-center">
     <div>
       <h1 class="text-2xl font-bold text-gray-900">Credentials</h1>
-      <p class="text-gray-600">Manage API keys for client authentication</p>
+      <p class="text-gray-600">
+        Manage API credentials for client authentication
+      </p>
     </div>
-    <button onclick={handleCreate} class="btn btn-primary">
-      + Add Credential
+    <button
+      onclick={handleCreate}
+      class="btn btn-primary flex items-center space-x-2"
+    >
+      <Plus class="w-5 h-5" />
+      <span>Add Credential</span>
     </button>
   </div>
 
+  <!-- Search -->
   <div class="max-w-md">
     <input
       type="text"
@@ -140,21 +156,12 @@
     />
   </div>
 
+  <!-- Error Display -->
   {#if $errors.credentials}
-    <div class="bg-red-50 border-l-4 border-red-400 p-4">
+    <div class="alert-error">
       <div class="flex">
         <div class="shrink-0">
-          <svg
-            class="h-5 w-5 text-red-400"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path
-              fill-rule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-              clip-rule="evenodd"
-            ></path>
-          </svg>
+          <AlertCircle class="h-5 w-5 text-red-400" />
         </div>
         <div class="ml-3">
           <p class="text-sm text-red-700">{$errors.credentials}</p>
@@ -163,299 +170,427 @@
           <button
             onclick={() => actions.clearError('credentials')}
             class="text-red-400 hover:text-red-600"
-            aria-label="Close error message"
           >
-            <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path
-                fill-rule="evenodd"
-                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                clip-rule="evenodd"
-              ></path>
-            </svg>
+            <X class="h-5 w-5" />
           </button>
         </div>
       </div>
     </div>
   {/if}
 
+  <!-- Create/Edit Form Modal -->
   {#if showCreateForm}
-    <div class="card">
-      <h2 class="text-lg font-semibold mb-4">
-        {editingCredential ? 'Edit Credential' : 'Create New Credential'}
-      </h2>
-
-      <form
-        onsubmit={e => {
-          e.preventDefault();
-          handleSubmit();
-        }}
-        class="space-y-4"
+    <div
+      class="modal-overlay"
+      onclick={resetForm}
+      onkeydown={e => e.key === 'Escape' && resetForm()}
+      role="button"
+      tabindex="0"
+      aria-label="Close modal"
+    >
+      <div
+        class="modal"
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        tabindex="-1"
       >
-        <div>
-          <label for="name" class="block text-sm font-medium text-gray-700"
-            >Name</label
-          >
-          <input
-            id="name"
-            type="text"
-            bind:value={formData.name}
-            class="input"
-            placeholder="e.g., Production Key"
-            required
-          />
+        <div class="modal-header">
+          <h3 class="text-lg font-semibold text-gray-900">
+            {editingCredential ? 'Edit Credential' : 'Add Credential'}
+          </h3>
+          <button onclick={resetForm} class="btn-icon">
+            <X class="w-5 h-5" />
+          </button>
         </div>
 
-        {#if !editingCredential}
-          <div>
-            <label for="key" class="block text-sm font-medium text-gray-700"
-              >API Key</label
-            >
-            <div class="flex space-x-2">
+        <form
+          onsubmit={e => {
+            e.preventDefault();
+            handleSubmit();
+          }}
+          class="modal-body space-y-4"
+        >
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label for="name" class="label"> Name </label>
               <input
-                id="key"
+                id="name"
                 type="text"
-                bind:value={formData.key}
-                class="input flex-1 font-mono text-sm"
+                bind:value={formData.name}
+                class="input"
+                placeholder="e.g., Production Credential"
                 required
               />
-              <button
-                type="button"
-                onclick={() => (formData.key = generateApiKey())}
-                class="btn btn-secondary"
-                title="Generate new key"
-              >
-                🎲
-              </button>
+            </div>
+
+            <div>
+              <label for="rate_limit" class="label">
+                Rate Limit (requests per second)
+              </label>
+              <input
+                id="rate_limit"
+                type="number"
+                bind:value={formData.rate_limit}
+                class="input"
+                placeholder="100"
+                min="1"
+              />
             </div>
           </div>
-        {/if}
 
-        <div>
-          <label
-            for="allowed_models"
-            class="block text-sm font-medium text-gray-700"
-          >
-            Allowed Models (optional)
-          </label>
-          <textarea
-            id="allowed_models"
-            bind:value={allowedModelsText}
-            class="input"
-            rows="3"
-            placeholder="gpt-4&#10;gpt-3.5-turbo&#10;claude-3-sonnet"
-          ></textarea>
-          <p class="text-xs text-gray-500 mt-1">
-            One model per line. Leave empty to allow all models.
-          </p>
-        </div>
+          {#if !editingCredential}
+            <div>
+              <label for="key" class="label"> API Key </label>
+              <div class="flex space-x-2">
+                <input
+                  id="key"
+                  type="text"
+                  bind:value={formData.key}
+                  class="input flex-1 font-mono text-sm"
+                  required
+                />
+                <button
+                  type="button"
+                  onclick={() => (formData.key = generateApiKey())}
+                  class="btn btn-secondary flex items-center space-x-2"
+                  title="Generate new key"
+                >
+                  <Shuffle class="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          {/if}
 
-        <div>
-          <label
-            for="rate_limit"
-            class="block text-sm font-medium text-gray-700"
-          >
-            Rate Limit (requests per second)
-          </label>
-          <input
-            id="rate_limit"
-            type="number"
-            bind:value={formData.rate_limit}
-            class="input"
-            placeholder="100"
-            min="1"
-          />
-        </div>
+          <div>
+            <label for="allowed_models" class="label">
+              Allowed Models (optional)
+            </label>
+            <textarea
+              id="allowed_models"
+              bind:value={allowedModelsText}
+              class="input"
+              rows={3}
+              placeholder="gpt-4&#10;gpt-3.5-turbo&#10;claude-3-sonnet"
+            ></textarea>
+            <p class="helper-text">
+              One model per line. Leave empty to allow all models.
+            </p>
+          </div>
 
-        <div class="flex items-center">
-          <input
-            id="is_enabled"
-            type="checkbox"
-            bind:checked={formData.is_enabled}
-            class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-          />
-          <label for="is_enabled" class="ml-2 block text-sm text-gray-900">
-            Enable this credential
-          </label>
-        </div>
+          <div class="flex items-center">
+            <input
+              id="is_enabled"
+              type="checkbox"
+              bind:checked={formData.is_enabled}
+              class="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+            />
+            <label for="is_enabled" class="ml-2 block text-sm text-gray-900">
+              Enable this credential
+            </label>
+          </div>
+        </form>
 
-        <div class="flex justify-end space-x-3">
+        <div class="modal-footer">
           <button type="button" onclick={resetForm} class="btn btn-secondary">
             Cancel
           </button>
           <button
-            type="submit"
-            class="btn btn-primary"
+            type="button"
+            onclick={handleSubmit}
+            class="btn btn-primary flex items-center space-x-2"
             disabled={$loading.credentials}
           >
             {#if $loading.credentials}
-              <svg
-                class="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                ></circle>
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
+              <Loader2 class="w-4 h-4 animate-spin" />
             {/if}
-            {editingCredential ? 'Update' : 'Create'} Credential
+            <span>
+              {editingCredential ? 'Update' : 'Create'} Credential
+            </span>
           </button>
         </div>
-      </form>
+      </div>
     </div>
   {/if}
 
+  <!-- Credentials List -->
   <div class="card">
-    <div class="flex justify-between items-center mb-4">
-      <h2 class="text-lg font-semibold">
+    <div class="card-header flex justify-between items-center">
+      <h2 class="card-title">
         Credentials ({filteredCredentials.length})
       </h2>
       {#if $loading.credentials}
         <div class="flex items-center text-gray-500">
-          <svg
-            class="animate-spin -ml-1 mr-3 h-5 w-5"
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            ></circle>
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            ></path>
-          </svg>
-          Loading...
+          <Loader2 class="w-5 h-5 animate-spin mr-2" />
+          <span class="text-sm">Loading...</span>
         </div>
       {/if}
     </div>
 
-    {#if filteredCredentials.length === 0}
-      <div class="text-center py-8 text-gray-500">
-        {searchTerm
-          ? 'No credentials match your search.'
-          : 'No credentials configured yet.'}
-      </div>
-    {:else}
-      <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-gray-200">
-          <thead class="bg-gray-50">
-            <tr>
-              <th
-                class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                >Name</th
-              >
-              <th
-                class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                >Key Preview</th
-              >
-              <th
-                class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                >Models</th
-              >
-              <th
-                class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                >Rate Limit</th
-              >
-              <th
-                class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                >Status</th
-              >
-              <th
-                class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"
-                >Actions</th
-              >
-            </tr>
-          </thead>
-          <tbody class="bg-white divide-y divide-gray-200">
-            {#each filteredCredentials as credential}
+    <div class="card-body p-0">
+      {#if filteredCredentials.length === 0}
+        <div class="text-center py-12 text-gray-500">
+          {searchTerm
+            ? 'No credentials match your search.'
+            : 'No credentials configured yet.'}
+        </div>
+      {:else}
+        <div class="table-container">
+          <table class="table">
+            <thead>
               <tr>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm font-medium text-gray-900">
-                    {credential.name}
-                  </div>
-                  <div class="text-sm text-gray-500">ID: {credential.id}</div>
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <code class="text-sm bg-gray-100 px-2 py-1 rounded"
-                    >{credential.key_preview}</code
-                  >
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm text-gray-500">
-                    {credential.allowed_models.length === 0
-                      ? 'All models'
-                      : `${credential.allowed_models.length} models`}
-                  </div>
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm text-gray-500">
-                    {credential.rate_limit
-                      ? `${credential.rate_limit}/s`
-                      : 'No limit'}
-                  </div>
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <button
-                    onclick={() => handleToggleStatus(credential)}
-                    class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium transition-colors
-                      {credential.is_enabled
-                      ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                      : 'bg-red-100 text-red-800 hover:bg-red-200'}"
-                  >
-                    {credential.is_enabled ? 'Enabled' : 'Disabled'}
-                  </button>
-                </td>
-                <td
-                  class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium"
-                >
-                  <div class="flex justify-end space-x-2">
-                    <button
-                      onclick={() => handleEdit(credential)}
-                      class="text-blue-600 hover:text-blue-900"
-                      title="Edit credential"
-                    >
-                      ✏️
-                    </button>
-                    <button
-                      onclick={() => handleRotate(credential)}
-                      class="text-yellow-600 hover:text-yellow-900"
-                      title="Rotate key"
-                    >
-                      🔄
-                    </button>
-                    <button
-                      onclick={() => handleDelete(credential)}
-                      class="text-red-600 hover:text-red-900"
-                      title="Delete credential"
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </td>
+                <th>Name</th>
+                <th>Key Preview</th>
+                <th>Models</th>
+                <th>Rate Limit</th>
+                <th>Status</th>
+                <th class="text-right">Actions</th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
+            </thead>
+            <tbody>
+              {#each filteredCredentials as credential}
+                <tr>
+                  <td>
+                    <div class="text-sm font-medium text-gray-900">
+                      {credential.name}
+                    </div>
+                    <div class="text-xs text-gray-500">
+                      ID: {credential.id}
+                    </div>
+                  </td>
+                  <td>
+                    <code
+                      class="text-sm bg-gray-100 px-2 py-1 rounded font-mono"
+                    >
+                      {credential.key_preview}
+                    </code>
+                  </td>
+                  <td>
+                    <div class="text-sm text-gray-500">
+                      {credential.allowed_models.length === 0
+                        ? 'All models'
+                        : `${credential.allowed_models.length} models`}
+                    </div>
+                  </td>
+                  <td>
+                    <div class="text-sm text-gray-500">
+                      {credential.rate_limit
+                        ? `${credential.rate_limit}/s`
+                        : 'No limit'}
+                    </div>
+                  </td>
+                  <td>
+                    <button
+                      onclick={() => handleToggleStatus(credential)}
+                      class="badge transition-colors {credential.is_enabled
+                        ? 'badge-success hover:opacity-80'
+                        : 'badge-danger hover:opacity-80'}"
+                    >
+                      {#if credential.is_enabled}
+                        <Check class="w-3 h-3 mr-1" />
+                        Enabled
+                      {:else}
+                        <X class="w-3 h-3 mr-1" />
+                        Disabled
+                      {/if}
+                    </button>
+                  </td>
+                  <td>
+                    <div class="flex justify-end space-x-2">
+                      <button
+                        onclick={() => handleEdit(credential)}
+                        class="btn-icon text-primary-600 hover:text-primary-900"
+                        title="Edit credential"
+                      >
+                        <Pencil class="w-4 h-4" />
+                      </button>
+                      <button
+                        onclick={() => (rotateConfirm = credential)}
+                        class="btn-icon text-yellow-600 hover:text-yellow-900"
+                        title="Rotate key"
+                      >
+                        <RefreshCw class="w-4 h-4" />
+                      </button>
+                      <button
+                        onclick={() => (deleteConfirm = credential)}
+                        class="btn-icon text-red-600 hover:text-red-900"
+                        title="Delete credential"
+                      >
+                        <Trash2 class="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+    </div>
   </div>
+
+  <!-- Delete Confirmation Modal -->
+  {#if deleteConfirm}
+    <div
+      class="modal-overlay"
+      onclick={() => (deleteConfirm = null)}
+      onkeydown={e => e.key === 'Escape' && (deleteConfirm = null)}
+      role="button"
+      tabindex="0"
+      aria-label="Close modal"
+    >
+      <div
+        class="modal"
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        tabindex="-1"
+      >
+        <div class="modal-header">
+          <h3 class="text-lg font-semibold text-gray-900">Delete Credential</h3>
+          <button onclick={() => (deleteConfirm = null)} class="btn-icon">
+            <X class="w-5 h-5" />
+          </button>
+        </div>
+        <div class="modal-body">
+          <p class="text-sm text-gray-600">
+            Are you sure you want to delete credential
+            <strong>{deleteConfirm.name}</strong>? This action cannot be undone.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button
+            onclick={() => (deleteConfirm = null)}
+            class="btn btn-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            onclick={() => deleteConfirm && handleDelete(deleteConfirm)}
+            class="btn btn-danger flex items-center space-x-2"
+            disabled={$loading.credentials}
+          >
+            {#if $loading.credentials}
+              <Loader2 class="w-4 h-4 animate-spin" />
+            {/if}
+            <span>Delete</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Rotate Confirmation Modal -->
+  {#if rotateConfirm}
+    <div
+      class="modal-overlay"
+      onclick={() => (rotateConfirm = null)}
+      onkeydown={e => e.key === 'Escape' && (rotateConfirm = null)}
+      role="button"
+      tabindex="0"
+      aria-label="Close modal"
+    >
+      <div
+        class="modal"
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        tabindex="-1"
+      >
+        <div class="modal-header">
+          <h3 class="text-lg font-semibold text-gray-900">Rotate API Key</h3>
+          <button onclick={() => (rotateConfirm = null)} class="btn-icon">
+            <X class="w-5 h-5" />
+          </button>
+        </div>
+        <div class="modal-body">
+          <p class="text-sm text-gray-600">
+            Are you sure you want to rotate the key for
+            <strong>{rotateConfirm.name}</strong>? The old key will be
+            invalidated immediately.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button
+            onclick={() => (rotateConfirm = null)}
+            class="btn btn-secondary"
+          >
+            Cancel
+          </button>
+          <button
+            onclick={() => rotateConfirm && handleRotate(rotateConfirm)}
+            class="btn btn-primary flex items-center space-x-2"
+            disabled={$loading.credentials}
+          >
+            {#if $loading.credentials}
+              <Loader2 class="w-4 h-4 animate-spin" />
+            {/if}
+            <span>Rotate Key</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- New Key Display Modal -->
+  {#if newRotatedKey}
+    <div
+      class="modal-overlay"
+      onclick={() => (newRotatedKey = null)}
+      onkeydown={e => e.key === 'Escape' && (newRotatedKey = null)}
+      role="button"
+      tabindex="0"
+      aria-label="Close modal"
+    >
+      <div
+        class="modal"
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        tabindex="-1"
+      >
+        <div class="modal-header">
+          <h3 class="text-lg font-semibold text-gray-900">
+            New API Key Generated
+          </h3>
+          <button onclick={() => (newRotatedKey = null)} class="btn-icon">
+            <X class="w-5 h-5" />
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="alert-success mb-4">
+            <p class="text-sm text-green-700 font-medium">
+              Key rotated successfully!
+            </p>
+          </div>
+          <p class="text-sm text-gray-600 mb-3">
+            Save this key securely. It will not be shown again.
+          </p>
+          <div class="bg-gray-50 rounded-lg p-4 border border-gray-200">
+            <code class="text-sm font-mono break-all">
+              {newRotatedKey}
+            </code>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button
+            onclick={() => newRotatedKey && copyToClipboard(newRotatedKey)}
+            class="btn btn-secondary"
+          >
+            Copy to Clipboard
+          </button>
+          <button
+            onclick={() => (newRotatedKey = null)}
+            class="btn btn-primary"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>

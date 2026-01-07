@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      lucide-svelte:
+        specifier: ^0.468.0
+        version: 0.468.0(svelte@5.46.0)
     devDependencies:
       '@eslint/js':
         specifier: ^9.17.0
@@ -1108,6 +1112,11 @@ packages:
 
   lodash.merge@4.6.2:
     resolution: {integrity: sha512-0KpjqXRVvrYyCsX1swR/XTK0va6VQkQM6MNo7PqW77ByjAhoARA8EfrP1N4+KlKj8YS0ZUCtRT/YUuhyYDujIQ==, tarball: https://mirrors.tesla.cn/artifactory/api/npm/npm-virtual/lodash.merge/-/lodash.merge-4.6.2.tgz}
+
+  lucide-svelte@0.468.0:
+    resolution: {integrity: sha512-n0ecAFtCY5LEeL+PJ1Xj4n3c2gzj8tMpak0KMGnvoSJEjCsCnRB0mekBtJZAo7beyynW9Qj5Um1KfMBAeTNplw==, tarball: https://mirrors.tesla.cn/artifactory/api/npm/npm-virtual/lucide-svelte/-/lucide-svelte-0.468.0.tgz}
+    peerDependencies:
+      svelte: ^3 || ^4 || ^5.0.0-next.42
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==, tarball: https://mirrors.tesla.cn/artifactory/api/npm/npm-virtual/magic-string/-/magic-string-0.30.21.tgz}
@@ -2342,6 +2351,10 @@ snapshots:
       p-locate: 5.0.0
 
   lodash.merge@4.6.2: {}
+
+  lucide-svelte@0.468.0(svelte@5.46.0):
+    dependencies:
+      svelte: 5.46.0
 
   magic-string@0.30.21:
     dependencies:
