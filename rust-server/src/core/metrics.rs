@@ -160,19 +160,20 @@ mod tests {
     fn test_request_count_metric() {
         let metrics = init_metrics();
 
+        // Use unique label values to avoid conflicts with other tests
         let initial = metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4-unique", "openai-unique", "201", "test-key-unique"])
             .get();
 
         metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4-unique", "openai-unique", "201", "test-key-unique"])
             .inc();
 
         let after = metrics
             .request_count
-            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4", "openai", "200", "test-key"])
+            .with_label_values(&["POST", "/v1/chat/completions", "gpt-4-unique", "openai-unique", "201", "test-key-unique"])
             .get();
 
         assert_eq!(after, initial + 1);

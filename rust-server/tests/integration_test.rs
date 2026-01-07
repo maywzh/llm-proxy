@@ -105,20 +105,20 @@ fn create_test_config_no_auth() -> AppConfig {
         verify_ssl: false,
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
-        master_keys: vec![],
+        credentials: vec![],
         provider_suffix: None,
     }
 }
 
 /// Create a test config with authentication
 fn create_test_config_with_auth() -> AppConfig {
-    use llm_proxy_rust::core::config::MasterKeyConfig;
+    use llm_proxy_rust::core::config::CredentialConfig;
     use llm_proxy_rust::core::database::hash_key;
 
     let mut config = create_test_config_no_auth();
     // Store the hash of the key, not the plain text key
-    config.master_keys = vec![MasterKeyConfig {
-        key: hash_key("test_master_key"),
+    config.credentials = vec![CredentialConfig {
+        credential_key: hash_key("test_master_key"),
         name: "Test Key".to_string(),
         description: None,
         rate_limit: None,
@@ -432,4 +432,25 @@ async fn test_multiple_sequential_requests() {
 
         assert_eq!(response.status(), StatusCode::OK, "Request {} failed", i);
     }
+}
+
+#[tokio::test]
+async fn test_invalid_json_request() {
+    let app = create_test_app(create_test_config_no_auth());
+
+    // Send invalid JSON to chat completions endpoint
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/chat/completions")
+                .method("POST")
+                .header("Content-Type", "application/json")
+                .body(Body::from("invalid json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Axum's Json extractor returns 400 Bad Request for invalid JSON
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

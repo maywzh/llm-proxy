@@ -1,6 +1,6 @@
 //! Admin API handlers for dynamic configuration management.
 //!
-//! Provides RESTful endpoints for managing providers and master keys.
+//! Provides RESTful endpoints for managing providers and credentials.
 //! All endpoints require ADMIN_KEY authentication.
 
 use axum::{
@@ -15,8 +15,8 @@ use std::sync::Arc;
 use utoipa::{OpenApi, ToSchema};
 
 use crate::core::database::{
-    create_key_preview, CreateMasterKey, CreateProvider, DynamicConfig,
-    MasterKeyEntity, ProviderEntity, UpdateMasterKey, UpdateProvider,
+    create_key_preview, CreateCredential, CreateProvider, DynamicConfig,
+    CredentialEntity, ProviderEntity, UpdateCredential, UpdateProvider,
 };
 
 /// OpenAPI documentation for Admin API (admin endpoints only)
@@ -29,11 +29,11 @@ use crate::core::database::{
         get_provider,
         update_provider,
         delete_provider,
-        list_master_keys,
-        create_master_key,
-        get_master_key,
-        update_master_key,
-        delete_master_key,
+        list_credentials,
+        create_credential,
+        get_credential,
+        update_credential,
+        delete_credential,
         get_config_version,
         reload_config,
     ),
@@ -44,10 +44,10 @@ use crate::core::database::{
             ProviderResponse,
             CreateProviderRequest,
             UpdateProviderRequest,
-            MasterKeyListResponse,
-            MasterKeyResponse,
-            CreateMasterKeyRequest,
-            UpdateMasterKeyRequest,
+            CredentialListResponse,
+            CredentialResponse,
+            CreateCredentialRequest,
+            UpdateCredentialRequest,
             ConfigVersionResponse,
             AdminErrorResponse,
         )
@@ -55,13 +55,13 @@ use crate::core::database::{
     tags(
         (name = "auth", description = "Authentication endpoints"),
         (name = "providers", description = "Provider management endpoints"),
-        (name = "master-keys", description = "Master key management endpoints"),
+        (name = "credentials", description = "Credential management endpoints"),
         (name = "config", description = "Configuration management endpoints")
     ),
     info(
         title = "LLM Proxy Admin API",
         version = "1.0.0",
-        description = "Admin API for managing LLM Proxy configuration including providers and master keys.",
+        description = "Admin API for managing LLM Proxy configuration including providers and credentials.",
         license(name = "MIT")
     ),
     servers(
@@ -128,11 +128,11 @@ pub struct V1ApiDoc;
         get_provider,
         update_provider,
         delete_provider,
-        list_master_keys,
-        create_master_key,
-        get_master_key,
-        update_master_key,
-        delete_master_key,
+        list_credentials,
+        create_credential,
+        get_credential,
+        update_credential,
+        delete_credential,
         get_config_version,
         reload_config,
         // V1 API paths
@@ -148,10 +148,10 @@ pub struct V1ApiDoc;
             ProviderResponse,
             CreateProviderRequest,
             UpdateProviderRequest,
-            MasterKeyListResponse,
-            MasterKeyResponse,
-            CreateMasterKeyRequest,
-            UpdateMasterKeyRequest,
+            CredentialListResponse,
+            CredentialResponse,
+            CreateCredentialRequest,
+            UpdateCredentialRequest,
             ConfigVersionResponse,
             AdminErrorResponse,
             // V1 API schemas
@@ -171,7 +171,7 @@ pub struct V1ApiDoc;
         (name = "models", description = "OpenAI-compatible model listing endpoints"),
         (name = "auth", description = "Authentication endpoints"),
         (name = "providers", description = "Provider management endpoints"),
-        (name = "master-keys", description = "Master key management endpoints"),
+        (name = "credentials", description = "Credential management endpoints"),
         (name = "config", description = "Configuration management endpoints")
     ),
     info(
@@ -282,7 +282,8 @@ impl From<sqlx::Error> for AdminError {
 #[schema(example = json!({
     "version": 1,
     "providers": [{
-        "id": "openai-1",
+        "id": 1,
+        "provider_key": "openai-1",
         "provider_type": "openai",
         "api_base": "https://api.openai.com/v1",
         "model_mapping": {"gpt-4": "gpt-4-turbo"},
@@ -301,7 +302,8 @@ pub struct ProviderListResponse {
 /// Provider response
 #[derive(Debug, Serialize, ToSchema)]
 #[schema(example = json!({
-    "id": "openai-1",
+    "id": 1,
+    "provider_key": "openai-1",
     "provider_type": "openai",
     "api_base": "https://api.openai.com/v1",
     "model_mapping": {"gpt-4": "gpt-4-turbo"},
@@ -310,8 +312,10 @@ pub struct ProviderListResponse {
     "updated_at": "2024-01-01T00:00:00Z"
 }))]
 pub struct ProviderResponse {
-    /// Unique provider identifier
-    pub id: String,
+    /// Auto-increment provider ID
+    pub id: i32,
+    /// Unique provider key identifier
+    pub provider_key: String,
     /// Provider type (e.g., "openai", "azure", "anthropic")
     pub provider_type: String,
     /// Base URL for the provider API
@@ -330,6 +334,7 @@ impl From<ProviderEntity> for ProviderResponse {
     fn from(e: ProviderEntity) -> Self {
         Self {
             id: e.id,
+            provider_key: e.provider_key,
             provider_type: e.provider_type,
             api_base: e.api_base,
             model_mapping: e.model_mapping.0,
@@ -343,7 +348,7 @@ impl From<ProviderEntity> for ProviderResponse {
 /// Request to create a new provider
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = json!({
-    "id": "openai-1",
+    "provider_key": "openai-1",
     "provider_type": "openai",
     "api_base": "https://api.openai.com/v1",
     "api_key": "sk-your-api-key",
@@ -351,8 +356,8 @@ impl From<ProviderEntity> for ProviderResponse {
     "is_enabled": true
 }))]
 pub struct CreateProviderRequest {
-    /// Unique provider identifier
-    pub id: String,
+    /// Unique provider key identifier
+    pub provider_key: String,
     /// Provider type (e.g., "openai", "azure", "anthropic")
     pub provider_type: String,
     /// Base URL for the provider API
@@ -387,16 +392,16 @@ pub struct UpdateProviderRequest {
 }
 
 // ============================================================================
-// Master Key API Types
+// Credential API Types
 // ============================================================================
 
-/// Response containing list of master keys
+/// Response containing list of credentials
 #[derive(Debug, Serialize, ToSchema)]
 #[schema(example = json!({
     "version": 1,
-    "keys": [{
-        "id": "key-1",
-        "name": "Production Key",
+    "credentials": [{
+        "id": 1,
+        "name": "Production Credential",
         "key_preview": "sk-***abc",
         "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
         "rate_limit": 100,
@@ -405,18 +410,18 @@ pub struct UpdateProviderRequest {
         "updated_at": "2024-01-01T00:00:00Z"
     }]
 }))]
-pub struct MasterKeyListResponse {
+pub struct CredentialListResponse {
     /// Current configuration version
     pub version: i64,
-    /// List of master keys
-    pub keys: Vec<MasterKeyResponse>,
+    /// List of credentials
+    pub credentials: Vec<CredentialResponse>,
 }
 
-/// Master key response
+/// Credential response
 #[derive(Debug, Serialize, ToSchema)]
 #[schema(example = json!({
-    "id": "key-1",
-    "name": "Production Key",
+    "id": 1,
+    "name": "Production Credential",
     "key_preview": "sk-***abc",
     "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
     "rate_limit": 100,
@@ -424,18 +429,18 @@ pub struct MasterKeyListResponse {
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
 }))]
-pub struct MasterKeyResponse {
-    /// Unique key identifier
-    pub id: String,
-    /// Human-readable name for the key
+pub struct CredentialResponse {
+    /// Auto-increment credential ID
+    pub id: i32,
+    /// Human-readable name for the credential
     pub name: String,
     /// Masked preview of the key (e.g., "sk-***abc")
     pub key_preview: String,
-    /// List of models this key can access (empty = all models)
+    /// List of models this credential can access (empty = all models)
     pub allowed_models: Vec<String>,
     /// Rate limit in requests per second (null = unlimited)
     pub rate_limit: Option<i32>,
-    /// Whether this key is enabled
+    /// Whether this credential is enabled
     pub is_enabled: bool,
     /// Creation timestamp (RFC 3339 format)
     pub created_at: String,
@@ -443,8 +448,8 @@ pub struct MasterKeyResponse {
     pub updated_at: String,
 }
 
-impl MasterKeyResponse {
-    fn from_entity(e: MasterKeyEntity, preview: String) -> Self {
+impl CredentialResponse {
+    fn from_entity(e: CredentialEntity, preview: String) -> Self {
         Self {
             id: e.id,
             name: e.name,
@@ -458,50 +463,47 @@ impl MasterKeyResponse {
     }
 }
 
-/// Request to create a new master key
+/// Request to create a new credential
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = json!({
-    "id": "key-1",
-    "key": "sk-your-master-key",
-    "name": "Production Key",
+    "key": "sk-your-credential-key",
+    "name": "Production Credential",
     "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
     "rate_limit": 100,
     "is_enabled": true
 }))]
-pub struct CreateMasterKeyRequest {
-    /// Unique key identifier
-    pub id: String,
+pub struct CreateCredentialRequest {
     /// The actual key value (will be hashed for storage)
     pub key: String,
-    /// Human-readable name for the key
+    /// Human-readable name for the credential
     pub name: String,
-    /// List of models this key can access (empty = all models)
+    /// List of models this credential can access (empty = all models)
     #[serde(default)]
     pub allowed_models: Vec<String>,
     /// Rate limit in requests per second (null = unlimited)
     pub rate_limit: Option<i32>,
-    /// Whether this key is enabled (default: true)
+    /// Whether this credential is enabled (default: true)
     #[serde(default = "default_true")]
     pub is_enabled: bool,
 }
 
-/// Request to update an existing master key
+/// Request to update an existing credential
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = json!({
-    "name": "Updated Key Name",
+    "name": "Updated Credential Name",
     "rate_limit": 200,
     "is_enabled": false
 }))]
-pub struct UpdateMasterKeyRequest {
+pub struct UpdateCredentialRequest {
     /// New key value (will be hashed for storage)
     pub key: Option<String>,
-    /// Human-readable name for the key
+    /// Human-readable name for the credential
     pub name: Option<String>,
-    /// List of models this key can access (empty = all models)
+    /// List of models this credential can access (empty = all models)
     pub allowed_models: Option<Vec<String>>,
     /// Rate limit in requests per second (null = unlimited)
     pub rate_limit: Option<i32>,
-    /// Whether this key is enabled
+    /// Whether this credential is enabled
     pub is_enabled: Option<bool>,
 }
 
@@ -601,7 +603,7 @@ pub async fn list_providers(
     path = "/admin/v1/providers/{id}",
     tag = "providers",
     params(
-        ("id" = String, Path, description = "Provider ID")
+        ("id" = i32, Path, description = "Provider ID")
     ),
     responses(
         (status = 200, description = "Provider details", body = ProviderResponse),
@@ -612,15 +614,15 @@ pub async fn list_providers(
 pub async fn get_provider(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(id): Path<i32>,
 ) -> Result<Json<ProviderResponse>, AdminError> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
     let db = state.dynamic_config.database();
     let provider = db
-        .get_provider(&id)
+        .get_provider(id)
         .await?
-        .ok_or_else(|| AdminError::NotFound(format!("Provider '{}' not found", id)))?;
+        .ok_or_else(|| AdminError::NotFound(format!("Provider with ID {} not found", id)))?;
 
     Ok(Json(provider.into()))
 }
@@ -646,8 +648,8 @@ pub async fn create_provider(
 ) -> Result<(StatusCode, Json<ProviderResponse>), AdminError> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
-    if req.id.is_empty() {
-        return Err(AdminError::BadRequest("Provider ID is required".to_string()));
+    if req.provider_key.is_empty() {
+        return Err(AdminError::BadRequest("Provider key is required".to_string()));
     }
     if req.api_base.is_empty() {
         return Err(AdminError::BadRequest("API base is required".to_string()));
@@ -658,15 +660,15 @@ pub async fn create_provider(
 
     let db = state.dynamic_config.database();
 
-    if db.get_provider(&req.id).await?.is_some() {
+    if db.get_provider_by_key(&req.provider_key).await?.is_some() {
         return Err(AdminError::BadRequest(format!(
-            "Provider '{}' already exists",
-            req.id
+            "Provider with key '{}' already exists",
+            req.provider_key
         )));
     }
 
     let create = CreateProvider {
-        id: req.id,
+        provider_key: req.provider_key,
         provider_type: req.provider_type,
         api_base: req.api_base,
         api_key: req.api_key,
@@ -675,7 +677,7 @@ pub async fn create_provider(
     };
 
     let provider = db.create_provider(&create).await?;
-    tracing::info!(provider_id = %provider.id, "Provider created");
+    tracing::info!(provider_id = %provider.id, provider_key = %provider.provider_key, "Provider created");
 
     Ok((StatusCode::CREATED, Json(provider.into())))
 }
@@ -688,7 +690,7 @@ pub async fn create_provider(
     path = "/admin/v1/providers/{id}",
     tag = "providers",
     params(
-        ("id" = String, Path, description = "Provider ID")
+        ("id" = i32, Path, description = "Provider ID")
     ),
     request_body = UpdateProviderRequest,
     responses(
@@ -701,7 +703,7 @@ pub async fn create_provider(
 pub async fn update_provider(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(id): Path<i32>,
     Json(req): Json<UpdateProviderRequest>,
 ) -> Result<Json<ProviderResponse>, AdminError> {
     verify_admin_auth(&headers, &state.admin_key)?;
@@ -717,9 +719,9 @@ pub async fn update_provider(
     };
 
     let provider = db
-        .update_provider(&id, &update)
+        .update_provider(id, &update)
         .await?
-        .ok_or_else(|| AdminError::NotFound(format!("Provider '{}' not found", id)))?;
+        .ok_or_else(|| AdminError::NotFound(format!("Provider with ID {} not found", id)))?;
 
     tracing::info!(provider_id = %id, "Provider updated");
 
@@ -734,7 +736,7 @@ pub async fn update_provider(
     path = "/admin/v1/providers/{id}",
     tag = "providers",
     params(
-        ("id" = String, Path, description = "Provider ID")
+        ("id" = i32, Path, description = "Provider ID")
     ),
     responses(
         (status = 204, description = "Provider deleted"),
@@ -745,16 +747,16 @@ pub async fn update_provider(
 pub async fn delete_provider(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(id): Path<i32>,
 ) -> Result<StatusCode, AdminError> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
     let db = state.dynamic_config.database();
-    let deleted = db.delete_provider(&id).await?;
+    let deleted = db.delete_provider(id).await?;
 
     if !deleted {
         return Err(AdminError::NotFound(format!(
-            "Provider '{}' not found",
+            "Provider with ID {} not found",
             id
         )));
     }
@@ -765,125 +767,114 @@ pub async fn delete_provider(
 }
 
 // ============================================================================
-// Master Key Handlers
+// Credential Handlers
 // ============================================================================
 
-/// List all master keys
+/// List all credentials
 ///
-/// Returns a list of all configured master keys with their current configuration version.
+/// Returns a list of all configured credentials with their current configuration version.
 /// Key values are masked for security.
 #[utoipa::path(
     get,
-    path = "/admin/v1/master-keys",
-    tag = "master-keys",
+    path = "/admin/v1/credentials",
+    tag = "credentials",
     responses(
-        (status = 200, description = "List of master keys", body = MasterKeyListResponse),
+        (status = 200, description = "List of credentials", body = CredentialListResponse),
         (status = 401, description = "Unauthorized", body = AdminErrorResponse)
     )
 )]
-pub async fn list_master_keys(
+pub async fn list_credentials(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
-) -> Result<Json<MasterKeyListResponse>, AdminError> {
+) -> Result<Json<CredentialListResponse>, AdminError> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
     let db = state.dynamic_config.database();
-    let keys = db.load_all_master_keys().await?;
+    let credentials = db.load_all_credentials().await?;
     let version = db.get_config_version().await?;
 
-    let responses: Vec<MasterKeyResponse> = keys
+    let responses: Vec<CredentialResponse> = credentials
         .into_iter()
-        .map(|k| {
-            let preview = format!("***{}", &k.key_hash[..6]);
-            MasterKeyResponse::from_entity(k, preview)
+        .map(|c| {
+            let preview = format!("***{}", &c.credential_key[..6]);
+            CredentialResponse::from_entity(c, preview)
         })
         .collect();
 
-    Ok(Json(MasterKeyListResponse {
+    Ok(Json(CredentialListResponse {
         version,
-        keys: responses,
+        credentials: responses,
     }))
 }
 
-/// Get a single master key
+/// Get a single credential
 ///
-/// Returns the configuration for a specific master key by ID.
+/// Returns the configuration for a specific credential by ID.
 /// The key value is masked for security.
 #[utoipa::path(
     get,
-    path = "/admin/v1/master-keys/{id}",
-    tag = "master-keys",
+    path = "/admin/v1/credentials/{id}",
+    tag = "credentials",
     params(
-        ("id" = String, Path, description = "Master key ID")
+        ("id" = i32, Path, description = "Credential ID")
     ),
     responses(
-        (status = 200, description = "Master key details", body = MasterKeyResponse),
+        (status = 200, description = "Credential details", body = CredentialResponse),
         (status = 401, description = "Unauthorized", body = AdminErrorResponse),
-        (status = 404, description = "Master key not found", body = AdminErrorResponse)
+        (status = 404, description = "Credential not found", body = AdminErrorResponse)
     )
 )]
-pub async fn get_master_key(
+pub async fn get_credential(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<Json<MasterKeyResponse>, AdminError> {
+    Path(id): Path<i32>,
+) -> Result<Json<CredentialResponse>, AdminError> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
     let db = state.dynamic_config.database();
-    let key = db
-        .get_master_key(&id)
+    let credential = db
+        .get_credential(id)
         .await?
-        .ok_or_else(|| AdminError::NotFound(format!("Master key '{}' not found", id)))?;
+        .ok_or_else(|| AdminError::NotFound(format!("Credential with ID {} not found", id)))?;
 
-    let preview = format!("***{}", &key.key_hash[..6]);
-    Ok(Json(MasterKeyResponse::from_entity(key, preview)))
+    let preview = format!("***{}", &credential.credential_key[..6]);
+    Ok(Json(CredentialResponse::from_entity(credential, preview)))
 }
 
-/// Create a new master key
+/// Create a new credential
 ///
-/// Creates a new master key with the specified configuration.
+/// Creates a new credential with the specified configuration.
 /// The key value will be hashed for secure storage.
 #[utoipa::path(
     post,
-    path = "/admin/v1/master-keys",
-    tag = "master-keys",
-    request_body = CreateMasterKeyRequest,
+    path = "/admin/v1/credentials",
+    tag = "credentials",
+    request_body = CreateCredentialRequest,
     responses(
-        (status = 201, description = "Master key created", body = MasterKeyResponse),
+        (status = 201, description = "Credential created", body = CredentialResponse),
         (status = 400, description = "Bad request", body = AdminErrorResponse),
         (status = 401, description = "Unauthorized", body = AdminErrorResponse)
     )
 )]
-pub async fn create_master_key(
+pub async fn create_credential(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
-    Json(req): Json<CreateMasterKeyRequest>,
-) -> Result<(StatusCode, Json<MasterKeyResponse>), AdminError> {
+    Json(req): Json<CreateCredentialRequest>,
+) -> Result<(StatusCode, Json<CredentialResponse>), AdminError> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
-    if req.id.is_empty() {
-        return Err(AdminError::BadRequest("Key ID is required".to_string()));
-    }
     if req.key.is_empty() {
         return Err(AdminError::BadRequest("Key value is required".to_string()));
     }
     if req.name.is_empty() {
-        return Err(AdminError::BadRequest("Key name is required".to_string()));
+        return Err(AdminError::BadRequest("Credential name is required".to_string()));
     }
 
     let db = state.dynamic_config.database();
 
-    if db.get_master_key(&req.id).await?.is_some() {
-        return Err(AdminError::BadRequest(format!(
-            "Master key '{}' already exists",
-            req.id
-        )));
-    }
-
     let key_preview = create_key_preview(&req.key);
 
-    let create = CreateMasterKey {
-        id: req.id,
+    let create = CreateCredential {
         key: req.key,
         name: req.name,
         allowed_models: req.allowed_models,
@@ -891,45 +882,45 @@ pub async fn create_master_key(
         is_enabled: req.is_enabled,
     };
 
-    let key = db.create_master_key(&create).await?;
-    tracing::info!(key_id = %key.id, key_name = %key.name, "Master key created");
+    let credential = db.create_credential(&create).await?;
+    tracing::info!(credential_id = %credential.id, credential_name = %credential.name, "Credential created");
 
     Ok((
         StatusCode::CREATED,
-        Json(MasterKeyResponse::from_entity(key, key_preview)),
+        Json(CredentialResponse::from_entity(credential, key_preview)),
     ))
 }
 
-/// Update an existing master key
+/// Update an existing credential
 ///
-/// Updates the configuration for an existing master key. Only provided fields will be updated.
+/// Updates the configuration for an existing credential. Only provided fields will be updated.
 /// If a new key value is provided, it will be hashed for secure storage.
 #[utoipa::path(
     put,
-    path = "/admin/v1/master-keys/{id}",
-    tag = "master-keys",
+    path = "/admin/v1/credentials/{id}",
+    tag = "credentials",
     params(
-        ("id" = String, Path, description = "Master key ID")
+        ("id" = i32, Path, description = "Credential ID")
     ),
-    request_body = UpdateMasterKeyRequest,
+    request_body = UpdateCredentialRequest,
     responses(
-        (status = 200, description = "Master key updated", body = MasterKeyResponse),
+        (status = 200, description = "Credential updated", body = CredentialResponse),
         (status = 400, description = "Bad request", body = AdminErrorResponse),
         (status = 401, description = "Unauthorized", body = AdminErrorResponse),
-        (status = 404, description = "Master key not found", body = AdminErrorResponse)
+        (status = 404, description = "Credential not found", body = AdminErrorResponse)
     )
 )]
-pub async fn update_master_key(
+pub async fn update_credential(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(req): Json<UpdateMasterKeyRequest>,
-) -> Result<Json<MasterKeyResponse>, AdminError> {
+    Path(id): Path<i32>,
+    Json(req): Json<UpdateCredentialRequest>,
+) -> Result<Json<CredentialResponse>, AdminError> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
     let db = state.dynamic_config.database();
 
-    let update = UpdateMasterKey {
+    let update = UpdateCredential {
         key: req.key.clone(),
         name: req.name,
         allowed_models: req.allowed_models,
@@ -937,56 +928,56 @@ pub async fn update_master_key(
         is_enabled: req.is_enabled,
     };
 
-    let key = db
-        .update_master_key(&id, &update)
+    let credential = db
+        .update_credential(id, &update)
         .await?
-        .ok_or_else(|| AdminError::NotFound(format!("Master key '{}' not found", id)))?;
+        .ok_or_else(|| AdminError::NotFound(format!("Credential with ID {} not found", id)))?;
 
     let preview = if let Some(new_key) = req.key {
         create_key_preview(&new_key)
     } else {
-        format!("***{}", &key.key_hash[..6])
+        format!("***{}", &credential.credential_key[..6])
     };
 
-    tracing::info!(key_id = %id, "Master key updated");
+    tracing::info!(credential_id = %id, "Credential updated");
 
-    Ok(Json(MasterKeyResponse::from_entity(key, preview)))
+    Ok(Json(CredentialResponse::from_entity(credential, preview)))
 }
 
-/// Delete a master key
+/// Delete a credential
 ///
-/// Permanently deletes a master key from the configuration.
+/// Permanently deletes a credential from the configuration.
 #[utoipa::path(
     delete,
-    path = "/admin/v1/master-keys/{id}",
-    tag = "master-keys",
+    path = "/admin/v1/credentials/{id}",
+    tag = "credentials",
     params(
-        ("id" = String, Path, description = "Master key ID")
+        ("id" = i32, Path, description = "Credential ID")
     ),
     responses(
-        (status = 204, description = "Master key deleted"),
+        (status = 204, description = "Credential deleted"),
         (status = 401, description = "Unauthorized", body = AdminErrorResponse),
-        (status = 404, description = "Master key not found", body = AdminErrorResponse)
+        (status = 404, description = "Credential not found", body = AdminErrorResponse)
     )
 )]
-pub async fn delete_master_key(
+pub async fn delete_credential(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path(id): Path<i32>,
 ) -> Result<StatusCode, AdminError> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
     let db = state.dynamic_config.database();
-    let deleted = db.delete_master_key(&id).await?;
+    let deleted = db.delete_credential(id).await?;
 
     if !deleted {
         return Err(AdminError::NotFound(format!(
-            "Master key '{}' not found",
+            "Credential with ID {} not found",
             id
         )));
     }
 
-    tracing::info!(key_id = %id, "Master key deleted");
+    tracing::info!(credential_id = %id, "Credential deleted");
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1128,13 +1119,13 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
                 .put(update_provider)
                 .delete(delete_provider),
         )
-        // Master key routes
-        .route("/master-keys", get(list_master_keys).post(create_master_key))
+        // Credential routes
+        .route("/credentials", get(list_credentials).post(create_credential))
         .route(
-            "/master-keys/:id",
-            get(get_master_key)
-                .put(update_master_key)
-                .delete(delete_master_key),
+            "/credentials/:id",
+            get(get_credential)
+                .put(update_credential)
+                .delete(delete_credential),
         )
         // Config routes
         .route("/config/version", get(get_config_version))

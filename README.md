@@ -34,7 +34,7 @@ cd python-server
 uv sync
 ```
 
-2) Configure providers:
+1) Configure providers:
 
 ```bash
 cp config.example.yaml config.yaml
@@ -42,7 +42,7 @@ cp .env.example .env  # if present
 # edit config.yaml to set providers[].api_base/api_key, weights, model_mapping
 ```
 
-3) Run locally:
+1) Run locally:
 
 ```bash
 uv run python main.py --config config.yaml
@@ -50,14 +50,14 @@ uv run python main.py --config config.yaml
 ./run.sh
 ```
 
-4) Run with Docker Compose (includes Prometheus + Grafana):
+1) Run with Docker Compose (includes Prometheus + Grafana):
 
 ```bash
 docker-compose up -d
 # LLM Proxy http://localhost:18000, Prometheus http://localhost:9090, Grafana http://localhost:3000
 ```
 
-5) Tests and coverage:
+1) Tests and coverage:
 
 ```bash
 cd python-server
@@ -120,11 +120,13 @@ Priority: environment variables > .env > YAML values. Use `master_api_key` or `m
 LLM Proxy supports two configuration modes:
 
 ### YAML Mode (Default)
+
 - Do not set `DB_URL` environment variable
 - Use `config.yaml` file for configuration
 - Suitable for development and simple deployments
 
 ### Database Mode
+
 - Set `DB_URL` and `ADMIN_KEY` environment variables
 - Configuration stored in PostgreSQL database
 - Supports runtime hot-reload without restart
@@ -137,7 +139,7 @@ LLM Proxy supports two configuration modes:
 brew install golang-migrate
 
 # Run migrations
-export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
 ./scripts/db_migrate.sh up
 ```
 

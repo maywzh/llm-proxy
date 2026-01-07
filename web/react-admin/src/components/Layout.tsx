@@ -17,7 +17,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   // Navigation items
   const navItems = [
     { href: '/providers', label: 'Providers', icon: '🔌' },
-    { href: '/master-keys', label: 'Master Keys', icon: '🔑' },
+    { href: '/credentials', label: 'Credentials', icon: '🔑' },
   ];
 
   // Load config version on mount

@@ -44,7 +44,10 @@ class ProviderModel(Base):
 
     __tablename__ = "providers"
 
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
     provider_type: Mapped[str] = mapped_column(String(50), nullable=False)
     api_base: Mapped[str] = mapped_column(String(500), nullable=False)
     api_key: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -65,13 +68,15 @@ class ProviderModel(Base):
         return self.model_mapping or {}
 
 
-class MasterKeyModel(Base):
-    """Master key database model"""
+class CredentialModel(Base):
+    """Credential database model (renamed from master_keys)"""
 
-    __tablename__ = "master_keys"
+    __tablename__ = "credentials"
 
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    key_hash: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    credential_key: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     allowed_models: Mapped[list] = mapped_column(JSONB, nullable=False, default=[])
     rate_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -304,14 +309,14 @@ class InitResult:
     """Initialization result"""
 
     providers: list = None
-    master_keys: list = None
+    credentials: list = None
     version: int = 0
 
     def __post_init__(self):
         if self.providers is None:
             self.providers = []
-        if self.master_keys is None:
-            self.master_keys = []
+        if self.credentials is None:
+            self.credentials = []
 
 
 @dataclass
@@ -321,7 +326,7 @@ class VersionedConfig:
     version: int
     timestamp: datetime
     providers: list
-    master_keys: list
+    credentials: list
 
 
 class DynamicConfig:
@@ -343,9 +348,9 @@ class DynamicConfig:
         return self._config.providers if self._config else []
 
     @property
-    def master_keys(self) -> list:
-        """Get current master keys"""
-        return self._config.master_keys if self._config else []
+    def credentials(self) -> list:
+        """Get current credentials"""
+        return self._config.credentials if self._config else []
 
     @property
     def version(self) -> int:
@@ -371,7 +376,7 @@ class DynamicConfig:
         from app.models.config import (
             AppConfig,
             ProviderConfig,
-            MasterKeyConfig,
+            CredentialConfig,
             RateLimitConfig,
             ServerConfig,
         )
@@ -381,7 +386,7 @@ class DynamicConfig:
 
         providers = [
             ProviderConfig(
-                name=p.id,
+                name=p.provider_key,
                 api_base=p.api_base,
                 api_key=p.api_key,
                 weight=1,
@@ -390,27 +395,27 @@ class DynamicConfig:
             for p in versioned_config.providers
         ]
 
-        master_keys = [
-            MasterKeyConfig(
-                key=mk.key_hash,
-                name=mk.name,
+        credentials = [
+            CredentialConfig(
+                credential_key=cred.credential_key,
+                name=cred.name,
                 rate_limit=(
                     RateLimitConfig(
-                        requests_per_second=mk.rate_limit,
-                        burst_size=mk.rate_limit,
+                        requests_per_second=cred.rate_limit,
+                        burst_size=cred.rate_limit,
                     )
-                    if mk.rate_limit
+                    if cred.rate_limit
                     else None
                 ),
-                enabled=mk.is_enabled,
-                allowed_models=mk.allowed_models or [],
+                enabled=cred.is_enabled,
+                allowed_models=cred.allowed_models or [],
             )
-            for mk in versioned_config.master_keys
+            for cred in versioned_config.credentials
         ]
 
         new_config = AppConfig(
             providers=providers,
-            master_keys=master_keys,
+            credentials=credentials,
             server=ServerConfig(host=env_config.host, port=env_config.port),
             verify_ssl=env_config.verify_ssl,
             request_timeout_secs=env_config.request_timeout_secs,
@@ -423,7 +428,7 @@ class DynamicConfig:
         provider_svc.reinitialize()
 
         logger.info(
-            f"AppConfig and ProviderService synced: {len(providers)} providers, {len(master_keys)} master keys"
+            f"AppConfig and ProviderService synced: {len(providers)} providers, {len(credentials)} credentials"
         )
 
     async def _load_from_db(self) -> VersionedConfig:
@@ -434,10 +439,10 @@ class DynamicConfig:
             )
             providers = list(provider_result.scalars().all())
 
-            master_key_result = await session.execute(
-                select(MasterKeyModel).where(MasterKeyModel.is_enabled == True)
+            credential_result = await session.execute(
+                select(CredentialModel).where(CredentialModel.is_enabled == True)
             )
-            master_keys = list(master_key_result.scalars().all())
+            credentials = list(credential_result.scalars().all())
 
         version = await self.db.get_config_version()
 
@@ -445,7 +450,7 @@ class DynamicConfig:
             version=version,
             timestamp=datetime.utcnow(),
             providers=providers,
-            master_keys=master_keys,
+            credentials=credentials,
         )
         return self._config
 
@@ -465,16 +470,16 @@ async def load_config_from_db(db: Database) -> InitResult:
         )
         providers = list(provider_result.scalars().all())
 
-        master_key_result = await session.execute(
-            select(MasterKeyModel).where(MasterKeyModel.is_enabled == True)
+        credential_result = await session.execute(
+            select(CredentialModel).where(CredentialModel.is_enabled == True)
         )
-        master_keys = list(master_key_result.scalars().all())
+        credentials = list(credential_result.scalars().all())
 
     version = await db.get_config_version()
 
     return InitResult(
         providers=providers,
-        master_keys=master_keys,
+        credentials=credentials,
         version=version,
     )
 
@@ -530,17 +535,27 @@ async def list_providers(
         return list(result.scalars().all())
 
 
-async def get_provider_by_id(db: Database, provider_id: str) -> Optional[ProviderModel]:
-    """Get provider by ID"""
+async def get_provider_by_id(db: Database, provider_id: int) -> Optional[ProviderModel]:
+    """Get provider by ID (auto-increment integer)"""
     async with db.session() as session:
         stmt = select(ProviderModel).where(ProviderModel.id == provider_id)
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
 
+async def get_provider_by_key(
+    db: Database, provider_key: str
+) -> Optional[ProviderModel]:
+    """Get provider by provider_key (unique string identifier)"""
+    async with db.session() as session:
+        stmt = select(ProviderModel).where(ProviderModel.provider_key == provider_key)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
 async def create_provider(
     db: Database,
-    provider_id: str,
+    provider_key: str,
     provider_type: str,
     api_base: str,
     api_key: str,
@@ -549,7 +564,7 @@ async def create_provider(
     """Create a new provider"""
     async with db.session() as session:
         provider = ProviderModel(
-            id=provider_id,
+            provider_key=provider_key,
             provider_type=provider_type,
             api_base=api_base,
             api_key=api_key,
@@ -563,9 +578,9 @@ async def create_provider(
 
 
 async def update_provider(
-    db: Database, provider_id: str, **kwargs
+    db: Database, provider_id: int, **kwargs
 ) -> Optional[ProviderModel]:
-    """Update provider by ID"""
+    """Update provider by ID (auto-increment integer)"""
     async with db.session() as session:
         stmt = (
             update(ProviderModel)
@@ -577,87 +592,89 @@ async def update_provider(
         return result.scalar_one_or_none()
 
 
-async def delete_provider(db: Database, provider_id: str) -> bool:
-    """Delete provider by ID"""
+async def delete_provider(db: Database, provider_id: int) -> bool:
+    """Delete provider by ID (auto-increment integer)"""
     async with db.session() as session:
         stmt = delete(ProviderModel).where(ProviderModel.id == provider_id)
         result = await session.execute(stmt)
         return result.rowcount > 0
 
 
-async def list_master_keys(
+async def list_credentials(
     db: Database, enabled_only: bool = False
-) -> list[MasterKeyModel]:
-    """List all master keys"""
+) -> list[CredentialModel]:
+    """List all credentials"""
     async with db.session() as session:
-        stmt = select(MasterKeyModel)
+        stmt = select(CredentialModel)
         if enabled_only:
-            stmt = stmt.where(MasterKeyModel.is_enabled == True)
+            stmt = stmt.where(CredentialModel.is_enabled == True)
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
 
-async def get_master_key_by_id(db: Database, key_id: str) -> Optional[MasterKeyModel]:
-    """Get master key by ID"""
+async def get_credential_by_id(
+    db: Database, credential_id: int
+) -> Optional[CredentialModel]:
+    """Get credential by ID (auto-increment integer)"""
     async with db.session() as session:
-        stmt = select(MasterKeyModel).where(MasterKeyModel.id == key_id)
+        stmt = select(CredentialModel).where(CredentialModel.id == credential_id)
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
 
-async def get_master_key_by_hash(db: Database, key: str) -> Optional[MasterKeyModel]:
-    """Get master key by key hash (for authentication)"""
-    key_hash = hash_key(key)
+async def get_credential_by_key(db: Database, key: str) -> Optional[CredentialModel]:
+    """Get credential by credential_key (for authentication)"""
+    credential_key = hash_key(key)
     async with db.session() as session:
-        stmt = select(MasterKeyModel).where(MasterKeyModel.key_hash == key_hash)
+        stmt = select(CredentialModel).where(
+            CredentialModel.credential_key == credential_key
+        )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
 
-async def create_master_key(
+async def create_credential(
     db: Database,
-    key_id: str,
     key: str,
     name: str,
     allowed_models: Optional[list] = None,
     rate_limit: Optional[int] = None,
-) -> MasterKeyModel:
-    """Create a new master key"""
+) -> CredentialModel:
+    """Create a new credential"""
     async with db.session() as session:
-        master_key = MasterKeyModel(
-            id=key_id,
-            key_hash=hash_key(key),
+        credential = CredentialModel(
+            credential_key=hash_key(key),
             name=name,
             allowed_models=allowed_models or [],
             rate_limit=rate_limit,
             is_enabled=True,
         )
-        session.add(master_key)
+        session.add(credential)
         await session.flush()
-        await session.refresh(master_key)
-        return master_key
+        await session.refresh(credential)
+        return credential
 
 
-async def update_master_key(
-    db: Database, key_id: str, **kwargs
-) -> Optional[MasterKeyModel]:
-    """Update master key by ID"""
+async def update_credential(
+    db: Database, credential_id: int, **kwargs
+) -> Optional[CredentialModel]:
+    """Update credential by ID (auto-increment integer)"""
     if "key" in kwargs:
-        kwargs["key_hash"] = hash_key(kwargs.pop("key"))
+        kwargs["credential_key"] = hash_key(kwargs.pop("key"))
     async with db.session() as session:
         stmt = (
-            update(MasterKeyModel)
-            .where(MasterKeyModel.id == key_id)
+            update(CredentialModel)
+            .where(CredentialModel.id == credential_id)
             .values(**kwargs)
-            .returning(MasterKeyModel)
+            .returning(CredentialModel)
         )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
 
-async def delete_master_key(db: Database, key_id: str) -> bool:
-    """Delete master key by ID"""
+async def delete_credential(db: Database, credential_id: int) -> bool:
+    """Delete credential by ID (auto-increment integer)"""
     async with db.session() as session:
-        stmt = delete(MasterKeyModel).where(MasterKeyModel.id == key_id)
+        stmt = delete(CredentialModel).where(CredentialModel.id == credential_id)
         result = await session.execute(stmt)
         return result.rowcount > 0

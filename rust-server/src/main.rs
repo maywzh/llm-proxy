@@ -96,11 +96,11 @@ async fn async_main() -> Result<()> {
 
     // Load configuration from database (empty config if database is empty)
     let runtime_config = if db.is_empty().await? {
-        tracing::info!("Database is empty. Server will start with no providers/master_keys.");
-        tracing::info!("Use Admin API to add providers and master keys.");
+        tracing::info!("Database is empty. Server will start with no providers/credentials.");
+        tracing::info!("Use Admin API to add providers and credentials.");
         RuntimeConfig {
             providers: vec![],
-            master_keys: vec![],
+            credentials: vec![],
             version: 0,
             loaded_at: chrono::Utc::now(),
         }
@@ -108,9 +108,9 @@ async fn async_main() -> Result<()> {
         tracing::info!("Loading configuration from database...");
         let config = RuntimeConfig::load_from_db(&db).await?;
         tracing::info!(
-            "Configuration loaded: {} providers, {} master keys, version {}",
+            "Configuration loaded: {} providers, {} credentials, version {}",
             config.providers.len(),
-            config.master_keys.len(),
+            config.credentials.len(),
             config.version
         );
         config
@@ -172,18 +172,18 @@ fn build_router(
     provider_service.log_providers();
 
     let rate_limiter = Arc::new(RateLimiter::new());
-    // Register rate limits from database master keys
-    for key in &config.master_keys {
-        if key.is_enabled {
-            if let Some(rps) = key.rate_limit {
+    // Register rate limits from database credentials
+    for credential in &config.credentials {
+        if credential.is_enabled {
+            if let Some(rps) = credential.rate_limit {
                 let rate_config = llm_proxy_rust::core::config::RateLimitConfig {
                     requests_per_second: rps as u32,
                     burst_size: (rps as u32).saturating_mul(2),
                 };
-                rate_limiter.register_key(&key.key_hash, &rate_config);
+                rate_limiter.register_key(&credential.credential_key, &rate_config);
                 tracing::info!(
-                    "Registered rate limit for key '{}': {} req/s",
-                    key.name,
+                    "Registered rate limit for credential '{}': {} req/s",
+                    credential.name,
                     rps
                 );
             }
@@ -221,13 +221,13 @@ fn convert_runtime_to_app_config(
     runtime: &RuntimeConfig,
     base: &AppConfig,
 ) -> AppConfig {
-    use llm_proxy_rust::core::config::{MasterKeyConfig, ProviderConfig};
+    use llm_proxy_rust::core::config::{CredentialConfig, ProviderConfig};
 
     let providers: Vec<ProviderConfig> = runtime
         .providers
         .iter()
         .map(|p| ProviderConfig {
-            name: p.id.clone(),
+            name: p.provider_key.clone(),
             api_base: p.api_base.clone(),
             api_key: p.api_key.clone(),
             weight: 1, // Default weight
@@ -235,21 +235,21 @@ fn convert_runtime_to_app_config(
         })
         .collect();
 
-    let master_keys: Vec<MasterKeyConfig> = runtime
-        .master_keys
+    let credentials: Vec<CredentialConfig> = runtime
+        .credentials
         .iter()
-        .map(|k| MasterKeyConfig {
-            key: k.key_hash.clone(), // Use hash for comparison
-            name: k.name.clone(),
+        .map(|c| CredentialConfig {
+            credential_key: c.credential_key.clone(), // Use hash for comparison
+            name: c.name.clone(),
             description: None,
-            rate_limit: k.rate_limit.map(|rps| {
+            rate_limit: c.rate_limit.map(|rps| {
                 llm_proxy_rust::core::config::RateLimitConfig {
                     requests_per_second: rps as u32,
                     burst_size: (rps as u32).saturating_mul(2),
                 }
             }),
-            enabled: k.is_enabled,
-            allowed_models: k.allowed_models.clone(),
+            enabled: c.is_enabled,
+            allowed_models: c.allowed_models.clone(),
         })
         .collect();
 
@@ -259,7 +259,7 @@ fn convert_runtime_to_app_config(
         verify_ssl: base.verify_ssl,
         request_timeout_secs: base.request_timeout_secs,
         ttft_timeout_secs: base.ttft_timeout_secs,
-        master_keys,
+        credentials,
         provider_suffix: base.provider_suffix.clone(),
     }
 }

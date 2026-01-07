@@ -57,13 +57,13 @@ async def lifespan(app: FastAPI):
         f"Configuration loaded from database, version={versioned_config.version}"
     )
     logger.info(
-        f"Loaded {len(versioned_config.providers)} providers and {len(versioned_config.master_keys)} master keys"
+        f"Loaded {len(versioned_config.providers)} providers and {len(versioned_config.credentials)} credentials"
     )
 
     if not versioned_config.providers:
         logger.warning("No providers configured. Add providers via Admin API.")
-    if not versioned_config.master_keys:
-        logger.warning("No master keys configured. API authentication is disabled.")
+    if not versioned_config.credentials:
+        logger.warning("No credentials configured. API authentication is disabled.")
 
     _log_provider_info()
 
@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
 
 
 def _log_provider_info() -> None:
-    """Log provider and master key information"""
+    """Log provider and credential information"""
     init_rate_limiter()
 
     provider_svc = get_provider_service()
@@ -91,19 +91,21 @@ def _log_provider_info() -> None:
         logger.info(f"  - {provider.name}: weight={weight} ({probability:.1f}%)")
 
     config = get_config()
-    if config.master_keys:
-        logger.info(f"Master keys: {len(config.master_keys)} configured")
-        for key_config in config.master_keys:
-            if key_config.rate_limit:
+    if config.credentials:
+        logger.info(f"Credentials: {len(config.credentials)} configured")
+        for credential_config in config.credentials:
+            if credential_config.rate_limit:
                 logger.info(
-                    f"  - Key ending in ...{key_config.key[-8:]}: "
-                    f"{key_config.rate_limit.requests_per_second} req/s, "
-                    f"burst={key_config.rate_limit.burst_size}"
+                    f"  - Key ending in ...{credential_config.credential_key[-8:]}: "
+                    f"{credential_config.rate_limit.requests_per_second} req/s, "
+                    f"burst={credential_config.rate_limit.burst_size}"
                 )
             else:
-                logger.info(f"  - Key ending in ...{key_config.key[-8:]}: unlimited")
+                logger.info(
+                    f"  - Key ending in ...{credential_config.credential_key[-8:]}: unlimited"
+                )
     else:
-        logger.info("Master API key: Disabled")
+        logger.info("Credential API key: Disabled")
 
     logger.info("Metrics endpoint: /metrics")
 
@@ -128,7 +130,7 @@ def create_app() -> FastAPI:
                 "description": "OpenAI-compatible model listing endpoints",
             },
             {"name": "providers", "description": "Provider management endpoints"},
-            {"name": "master-keys", "description": "Master key management endpoints"},
+            {"name": "credentials", "description": "Credential management endpoints"},
             {"name": "config", "description": "Configuration management endpoints"},
             {"name": "health", "description": "Health check endpoints"},
         ],
@@ -153,8 +155,8 @@ def create_app() -> FastAPI:
                 },
                 {"name": "providers", "description": "Provider management endpoints"},
                 {
-                    "name": "master-keys",
-                    "description": "Master key management endpoints",
+                    "name": "credentials",
+                    "description": "Credential management endpoints",
                 },
                 {"name": "config", "description": "Configuration management endpoints"},
                 {"name": "health", "description": "Health check endpoints"},
@@ -204,7 +206,7 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "providers_count": len(config.providers),
-            "master_keys_count": len(config.master_keys),
+            "credentials_count": len(config.credentials),
         }
 
     return app

@@ -15,14 +15,15 @@ from app.core.database import (
     get_dynamic_config,
     list_providers,
     get_provider_by_id,
+    get_provider_by_key,
     create_provider,
     update_provider,
     delete_provider,
-    list_master_keys,
-    get_master_key_by_id,
-    create_master_key,
-    update_master_key,
-    delete_master_key,
+    list_credentials,
+    get_credential_by_id,
+    create_credential,
+    update_credential,
+    delete_credential,
     hash_key,
     create_key_preview,
 )
@@ -85,7 +86,7 @@ class ProviderCreate(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "id": "openai-primary",
+                "provider_key": "openai-primary",
                 "provider_type": "openai",
                 "api_base": "https://api.openai.com/v1",
                 "api_key": "sk-xxx",
@@ -94,7 +95,9 @@ class ProviderCreate(BaseModel):
         }
     )
 
-    id: str = Field(..., description="Unique provider ID", examples=["openai-primary"])
+    provider_key: str = Field(
+        ..., description="Unique provider key identifier", examples=["openai-primary"]
+    )
     provider_type: str = Field(
         default="openai",
         description="Provider type (openai, azure, etc.)",
@@ -142,7 +145,8 @@ class ProviderResponse(BaseModel):
         from_attributes=True,
         json_schema_extra={
             "example": {
-                "id": "openai-primary",
+                "id": 1,
+                "provider_key": "openai-primary",
                 "provider_type": "openai",
                 "api_base": "https://api.openai.com/v1",
                 "model_mapping": {"gpt-4": "gpt-4-turbo"},
@@ -151,7 +155,8 @@ class ProviderResponse(BaseModel):
         },
     )
 
-    id: str = Field(..., description="Unique provider identifier")
+    id: int = Field(..., description="Auto-increment provider ID")
+    provider_key: str = Field(..., description="Unique provider key identifier")
     provider_type: str = Field(..., description="Provider type (openai, azure, etc.)")
     api_base: str = Field(..., description="API base URL")
     model_mapping: dict[str, str] = Field(..., description="Model name mapping")
@@ -167,7 +172,8 @@ class ProviderListResponse(BaseModel):
                 "version": 1,
                 "providers": [
                     {
-                        "id": "openai-primary",
+                        "id": 1,
+                        "provider_key": "openai-primary",
                         "provider_type": "openai",
                         "api_base": "https://api.openai.com/v1",
                         "model_mapping": {},
@@ -189,13 +195,12 @@ class ProviderCreateResponse(BaseModel):
     provider: ProviderResponse = Field(..., description="Created provider")
 
 
-class MasterKeyCreate(BaseModel):
-    """Master key creation request"""
+class CredentialCreate(BaseModel):
+    """Credential creation request"""
 
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "id": "key-1",
                 "key": "sk-my-secret-key",
                 "name": "Production Key",
                 "allowed_models": ["gpt-4", "gpt-3.5-turbo"],
@@ -204,7 +209,6 @@ class MasterKeyCreate(BaseModel):
         }
     )
 
-    id: str = Field(..., description="Unique key ID", examples=["key-1"])
     key: str = Field(
         ..., description="The actual API key", examples=["sk-my-secret-key"]
     )
@@ -221,8 +225,8 @@ class MasterKeyCreate(BaseModel):
     )
 
 
-class MasterKeyUpdate(BaseModel):
-    """Master key update request"""
+class CredentialUpdate(BaseModel):
+    """Credential update request"""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -241,17 +245,19 @@ class MasterKeyUpdate(BaseModel):
     rate_limit: Optional[int] = Field(
         None, description="Rate limit (requests per second)"
     )
-    is_enabled: Optional[bool] = Field(None, description="Whether the key is enabled")
+    is_enabled: Optional[bool] = Field(
+        None, description="Whether the credential is enabled"
+    )
 
 
-class MasterKeyResponse(BaseModel):
-    """Master key response model"""
+class CredentialResponse(BaseModel):
+    """Credential response model"""
 
     model_config = ConfigDict(
         from_attributes=True,
         json_schema_extra={
             "example": {
-                "id": "key-1",
+                "id": 1,
                 "name": "Production Key",
                 "key_preview": "sk-***key",
                 "allowed_models": ["gpt-4"],
@@ -261,28 +267,30 @@ class MasterKeyResponse(BaseModel):
         },
     )
 
-    id: str = Field(..., description="Unique key identifier")
+    id: int = Field(..., description="Auto-increment credential ID")
     name: str = Field(..., description="Human-readable name")
     key_preview: str = Field(..., description="Masked preview of the key")
     allowed_models: list[str] = Field(..., description="Allowed models")
     rate_limit: Optional[int] = Field(
         None, description="Rate limit (requests per second)"
     )
-    is_enabled: bool = Field(..., description="Whether the key is enabled")
+    is_enabled: bool = Field(..., description="Whether the credential is enabled")
 
 
-class MasterKeyListResponse(BaseModel):
-    """Master key list response"""
-
-    version: int = Field(..., description="Current configuration version")
-    keys: list[MasterKeyResponse] = Field(..., description="List of master keys")
-
-
-class MasterKeyCreateResponse(BaseModel):
-    """Master key creation response"""
+class CredentialListResponse(BaseModel):
+    """Credential list response"""
 
     version: int = Field(..., description="Current configuration version")
-    key: MasterKeyResponse = Field(..., description="Created master key")
+    credentials: list[CredentialResponse] = Field(
+        ..., description="List of credentials"
+    )
+
+
+class CredentialCreateResponse(BaseModel):
+    """Credential creation response"""
+
+    version: int = Field(..., description="Current configuration version")
+    credential: CredentialResponse = Field(..., description="Created credential")
 
 
 class ConfigVersionResponse(BaseModel):
@@ -307,7 +315,7 @@ class ConfigReloadResponse(BaseModel):
                 "version": 2,
                 "timestamp": "2024-01-01T00:00:00Z",
                 "providers_count": 3,
-                "master_keys_count": 2,
+                "credentials_count": 2,
             }
         }
     )
@@ -315,7 +323,7 @@ class ConfigReloadResponse(BaseModel):
     version: int = Field(..., description="New configuration version")
     timestamp: str = Field(..., description="Reload timestamp in ISO format")
     providers_count: int = Field(..., description="Number of active providers")
-    master_keys_count: int = Field(..., description="Number of active master keys")
+    credentials_count: int = Field(..., description="Number of active credentials")
 
 
 class UpdateResponse(BaseModel):
@@ -420,6 +428,7 @@ async def api_list_providers(
         providers=[
             ProviderResponse(
                 id=p.id,
+                provider_key=p.provider_key,
                 provider_type=p.provider_type,
                 api_base=p.api_base,
                 model_mapping=p.get_model_mapping(),
@@ -459,16 +468,16 @@ async def api_create_provider(
     config: DynamicConfig = Depends(get_config),
 ) -> ProviderCreateResponse:
     """Create a new provider"""
-    existing = await get_provider_by_id(db, provider.id)
+    existing = await get_provider_by_key(db, provider.provider_key)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Provider '{provider.id}' already exists",
+            detail=f"Provider with key '{provider.provider_key}' already exists",
         )
 
     new_provider = await create_provider(
         db,
-        provider_id=provider.id,
+        provider_key=provider.provider_key,
         provider_type=provider.provider_type,
         api_base=provider.api_base,
         api_key=provider.api_key,
@@ -476,12 +485,13 @@ async def api_create_provider(
     )
 
     await config.reload()
-    logger.info(f"Provider created: {provider.id}")
+    logger.info(f"Provider created: {new_provider.id} ({provider.provider_key})")
 
     return ProviderCreateResponse(
         version=config.version,
         provider=ProviderResponse(
             id=new_provider.id,
+            provider_key=new_provider.provider_key,
             provider_type=new_provider.provider_type,
             api_base=new_provider.api_base,
             model_mapping=new_provider.get_model_mapping(),
@@ -512,7 +522,7 @@ async def api_create_provider(
     },
 )
 async def api_get_provider(
-    provider_id: str,
+    provider_id: int,
     _: None = Depends(verify_admin_key),
     db: Database = Depends(get_db),
 ) -> ProviderResponse:
@@ -521,11 +531,12 @@ async def api_get_provider(
     if not provider:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Provider '{provider_id}' not found",
+            detail=f"Provider with ID {provider_id} not found",
         )
 
     return ProviderResponse(
         id=provider.id,
+        provider_key=provider.provider_key,
         provider_type=provider.provider_type,
         api_base=provider.api_base,
         model_mapping=provider.get_model_mapping(),
@@ -559,7 +570,7 @@ async def api_get_provider(
     },
 )
 async def api_update_provider(
-    provider_id: str,
+    provider_id: int,
     update_data: ProviderUpdate,
     _: None = Depends(verify_admin_key),
     db: Database = Depends(get_db),
@@ -577,7 +588,7 @@ async def api_update_provider(
     if not updated:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Provider '{provider_id}' not found",
+            detail=f"Provider with ID {provider_id} not found",
         )
 
     await config.reload()
@@ -608,7 +619,7 @@ async def api_update_provider(
     },
 )
 async def api_delete_provider(
-    provider_id: str,
+    provider_id: int,
     _: None = Depends(verify_admin_key),
     db: Database = Depends(get_db),
     config: DynamicConfig = Depends(get_config),
@@ -618,7 +629,7 @@ async def api_delete_provider(
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Provider '{provider_id}' not found",
+            detail=f"Provider with ID {provider_id} not found",
         )
 
     await config.reload()
@@ -626,11 +637,11 @@ async def api_delete_provider(
 
 
 @router.get(
-    "/master-keys",
-    response_model=MasterKeyListResponse,
-    summary="List all master keys",
-    description="Get a list of all configured master keys (actual keys are hidden)",
-    tags=["master-keys"],
+    "/credentials",
+    response_model=CredentialListResponse,
+    summary="List all credentials",
+    description="Get a list of all configured credentials (actual keys are hidden)",
+    tags=["credentials"],
     responses={
         401: {
             "model": ErrorResponse,
@@ -642,44 +653,40 @@ async def api_delete_provider(
         },
     },
 )
-async def api_list_master_keys(
+async def api_list_credentials(
     _: None = Depends(verify_admin_key),
     db: Database = Depends(get_db),
     config: DynamicConfig = Depends(get_config),
-) -> MasterKeyListResponse:
-    """List all master keys (keys are hidden)"""
-    keys = await list_master_keys(db)
-    return MasterKeyListResponse(
+) -> CredentialListResponse:
+    """List all credentials (keys are hidden)"""
+    creds = await list_credentials(db)
+    return CredentialListResponse(
         version=config.version,
-        keys=[
-            MasterKeyResponse(
-                id=k.id,
-                name=k.name,
-                key_preview=create_key_preview(k.key_hash[:10]),
-                allowed_models=k.allowed_models or [],
-                rate_limit=k.rate_limit,
-                is_enabled=k.is_enabled,
+        credentials=[
+            CredentialResponse(
+                id=c.id,
+                name=c.name,
+                key_preview=create_key_preview(c.credential_key[:10]),
+                allowed_models=c.allowed_models or [],
+                rate_limit=c.rate_limit,
+                is_enabled=c.is_enabled,
             )
-            for k in keys
+            for c in creds
         ],
     )
 
 
 @router.post(
-    "/master-keys",
-    response_model=MasterKeyCreateResponse,
+    "/credentials",
+    response_model=CredentialCreateResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a new master key",
-    description="Create a new master API key for authentication",
-    tags=["master-keys"],
+    summary="Create a new credential",
+    description="Create a new credential for API authentication",
+    tags=["credentials"],
     responses={
         401: {
             "model": ErrorResponse,
             "description": "Unauthorized - Invalid or missing admin key",
-        },
-        409: {
-            "model": ErrorResponse,
-            "description": "Conflict - Master key already exists",
         },
         503: {
             "model": ErrorResponse,
@@ -687,51 +694,43 @@ async def api_list_master_keys(
         },
     },
 )
-async def api_create_master_key(
-    key_data: MasterKeyCreate,
+async def api_create_credential(
+    cred_data: CredentialCreate,
     _: None = Depends(verify_admin_key),
     db: Database = Depends(get_db),
     config: DynamicConfig = Depends(get_config),
-) -> MasterKeyCreateResponse:
-    """Create a new master key"""
-    existing = await get_master_key_by_id(db, key_data.id)
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Master key '{key_data.id}' already exists",
-        )
-
-    new_key = await create_master_key(
+) -> CredentialCreateResponse:
+    """Create a new credential"""
+    new_cred = await create_credential(
         db,
-        key_id=key_data.id,
-        key=key_data.key,
-        name=key_data.name,
-        allowed_models=key_data.allowed_models,
-        rate_limit=key_data.rate_limit,
+        key=cred_data.key,
+        name=cred_data.name,
+        allowed_models=cred_data.allowed_models,
+        rate_limit=cred_data.rate_limit,
     )
 
     await config.reload()
-    logger.info(f"Master key created: {key_data.id}")
+    logger.info(f"Credential created: {new_cred.id}")
 
-    return MasterKeyCreateResponse(
+    return CredentialCreateResponse(
         version=config.version,
-        key=MasterKeyResponse(
-            id=new_key.id,
-            name=new_key.name,
-            key_preview=create_key_preview(key_data.key),
-            allowed_models=new_key.allowed_models or [],
-            rate_limit=new_key.rate_limit,
-            is_enabled=new_key.is_enabled,
+        credential=CredentialResponse(
+            id=new_cred.id,
+            name=new_cred.name,
+            key_preview=create_key_preview(cred_data.key),
+            allowed_models=new_cred.allowed_models or [],
+            rate_limit=new_cred.rate_limit,
+            is_enabled=new_cred.is_enabled,
         ),
     )
 
 
 @router.get(
-    "/master-keys/{key_id}",
-    response_model=MasterKeyResponse,
-    summary="Get a master key by ID",
-    description="Retrieve a specific master key configuration by its unique identifier",
-    tags=["master-keys"],
+    "/credentials/{credential_id}",
+    response_model=CredentialResponse,
+    summary="Get a credential by ID",
+    description="Retrieve a specific credential configuration by its unique identifier",
+    tags=["credentials"],
     responses={
         401: {
             "model": ErrorResponse,
@@ -739,7 +738,7 @@ async def api_create_master_key(
         },
         404: {
             "model": ErrorResponse,
-            "description": "Not found - Master key does not exist",
+            "description": "Not found - Credential does not exist",
         },
         503: {
             "model": ErrorResponse,
@@ -747,35 +746,35 @@ async def api_create_master_key(
         },
     },
 )
-async def api_get_master_key(
-    key_id: str,
+async def api_get_credential(
+    credential_id: int,
     _: None = Depends(verify_admin_key),
     db: Database = Depends(get_db),
-) -> MasterKeyResponse:
-    """Get a master key by ID"""
-    key = await get_master_key_by_id(db, key_id)
-    if not key:
+) -> CredentialResponse:
+    """Get a credential by ID"""
+    cred = await get_credential_by_id(db, credential_id)
+    if not cred:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Master key '{key_id}' not found",
+            detail=f"Credential with ID {credential_id} not found",
         )
 
-    return MasterKeyResponse(
-        id=key.id,
-        name=key.name,
-        key_preview=create_key_preview(key.key_hash[:10]),
-        allowed_models=key.allowed_models or [],
-        rate_limit=key.rate_limit,
-        is_enabled=key.is_enabled,
+    return CredentialResponse(
+        id=cred.id,
+        name=cred.name,
+        key_preview=create_key_preview(cred.credential_key[:10]),
+        allowed_models=cred.allowed_models or [],
+        rate_limit=cred.rate_limit,
+        is_enabled=cred.is_enabled,
     )
 
 
 @router.put(
-    "/master-keys/{key_id}",
+    "/credentials/{credential_id}",
     response_model=UpdateResponse,
-    summary="Update a master key",
-    description="Update an existing master key configuration",
-    tags=["master-keys"],
+    summary="Update a credential",
+    description="Update an existing credential configuration",
+    tags=["credentials"],
     responses={
         400: {
             "model": ErrorResponse,
@@ -787,7 +786,7 @@ async def api_get_master_key(
         },
         404: {
             "model": ErrorResponse,
-            "description": "Not found - Master key does not exist",
+            "description": "Not found - Credential does not exist",
         },
         503: {
             "model": ErrorResponse,
@@ -795,14 +794,14 @@ async def api_get_master_key(
         },
     },
 )
-async def api_update_master_key(
-    key_id: str,
-    update_data: MasterKeyUpdate,
+async def api_update_credential(
+    credential_id: int,
+    update_data: CredentialUpdate,
     _: None = Depends(verify_admin_key),
     db: Database = Depends(get_db),
     config: DynamicConfig = Depends(get_config),
 ) -> UpdateResponse:
-    """Update a master key"""
+    """Update a credential"""
     update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
     if not update_dict:
         raise HTTPException(
@@ -810,25 +809,25 @@ async def api_update_master_key(
             detail="No fields to update",
         )
 
-    updated = await update_master_key(db, key_id, **update_dict)
+    updated = await update_credential(db, credential_id, **update_dict)
     if not updated:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Master key '{key_id}' not found",
+            detail=f"Credential with ID {credential_id} not found",
         )
 
     await config.reload()
-    logger.info(f"Master key updated: {key_id}")
+    logger.info(f"Credential updated: {credential_id}")
 
     return UpdateResponse(version=config.version, status="updated")
 
 
 @router.delete(
-    "/master-keys/{key_id}",
+    "/credentials/{credential_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a master key",
-    description="Delete an existing master key",
-    tags=["master-keys"],
+    summary="Delete a credential",
+    description="Delete an existing credential",
+    tags=["credentials"],
     responses={
         401: {
             "model": ErrorResponse,
@@ -836,7 +835,7 @@ async def api_update_master_key(
         },
         404: {
             "model": ErrorResponse,
-            "description": "Not found - Master key does not exist",
+            "description": "Not found - Credential does not exist",
         },
         503: {
             "model": ErrorResponse,
@@ -844,22 +843,22 @@ async def api_update_master_key(
         },
     },
 )
-async def api_delete_master_key(
-    key_id: str,
+async def api_delete_credential(
+    credential_id: int,
     _: None = Depends(verify_admin_key),
     db: Database = Depends(get_db),
     config: DynamicConfig = Depends(get_config),
 ) -> None:
-    """Delete a master key"""
-    deleted = await delete_master_key(db, key_id)
+    """Delete a credential"""
+    deleted = await delete_credential(db, credential_id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Master key '{key_id}' not found",
+            detail=f"Credential with ID {credential_id} not found",
         )
 
     await config.reload()
-    logger.info(f"Master key deleted: {key_id}")
+    logger.info(f"Credential deleted: {credential_id}")
 
 
 @router.get(
@@ -919,5 +918,5 @@ async def api_reload_config(
         version=versioned.version,
         timestamp=versioned.timestamp.isoformat(),
         providers_count=len(versioned.providers),
-        master_keys_count=len(versioned.master_keys),
+        credentials_count=len(versioned.credentials),
     )

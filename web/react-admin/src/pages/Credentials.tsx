@@ -1,18 +1,19 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { generateApiKey } from '../api/client';
-import type { MasterKey, MasterKeyFormData } from '../types';
+import type { Credential, CredentialFormData } from '../types';
 
-const MasterKeys: React.FC = () => {
+const Credentials: React.FC = () => {
   const { apiClient } = useAuth();
-  const [masterKeys, setMasterKeys] = useState<MasterKey[]>([]);
+  const [credentials, setCredentials] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [editingKey, setEditingKey] = useState<MasterKey | null>(null);
-  const [formData, setFormData] = useState<MasterKeyFormData>({
-    id: '',
+  const [editingCredential, setEditingCredential] = useState<Credential | null>(
+    null
+  );
+  const [formData, setFormData] = useState<CredentialFormData>({
     key: '',
     name: '',
     allowed_models: [],
@@ -21,30 +22,30 @@ const MasterKeys: React.FC = () => {
   });
   const [allowedModelsText, setAllowedModelsText] = useState('');
 
-  const loadMasterKeys = useCallback(async () => {
+  const loadCredentials = useCallback(async () => {
     if (!apiClient) return;
 
     setLoading(true);
     setError(null);
 
     try {
-      const response = await apiClient.listMasterKeys();
-      setMasterKeys(response.keys);
+      const response = await apiClient.listCredentials();
+      setCredentials(response.credentials);
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'Failed to load master keys'
+        err instanceof Error ? err.message : 'Failed to load credentials'
       );
     } finally {
       setLoading(false);
     }
   }, [apiClient]);
 
-  // Load master keys when apiClient becomes available
+  // Load credentials when apiClient becomes available
   useEffect(() => {
     if (apiClient) {
-      loadMasterKeys();
+      loadCredentials();
     }
-  }, [apiClient, loadMasterKeys]);
+  }, [apiClient, loadCredentials]);
 
   // Update allowed models text when form data changes
   useEffect(() => {
@@ -53,7 +54,6 @@ const MasterKeys: React.FC = () => {
 
   const resetForm = () => {
     setFormData({
-      id: '',
       key: '',
       name: '',
       allowed_models: [],
@@ -61,7 +61,7 @@ const MasterKeys: React.FC = () => {
       is_enabled: true,
     });
     setAllowedModelsText('');
-    setEditingKey(null);
+    setEditingCredential(null);
     setShowCreateForm(false);
   };
 
@@ -71,17 +71,16 @@ const MasterKeys: React.FC = () => {
     setFormData(prev => ({ ...prev, key: generateApiKey() }));
   };
 
-  const handleEdit = (key: MasterKey) => {
-    setEditingKey(key);
+  const handleEdit = (credential: Credential) => {
+    setEditingCredential(credential);
     setFormData({
-      id: key.id,
       key: '', // Don't populate for security
-      name: key.name,
-      allowed_models: key.allowed_models,
-      rate_limit: key.rate_limit,
-      is_enabled: key.is_enabled,
+      name: credential.name,
+      allowed_models: credential.allowed_models,
+      rate_limit: credential.rate_limit,
+      is_enabled: credential.is_enabled,
     });
-    setAllowedModelsText(key.allowed_models.join('\n'));
+    setAllowedModelsText(credential.allowed_models.join('\n'));
     setShowCreateForm(true);
   };
 
@@ -99,8 +98,8 @@ const MasterKeys: React.FC = () => {
     setError(null);
 
     try {
-      if (editingKey) {
-        // Update existing master key
+      if (editingCredential) {
+        // Update existing credential
         const updateData = {
           name: formData.name,
           allowed_models: allowedModels,
@@ -108,11 +107,10 @@ const MasterKeys: React.FC = () => {
           is_enabled: formData.is_enabled,
         };
 
-        await apiClient.updateMasterKey(editingKey.id, updateData);
+        await apiClient.updateCredential(editingCredential.id, updateData);
       } else {
-        // Create new master key
-        await apiClient.createMasterKey({
-          id: formData.id,
+        // Create new credential
+        await apiClient.createCredential({
           key: formData.key,
           name: formData.name,
           allowed_models: allowedModels,
@@ -121,59 +119,22 @@ const MasterKeys: React.FC = () => {
       }
 
       resetForm();
-      await loadMasterKeys();
+      await loadCredentials();
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'Failed to save master key'
+        err instanceof Error ? err.message : 'Failed to save credential'
       );
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDelete = async (key: MasterKey) => {
-    if (!apiClient) return;
-
-    if (!confirm(`Are you sure you want to delete master key "${key.name}"?`)) {
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      await apiClient.deleteMasterKey(key.id);
-      await loadMasterKeys();
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Failed to delete master key'
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleToggleStatus = async (key: MasterKey) => {
-    if (!apiClient) return;
-
-    try {
-      await apiClient.setMasterKeyStatus(key.id, !key.is_enabled);
-      await loadMasterKeys();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Failed to update master key status'
-      );
-    }
-  };
-
-  const handleRotate = async (key: MasterKey) => {
+  const handleDelete = async (credential: Credential) => {
     if (!apiClient) return;
 
     if (
       !confirm(
-        `Are you sure you want to rotate the key for "${key.name}"? The old key will be invalidated.`
+        `Are you sure you want to delete credential "${credential.name}"?`
       )
     ) {
       return;
@@ -183,25 +144,69 @@ const MasterKeys: React.FC = () => {
     setError(null);
 
     try {
-      const response = await apiClient.rotateMasterKey(key.id);
-      await loadMasterKeys();
-      alert(
-        `New key generated: ${response.new_key}\n\nSave this key securely. It will not be shown again.`
-      );
+      await apiClient.deleteCredential(credential.id);
+      await loadCredentials();
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'Failed to rotate master key'
+        err instanceof Error ? err.message : 'Failed to delete credential'
       );
     } finally {
       setLoading(false);
     }
   };
 
-  // Filtered master keys based on search
-  const filteredKeys = masterKeys.filter(
-    key =>
-      key.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      key.name.toLowerCase().includes(searchTerm.toLowerCase())
+  const handleToggleStatus = async (credential: Credential) => {
+    if (!apiClient) return;
+
+    try {
+      await apiClient.setCredentialStatus(
+        credential.id,
+        !credential.is_enabled
+      );
+      await loadCredentials();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to update credential status'
+      );
+    }
+  };
+
+  const handleRotate = async (credential: Credential) => {
+    if (!apiClient) return;
+
+    if (
+      !confirm(
+        `Are you sure you want to rotate the key for "${credential.name}"? The old key will be invalidated.`
+      )
+    ) {
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await apiClient.rotateCredential(credential.id);
+      await loadCredentials();
+      alert(
+        `New key generated: ${response.new_key}\n\nSave this key securely. It will not be shown again.`
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to rotate credential'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Filtered credentials based on search
+  const filteredCredentials = credentials.filter(
+    credential =>
+      credential.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      credential.key_preview.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -209,13 +214,13 @@ const MasterKeys: React.FC = () => {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Master Keys</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Credentials</h1>
           <p className="text-gray-600">
-            Manage API keys for client authentication
+            Manage API credentials for client authentication
           </p>
         </div>
         <button onClick={handleCreate} className="btn btn-primary">
-          + Add Master Key
+          + Add Credential
         </button>
       </div>
 
@@ -223,7 +228,7 @@ const MasterKeys: React.FC = () => {
       <div className="max-w-md">
         <input
           type="text"
-          placeholder="Search master keys..."
+          placeholder="Search credentials..."
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
           className="input"
@@ -276,32 +281,11 @@ const MasterKeys: React.FC = () => {
       {showCreateForm && (
         <div className="card">
           <h2 className="text-lg font-semibold mb-4">
-            {editingKey ? 'Edit Master Key' : 'Create New Master Key'}
+            {editingCredential ? 'Edit Credential' : 'Create New Credential'}
           </h2>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label
-                  htmlFor="id"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Key ID
-                </label>
-                <input
-                  id="id"
-                  type="text"
-                  value={formData.id}
-                  onChange={e =>
-                    setFormData(prev => ({ ...prev, id: e.target.value }))
-                  }
-                  disabled={!!editingKey}
-                  className="input"
-                  placeholder="e.g., key-1"
-                  required
-                />
-              </div>
-
               <div>
                 <label
                   htmlFor="name"
@@ -317,13 +301,38 @@ const MasterKeys: React.FC = () => {
                     setFormData(prev => ({ ...prev, name: e.target.value }))
                   }
                   className="input"
-                  placeholder="e.g., Production Key"
+                  placeholder="e.g., Production Credential"
                   required
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="rate_limit"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Rate Limit (requests per second)
+                </label>
+                <input
+                  id="rate_limit"
+                  type="number"
+                  value={formData.rate_limit || ''}
+                  onChange={e =>
+                    setFormData(prev => ({
+                      ...prev,
+                      rate_limit: e.target.value
+                        ? parseInt(e.target.value)
+                        : null,
+                    }))
+                  }
+                  className="input"
+                  placeholder="100"
+                  min="1"
                 />
               </div>
             </div>
 
-            {!editingKey && (
+            {!editingCredential && (
               <div>
                 <label
                   htmlFor="key"
@@ -376,31 +385,6 @@ const MasterKeys: React.FC = () => {
               </p>
             </div>
 
-            <div>
-              <label
-                htmlFor="rate_limit"
-                className="block text-sm font-medium text-gray-700"
-              >
-                Rate Limit (requests per second)
-              </label>
-              <input
-                id="rate_limit"
-                type="number"
-                value={formData.rate_limit || ''}
-                onChange={e =>
-                  setFormData(prev => ({
-                    ...prev,
-                    rate_limit: e.target.value
-                      ? parseInt(e.target.value)
-                      : null,
-                  }))
-                }
-                className="input"
-                placeholder="100"
-                min="1"
-              />
-            </div>
-
             <div className="flex items-center">
               <input
                 id="is_enabled"
@@ -418,7 +402,7 @@ const MasterKeys: React.FC = () => {
                 htmlFor="is_enabled"
                 className="ml-2 block text-sm text-gray-900"
               >
-                Enable this master key
+                Enable this credential
               </label>
             </div>
 
@@ -457,18 +441,18 @@ const MasterKeys: React.FC = () => {
                     ></path>
                   </svg>
                 )}
-                {editingKey ? 'Update' : 'Create'} Master Key
+                {editingCredential ? 'Update' : 'Create'} Credential
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* Master Keys List */}
+      {/* Credentials List */}
       <div className="card">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg font-semibold">
-            Master Keys ({filteredKeys.length})
+            Credentials ({filteredCredentials.length})
           </h2>
           {loading && (
             <div className="flex items-center text-gray-500">
@@ -497,11 +481,11 @@ const MasterKeys: React.FC = () => {
           )}
         </div>
 
-        {filteredKeys.length === 0 ? (
+        {filteredCredentials.length === 0 ? (
           <div className="text-center py-8 text-gray-500">
             {searchTerm
-              ? 'No master keys match your search.'
-              : 'No master keys configured yet.'}
+              ? 'No credentials match your search.'
+              : 'No credentials configured yet.'}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -529,63 +513,67 @@ const MasterKeys: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {filteredKeys.map(key => (
-                  <tr key={key.id}>
+                {filteredCredentials.map(credential => (
+                  <tr key={credential.id}>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-gray-900">
-                        {key.name}
+                        {credential.name}
                       </div>
-                      <div className="text-sm text-gray-500">{key.id}</div>
+                      <div className="text-xs text-gray-500">
+                        ID: {credential.id}
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <code className="text-sm bg-gray-100 px-2 py-1 rounded">
-                        {key.key_preview}
+                        {credential.key_preview}
                       </code>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-500">
-                        {key.allowed_models.length === 0
+                        {credential.allowed_models.length === 0
                           ? 'All models'
-                          : `${key.allowed_models.length} models`}
+                          : `${credential.allowed_models.length} models`}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-500">
-                        {key.rate_limit ? `${key.rate_limit}/s` : 'No limit'}
+                        {credential.rate_limit
+                          ? `${credential.rate_limit}/s`
+                          : 'No limit'}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <button
-                        onClick={() => handleToggleStatus(key)}
+                        onClick={() => handleToggleStatus(credential)}
                         className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium transition-colors ${
-                          key.is_enabled
+                          credential.is_enabled
                             ? 'bg-green-100 text-green-800 hover:bg-green-200'
                             : 'bg-red-100 text-red-800 hover:bg-red-200'
                         }`}
                       >
-                        {key.is_enabled ? 'Enabled' : 'Disabled'}
+                        {credential.is_enabled ? 'Enabled' : 'Disabled'}
                       </button>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex justify-end space-x-2">
                         <button
-                          onClick={() => handleEdit(key)}
+                          onClick={() => handleEdit(credential)}
                           className="text-blue-600 hover:text-blue-900"
-                          title="Edit master key"
+                          title="Edit credential"
                         >
                           ✏️
                         </button>
                         <button
-                          onClick={() => handleRotate(key)}
+                          onClick={() => handleRotate(credential)}
                           className="text-yellow-600 hover:text-yellow-900"
                           title="Rotate key"
                         >
                           🔄
                         </button>
                         <button
-                          onClick={() => handleDelete(key)}
+                          onClick={() => handleDelete(credential)}
                           className="text-red-600 hover:text-red-900"
-                          title="Delete master key"
+                          title="Delete credential"
                         >
                           🗑️
                         </button>
@@ -602,4 +590,4 @@ const MasterKeys: React.FC = () => {
   );
 };
 
-export default MasterKeys;
+export default Credentials;

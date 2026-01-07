@@ -15,25 +15,27 @@ class ProviderConfig(BaseModel):
 
 
 class RateLimitConfig(BaseModel):
-    """Rate limiting configuration for a master key"""
+    """Rate limiting configuration for a credential"""
 
     requests_per_second: int = Field(gt=0, description="Maximum requests per second")
     burst_size: int = Field(default=10, gt=0, description="Maximum burst size")
 
 
-class MasterKeyConfig(BaseModel):
-    """Master API key configuration with optional rate limiting"""
+class CredentialConfig(BaseModel):
+    """Credential configuration with optional rate limiting"""
 
-    key: str = Field(description="The actual API key")
+    credential_key: str = Field(description="The actual API credential key")
     name: Optional[str] = Field(
-        default=None, description="Human-readable name for the key"
+        default=None, description="Human-readable name for the credential"
     )
     description: Optional[str] = Field(default=None, description="Optional description")
     rate_limit: Optional[RateLimitConfig] = Field(
         default=None,
         description="Optional rate limiting configuration. If None, no rate limiting is applied.",
     )
-    enabled: bool = Field(default=True, description="Whether this key is enabled")
+    enabled: bool = Field(
+        default=True, description="Whether this credential is enabled"
+    )
     allowed_models: list[str] = Field(
         default_factory=list,
         description="List of allowed model names. Empty list means all models are allowed.",
@@ -63,7 +65,7 @@ class AppConfig(BaseModel):
         ge=0,
         description="Time To First Token timeout in seconds. If None or 0, TTFT timeout is disabled.",
     )
-    master_keys: list[MasterKeyConfig] = Field(
+    credentials: list[CredentialConfig] = Field(
         default_factory=list,
-        description="List of master keys with optional rate limiting",
+        description="List of credentials with optional rate limiting",
     )

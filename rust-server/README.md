@@ -114,7 +114,7 @@ LLM Proxy supports two configuration modes:
 brew install golang-migrate
 
 # Set database URL
-export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
 
 # Run migrations
 ./scripts/db_migrate.sh up
@@ -130,7 +130,7 @@ export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
 
 ```bash
 # Set environment variables
-export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy?sslmode=disable'
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
 
 # Run migration script
 ./scripts/migrate_config.sh config.yaml

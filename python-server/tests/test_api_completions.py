@@ -57,7 +57,7 @@ class TestChatCompletionsEndpoint:
         response = app_client.post(
             "/v1/chat/completions",
             json=sample_chat_request,
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200
@@ -107,7 +107,7 @@ class TestChatCompletionsEndpoint:
         response = app_client.post(
             "/v1/chat/completions",
             json=request_data,
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200
@@ -143,7 +143,7 @@ class TestChatCompletionsEndpoint:
         response = app_client.post(
             "/v1/chat/completions",
             json=request_data,
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200
@@ -185,7 +185,7 @@ class TestChatCompletionsEndpoint:
                     "messages": [{"role": "user", "content": "Hi"}],
                     "stream": True,
                 },
-                headers={"Authorization": "Bearer test-master-key"},
+                headers={"Authorization": "Bearer test-credential-key"},
             )
 
             assert response.status_code == 200
@@ -204,7 +204,7 @@ class TestChatCompletionsEndpoint:
         response = app_client.post(
             "/v1/chat/completions",
             json=sample_chat_request,
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 500
@@ -222,7 +222,7 @@ class TestChatCompletionsEndpoint:
         response = app_client.post(
             "/v1/chat/completions",
             json=sample_chat_request,
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 504
@@ -261,7 +261,7 @@ class TestCompletionsEndpoint:
         response = app_client.post(
             "/v1/completions",
             json=sample_completion_request,
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200
@@ -423,7 +423,7 @@ class TestModelsEndpoint:
     def test_list_models_success(self, app_client):
         """Test listing available models"""
         response = app_client.get(
-            "/v1/models", headers={"Authorization": "Bearer test-master-key"}
+            "/v1/models", headers={"Authorization": "Bearer test-credential-key"}
         )
 
         assert response.status_code == 200
@@ -446,7 +446,7 @@ class TestModelsEndpoint:
     def test_list_models_contains_expected_models(self, app_client):
         """Test that response contains expected models"""
         response = app_client.get(
-            "/v1/models", headers={"Authorization": "Bearer test-master-key"}
+            "/v1/models", headers={"Authorization": "Bearer test-credential-key"}
         )
 
         assert response.status_code == 200
@@ -461,7 +461,7 @@ class TestModelsEndpoint:
     def test_list_models_sorted(self, app_client):
         """Test that models are returned sorted"""
         response = app_client.get(
-            "/v1/models", headers={"Authorization": "Bearer test-master-key"}
+            "/v1/models", headers={"Authorization": "Bearer test-credential-key"}
         )
 
         assert response.status_code == 200
@@ -482,7 +482,7 @@ class TestAPIEdgeCases:
         response = app_client.post(
             "/v1/chat/completions",
             json={},
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         # Should handle gracefully (may return error from provider)
@@ -523,7 +523,7 @@ class TestAPIEdgeCases:
         response = app_client.post(
             "/v1/chat/completions",
             json=request_data,
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200
@@ -586,7 +586,7 @@ class TestResponseMetadata:
         response = app_client.post(
             "/v1/chat/completions",
             json=request_data,
-            headers={"Authorization": "Bearer test-master-key"},
+            headers={"Authorization": "Bearer test-credential-key"},
         )
 
         assert response.status_code == 200

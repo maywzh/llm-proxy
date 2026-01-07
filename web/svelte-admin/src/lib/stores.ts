@@ -6,11 +6,11 @@ import type {
   LoadingState,
   ErrorState,
   Provider,
-  MasterKey,
+  Credential,
   ConfigVersionResponse,
   ModalState,
   ProviderFormData,
-  MasterKeyFormData,
+  CredentialFormData,
 } from './types';
 
 const API_BASE_URL =
@@ -76,21 +76,21 @@ export const apiClient = derived(auth, $auth => {
 // Loading States
 export const loading = writable<LoadingState>({
   providers: false,
-  masterKeys: false,
+  credentials: false,
   config: false,
 });
 
 // Error States
 export const errors = writable<ErrorState>({
   providers: null,
-  masterKeys: null,
+  credentials: null,
   config: null,
   general: null,
 });
 
 // Data Stores
 export const providers = writable<Provider[]>([]);
-export const masterKeys = writable<MasterKey[]>([]);
+export const credentials = writable<Credential[]>([]);
 export const configVersion = writable<ConfigVersionResponse | null>(null);
 
 // Modal Store
@@ -102,7 +102,7 @@ export const modal = writable<ModalState>({
 
 // Form Data Stores
 export const providerForm = writable<Partial<ProviderFormData>>({});
-export const masterKeyForm = writable<Partial<MasterKeyFormData>>({});
+export const credentialForm = writable<Partial<CredentialFormData>>({});
 
 // Actions
 export const actions = {
@@ -138,7 +138,7 @@ export const actions = {
 
     try {
       const response = await client.createProvider({
-        id: data.id,
+        provider_key: data.provider_key,
         provider_type: data.provider_type,
         api_base: data.api_base,
         api_key: data.api_key,
@@ -162,7 +162,7 @@ export const actions = {
     }
   },
 
-  async updateProvider(id: string, data: Partial<ProviderFormData>) {
+  async updateProvider(id: number, data: Partial<ProviderFormData>) {
     const client = get(apiClient);
     if (!client) return false;
 
@@ -186,7 +186,7 @@ export const actions = {
     }
   },
 
-  async deleteProvider(id: string) {
+  async deleteProvider(id: number) {
     const client = get(apiClient);
     if (!client) return false;
 
@@ -210,7 +210,7 @@ export const actions = {
     }
   },
 
-  async toggleProviderStatus(id: string, enabled: boolean) {
+  async toggleProviderStatus(id: number, enabled: boolean) {
     const client = get(apiClient);
     if (!client) return false;
 
@@ -233,47 +233,46 @@ export const actions = {
     }
   },
 
-  // Master Key Actions
-  async loadMasterKeys() {
+  // Credential Actions
+  async loadCredentials() {
     const client = get(apiClient);
     if (!client) return;
 
-    loading.update(state => ({ ...state, masterKeys: true }));
-    errors.update(state => ({ ...state, masterKeys: null }));
+    loading.update(state => ({ ...state, credentials: true }));
+    errors.update(state => ({ ...state, credentials: null }));
 
     try {
-      const response = await client.listMasterKeys();
-      masterKeys.set(response.keys);
+      const response = await client.listCredentials();
+      credentials.set(response.credentials);
       configVersion.update(current =>
         current ? { ...current, version: response.version } : null
       );
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to load master keys';
-      errors.update(state => ({ ...state, masterKeys: message }));
+        error instanceof Error ? error.message : 'Failed to load credentials';
+      errors.update(state => ({ ...state, credentials: message }));
     } finally {
-      loading.update(state => ({ ...state, masterKeys: false }));
+      loading.update(state => ({ ...state, credentials: false }));
     }
   },
 
-  async createMasterKey(data: MasterKeyFormData) {
+  async createCredential(data: CredentialFormData) {
     const client = get(apiClient);
     if (!client) return false;
 
-    loading.update(state => ({ ...state, masterKeys: true }));
-    errors.update(state => ({ ...state, masterKeys: null }));
+    loading.update(state => ({ ...state, credentials: true }));
+    errors.update(state => ({ ...state, credentials: null }));
 
     try {
-      const response = await client.createMasterKey({
-        id: data.id,
+      const response = await client.createCredential({
         key: data.key,
         name: data.name,
         allowed_models: data.allowed_models,
         rate_limit: data.rate_limit,
       });
 
-      // Add to master keys list
-      masterKeys.update(list => [...list, response.key]);
+      // Add to credentials list
+      credentials.update(list => [...list, response.credential]);
       configVersion.update(current =>
         current ? { ...current, version: response.version } : null
       );
@@ -281,71 +280,71 @@ export const actions = {
       return true;
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to create master key';
-      errors.update(state => ({ ...state, masterKeys: message }));
+        error instanceof Error ? error.message : 'Failed to create credential';
+      errors.update(state => ({ ...state, credentials: message }));
       return false;
     } finally {
-      loading.update(state => ({ ...state, masterKeys: false }));
+      loading.update(state => ({ ...state, credentials: false }));
     }
   },
 
-  async updateMasterKey(id: string, data: Partial<MasterKeyFormData>) {
+  async updateCredential(id: number, data: Partial<CredentialFormData>) {
     const client = get(apiClient);
     if (!client) return false;
 
-    loading.update(state => ({ ...state, masterKeys: true }));
-    errors.update(state => ({ ...state, masterKeys: null }));
+    loading.update(state => ({ ...state, credentials: true }));
+    errors.update(state => ({ ...state, credentials: null }));
 
     try {
-      await client.updateMasterKey(id, data);
+      await client.updateCredential(id, data);
 
-      // Reload master keys to get updated data
-      await actions.loadMasterKeys();
+      // Reload credentials to get updated data
+      await actions.loadCredentials();
 
       return true;
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to update master key';
-      errors.update(state => ({ ...state, masterKeys: message }));
+        error instanceof Error ? error.message : 'Failed to update credential';
+      errors.update(state => ({ ...state, credentials: message }));
       return false;
     } finally {
-      loading.update(state => ({ ...state, masterKeys: false }));
+      loading.update(state => ({ ...state, credentials: false }));
     }
   },
 
-  async deleteMasterKey(id: string) {
+  async deleteCredential(id: number) {
     const client = get(apiClient);
     if (!client) return false;
 
-    loading.update(state => ({ ...state, masterKeys: true }));
-    errors.update(state => ({ ...state, masterKeys: null }));
+    loading.update(state => ({ ...state, credentials: true }));
+    errors.update(state => ({ ...state, credentials: null }));
 
     try {
-      await client.deleteMasterKey(id);
+      await client.deleteCredential(id);
 
-      // Remove from master keys list
-      masterKeys.update(list => list.filter(k => k.id !== id));
+      // Remove from credentials list
+      credentials.update(list => list.filter(k => k.id !== id));
 
       return true;
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to delete master key';
-      errors.update(state => ({ ...state, masterKeys: message }));
+        error instanceof Error ? error.message : 'Failed to delete credential';
+      errors.update(state => ({ ...state, credentials: message }));
       return false;
     } finally {
-      loading.update(state => ({ ...state, masterKeys: false }));
+      loading.update(state => ({ ...state, credentials: false }));
     }
   },
 
-  async toggleMasterKeyStatus(id: string, enabled: boolean) {
+  async toggleCredentialStatus(id: number, enabled: boolean) {
     const client = get(apiClient);
     if (!client) return false;
 
     try {
-      await client.setMasterKeyStatus(id, enabled);
+      await client.setCredentialStatus(id, enabled);
 
-      // Update master key in list
-      masterKeys.update(list =>
+      // Update credential in list
+      credentials.update(list =>
         list.map(k => (k.id === id ? { ...k, is_enabled: enabled } : k))
       );
 
@@ -354,33 +353,33 @@ export const actions = {
       const message =
         error instanceof Error
           ? error.message
-          : 'Failed to update master key status';
-      errors.update(state => ({ ...state, masterKeys: message }));
+          : 'Failed to update credential status';
+      errors.update(state => ({ ...state, credentials: message }));
       return false;
     }
   },
 
-  async rotateMasterKey(id: string) {
+  async rotateCredential(id: number) {
     const client = get(apiClient);
     if (!client) return null;
 
-    loading.update(state => ({ ...state, masterKeys: true }));
-    errors.update(state => ({ ...state, masterKeys: null }));
+    loading.update(state => ({ ...state, credentials: true }));
+    errors.update(state => ({ ...state, credentials: null }));
 
     try {
-      const response = await client.rotateMasterKey(id);
+      const response = await client.rotateCredential(id);
 
-      // Reload master keys to get updated data
-      await actions.loadMasterKeys();
+      // Reload credentials to get updated data
+      await actions.loadCredentials();
 
       return response.new_key;
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Failed to rotate master key';
-      errors.update(state => ({ ...state, masterKeys: message }));
+        error instanceof Error ? error.message : 'Failed to rotate credential';
+      errors.update(state => ({ ...state, credentials: message }));
       return null;
     } finally {
-      loading.update(state => ({ ...state, masterKeys: false }));
+      loading.update(state => ({ ...state, credentials: false }));
     }
   },
 
@@ -421,7 +420,7 @@ export const actions = {
       });
 
       // Reload all data
-      await Promise.all([actions.loadProviders(), actions.loadMasterKeys()]);
+      await Promise.all([actions.loadProviders(), actions.loadCredentials()]);
 
       return true;
     } catch (error) {
@@ -451,7 +450,7 @@ export const actions = {
   clearAllErrors() {
     errors.set({
       providers: null,
-      masterKeys: null,
+      credentials: null,
       config: null,
       general: null,
     });

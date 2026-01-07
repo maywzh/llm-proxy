@@ -7,27 +7,27 @@ from fastapi import HTTPException, status
 from app.core.config import get_config
 from app.core.rate_limiter import RateLimiter
 from app.core.database import hash_key
-from app.models.config import MasterKeyConfig
+from app.models.config import CredentialConfig
 
 
 _rate_limiter: Optional[RateLimiter] = None
 
 
 def init_rate_limiter() -> None:
-    """Initialize the global rate limiter with master keys from config"""
+    """Initialize the global rate limiter with credentials from config"""
     global _rate_limiter
     config = get_config()
 
-    if config.master_keys:
+    if config.credentials:
         _rate_limiter = RateLimiter()
-        for key_config in config.master_keys:
-            if not key_config.enabled:
+        for credential_config in config.credentials:
+            if not credential_config.enabled:
                 continue
-            if key_config.rate_limit is not None:
+            if credential_config.rate_limit is not None:
                 _rate_limiter.register_key(
-                    key_config.key,
-                    key_config.rate_limit.requests_per_second,
-                    key_config.rate_limit.burst_size,
+                    credential_config.credential_key,
+                    credential_config.rate_limit.requests_per_second,
+                    credential_config.rate_limit.burst_size,
                 )
 
 
@@ -36,16 +36,16 @@ def get_rate_limiter() -> Optional[RateLimiter]:
     return _rate_limiter
 
 
-def verify_master_key(
+def verify_credential_key(
     authorization: Optional[str] = None,
-) -> Tuple[bool, Optional[MasterKeyConfig]]:
+) -> Tuple[bool, Optional[CredentialConfig]]:
     """
-    Verify the master API key and check rate limits
+    Verify the credential API key and check rate limits
 
     Returns:
-        Tuple[bool, Optional[MasterKeyConfig]]: (is_valid, key_config)
+        Tuple[bool, Optional[CredentialConfig]]: (is_valid, credential_config)
         - is_valid: True if authentication passed and rate limit not exceeded
-        - key_config: The MasterKeyConfig if found, None otherwise
+        - credential_config: The CredentialConfig if found, None otherwise
 
     Raises:
         HTTPException: 429 if rate limit exceeded, 401 if authentication failed
@@ -56,7 +56,7 @@ def verify_master_key(
     if authorization and authorization.startswith("Bearer "):
         provided_key = authorization[7:]
 
-    if not config.master_keys:
+    if not config.credentials:
         return True, None
 
     if not provided_key:
@@ -67,28 +67,34 @@ def verify_master_key(
 
     key_to_compare = hash_key(provided_key)
 
-    matching_key = None
-    for key_config in config.master_keys:
-        if hmac.compare_digest(key_config.key, key_to_compare):
-            if not key_config.enabled:
+    matching_credential = None
+    for credential_config in config.credentials:
+        if hmac.compare_digest(credential_config.credential_key, key_to_compare):
+            if not credential_config.enabled:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Master key is disabled",
+                    detail="Credential key is disabled",
                 )
-            matching_key = key_config
+            matching_credential = credential_config
             break
 
-    if not matching_key:
+    if not matching_credential:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid master key"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credential key"
         )
 
-    if matching_key.rate_limit is not None:
+    if matching_credential.rate_limit is not None:
         rate_limiter = get_rate_limiter()
-        if rate_limiter and not rate_limiter.check_rate_limit(matching_key.key):
+        if rate_limiter and not rate_limiter.check_rate_limit(
+            matching_credential.credential_key
+        ):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded for this master key",
+                detail="Rate limit exceeded for this credential key",
             )
 
-    return True, matching_key
+    return True, matching_credential
+
+
+# Alias for backward compatibility
+verify_master_key = verify_credential_key
