@@ -9,6 +9,7 @@ import Layout from './components/Layout.tsx';
 import Login from './pages/Login.tsx';
 import Providers from './pages/Providers.tsx';
 import Credentials from './pages/Credentials.tsx';
+import Dashboard from './pages/Dashboard.tsx';
 
 function App() {
   const { isAuthenticated } = useAuth();
@@ -19,7 +20,7 @@ function App() {
         <Route
           path="/"
           element={
-            isAuthenticated ? <Navigate to="/providers" replace /> : <Login />
+            isAuthenticated ? <Navigate to="/dashboard" replace /> : <Login />
           }
         />
         <Route
@@ -40,6 +41,18 @@ function App() {
             isAuthenticated ? (
               <Layout>
                 <Credentials />
+              </Layout>
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
+        />
+        <Route
+          path="/dashboard"
+          element={
+            isAuthenticated ? (
+              <Layout>
+                <Dashboard />
               </Layout>
             ) : (
               <Navigate to="/" replace />
