@@ -28,6 +28,11 @@ Copy `.env.example` to `.env.local` and configure:
 ```bash
 # Optional: Default API base URL
 VITE_PUBLIC_API_BASE_URL=http://127.0.0.1:17999
+
+# Optional: Grafana Public Dashboard URL for dashboard page
+# Create a public dashboard in Grafana and paste the URL here
+# See: https://grafana.com/docs/grafana/latest/dashboards/dashboard-public/
+PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=
 ```
 
 ### Login Credentials
@@ -41,6 +46,7 @@ VITE_PUBLIC_API_BASE_URL=http://127.0.0.1:17999
 - **Master Key Management**: Manage API keys with rate limiting and model restrictions
 - **Authentication**: Secure login with admin API key
 - **Configuration**: Real-time config version display and reload
+- **Dashboard**: Embedded Grafana dashboard for monitoring (requires Public Dashboard URL)
 
 ## Tech Stack
 
@@ -88,5 +94,23 @@ src/
 │   ├── +layout.svelte   # Main layout
 │   ├── +page.svelte     # Login page
 │   ├── providers/       # Provider management
-│   └── master-keys/     # Master key management
+│   ├── credentials/     # Credential management
+│   └── dashboard/       # Grafana dashboard
 └── app.css              # Global styles
+```
+
+## Grafana Integration
+
+The Dashboard page embeds a Grafana Public Dashboard via iframe. To enable:
+
+1. **Enable Public Dashboard in Grafana**:
+   - Set `GF_FEATURE_TOGGLES_ENABLE=publicDashboards` in Grafana config
+   - Set `GF_SECURITY_ALLOW_EMBEDDING=true` for iframe support
+
+2. **Create a Public Dashboard**:
+   - Open your dashboard in Grafana
+   - Click Share → Public Dashboard
+   - Enable and copy the URL
+
+3. **Configure the URL**:
+   - Set `PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL` in your `.env.local`
