@@ -5,7 +5,15 @@
   import { browser } from '$app/environment';
   import '../app.css';
   import { auth, actions, configVersion, errors } from '$lib/stores';
-  import { Plug, Key, RefreshCw, LogOut, Menu, X } from 'lucide-svelte';
+  import {
+    Plug,
+    Key,
+    RefreshCw,
+    LogOut,
+    Menu,
+    X,
+    LayoutDashboard,
+  } from 'lucide-svelte';
 
   let { children }: { children: Snippet } = $props();
 
@@ -24,7 +32,7 @@
         $auth.isAuthenticated &&
         ($page.url.pathname === '/' || $page.url.pathname === '/login')
       ) {
-        goto('/providers');
+        goto('/dashboard');
       } else if (
         !$auth.isAuthenticated &&
         $page.url.pathname !== '/' &&
@@ -55,6 +63,7 @@
 
   // Navigation items
   const navItems = [
+    { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/providers', label: 'Providers', icon: Plug },
     { href: '/credentials', label: 'Credentials', icon: Key },
   ];

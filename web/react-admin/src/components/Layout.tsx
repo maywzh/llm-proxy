@@ -1,7 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Plug, Key, RefreshCw, LogOut, Menu, X } from 'lucide-react';
+import {
+  Plug,
+  Key,
+  RefreshCw,
+  LogOut,
+  Menu,
+  X,
+  LayoutDashboard,
+} from 'lucide-react';
 import type { ConfigVersionResponse } from '../types';
 
 interface LayoutProps {
@@ -18,6 +26,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   // Navigation items
   const navItems = [
+    { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/providers', label: 'Providers', icon: Plug },
     { href: '/credentials', label: 'Credentials', icon: Key },
   ];
@@ -54,9 +63,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     <div className="min-h-screen bg-gray-50">
       {/* Sidebar - Desktop */}
       <aside className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
-        <div className="flex flex-col flex-grow bg-gray-900 overflow-y-auto">
+        <div className="flex flex-col grow bg-gray-900 overflow-y-auto">
           {/* Logo */}
-          <div className="flex items-center flex-shrink-0 px-4 py-5 border-b border-gray-800">
+          <div className="flex items-center shrink-0 px-4 py-5 border-b border-gray-800">
             <div className="flex items-center space-x-3">
               <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
                 <Plug className="w-5 h-5 text-white" />
@@ -86,7 +95,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           </nav>
 
           {/* User Section */}
-          <div className="flex-shrink-0 border-t border-gray-800 p-4">
+          <div className="shrink-0 border-t border-gray-800 p-4">
             <button
               onClick={handleLogout}
               className="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg"
@@ -141,7 +150,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               })}
             </nav>
 
-            <div className="flex-shrink-0 border-t border-gray-800 p-4">
+            <div className="shrink-0 border-t border-gray-800 p-4">
               <button
                 onClick={handleLogout}
                 className="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg"
