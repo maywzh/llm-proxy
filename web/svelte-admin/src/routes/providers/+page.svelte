@@ -147,8 +147,8 @@
   <!-- Header -->
   <div class="flex justify-between items-center">
     <div>
-      <h1 class="text-2xl font-bold text-gray-900">Providers</h1>
-      <p class="text-gray-600">Manage your LLM provider configurations</p>
+      <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Providers</h1>
+      <p class="text-gray-600 dark:text-gray-400">Manage your LLM provider configurations</p>
     </div>
     <button
       onclick={handleCreate}
@@ -210,7 +210,7 @@
         tabindex="-1"
       >
         <div class="modal-header">
-          <h3 class="text-lg font-semibold text-gray-900">
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
             {editingProvider ? 'Edit Provider' : 'Add Provider'}
           </h3>
           <button onclick={resetForm} class="btn-icon">
@@ -317,7 +317,7 @@
               bind:checked={formData.is_enabled}
               class="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
             />
-            <label for="is_enabled" class="ml-2 block text-sm text-gray-900">
+            <label for="is_enabled" class="ml-2 block text-sm text-gray-900 dark:text-gray-100">
               Enable this provider
             </label>
           </div>
@@ -348,7 +348,7 @@
     <div class="card-header flex justify-between items-center">
       <h2 class="card-title">Providers ({filteredProviders.length})</h2>
       {#if $loading.providers}
-        <div class="flex items-center text-gray-500">
+        <div class="flex items-center text-gray-500 dark:text-gray-400">
           <Loader2 class="w-5 h-5 animate-spin mr-2" />
           <span class="text-sm">Loading...</span>
         </div>
@@ -357,7 +357,7 @@
 
     <div class="card-body p-0">
       {#if filteredProviders.length === 0}
-        <div class="text-center py-12 text-gray-500">
+        <div class="text-center py-12 text-gray-500 dark:text-gray-400">
           {searchTerm
             ? 'No providers match your search.'
             : 'No providers configured yet.'}
@@ -379,10 +379,10 @@
               {#each filteredProviders as provider}
                 <tr>
                   <td>
-                    <div class="text-sm font-medium text-gray-900">
+                    <div class="text-sm font-medium text-gray-900 dark:text-gray-100">
                       {provider.provider_key}
                     </div>
-                    <div class="text-xs text-gray-500">
+                    <div class="text-xs text-gray-500 dark:text-gray-400">
                       ID: {provider.id}
                     </div>
                   </td>
@@ -393,14 +393,14 @@
                   </td>
                   <td>
                     <div
-                      class="text-sm text-gray-900 max-w-xs truncate"
+                      class="text-sm text-gray-900 dark:text-gray-100 max-w-xs truncate"
                       title={provider.api_base}
                     >
                       {provider.api_base}
                     </div>
                   </td>
                   <td>
-                    <div class="text-sm text-gray-500">
+                    <div class="text-sm text-gray-500 dark:text-gray-400">
                       {Object.keys(provider.model_mapping).length} mappings
                     </div>
                   </td>
@@ -466,13 +466,13 @@
         tabindex="-1"
       >
         <div class="modal-header">
-          <h3 class="text-lg font-semibold text-gray-900">Delete Provider</h3>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Delete Provider</h3>
           <button onclick={() => (deleteConfirm = null)} class="btn-icon">
             <X class="w-5 h-5" />
           </button>
         </div>
         <div class="modal-body">
-          <p class="text-sm text-gray-600">
+          <p class="text-sm text-gray-600 dark:text-gray-400">
             Are you sure you want to delete provider
             <strong>{deleteConfirm.provider_key}</strong>? This action cannot be
             undone.

@@ -13,7 +13,7 @@ const Dashboard: React.FC = () => {
 
   // Public Dashboard URL - from environment variable
   const publicDashboardUrl =
-    import.meta.env.VITE_GRAFANA_PUBLIC_DASHBOARD_URL || '';
+    import.meta.env.PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL || '';
 
   const handleIframeLoad = () => {
     setIsLoading(false);
@@ -47,13 +47,13 @@ const Dashboard: React.FC = () => {
 
         <div className="card p-8 text-center">
           <LayoutDashboard className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-gray-700 mb-2">
+          <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300 mb-2">
             Grafana Dashboard Not Configured
           </h2>
-          <p className="text-gray-500 mb-4">
+          <p className="text-gray-500 dark:text-gray-400 mb-4">
             Please set the{' '}
-            <code className="bg-gray-100 px-2 py-1 rounded">
-              VITE_GRAFANA_PUBLIC_DASHBOARD_URL
+            <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
+              PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL
             </code>{' '}
             environment variable.
           </p>
@@ -73,7 +73,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <div
-      className={`space-y-4 ${isFullscreen ? 'fixed inset-0 z-50 bg-white p-4' : ''}`}
+      className={`space-y-4 ${isFullscreen ? 'fixed inset-0 z-50 bg-white dark:bg-gray-900 p-4' : ''}`}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-3">
@@ -118,10 +118,10 @@ const Dashboard: React.FC = () => {
 
       <div className="card p-0 overflow-hidden relative">
         {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gray-50 z-10">
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-50 dark:bg-gray-800 z-10">
             <div className="text-center">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"></div>
-              <p className="mt-4 text-gray-600">Loading dashboard...</p>
+              <p className="mt-4 text-gray-600 dark:text-gray-400">Loading dashboard...</p>
             </div>
           </div>
         )}

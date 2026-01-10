@@ -5,6 +5,7 @@
   import { browser } from '$app/environment';
   import '../app.css';
   import { auth, actions, configVersion, errors } from '$lib/stores';
+  import { theme } from '$lib/theme';
   import {
     Plug,
     Key,
@@ -13,16 +14,35 @@
     Menu,
     X,
     LayoutDashboard,
+    Sun,
+    Moon,
+    Monitor,
   } from 'lucide-svelte';
 
   let { children }: { children: Snippet } = $props();
 
   let isMobileMenuOpen = $state(false);
   let isReloading = $state(false);
+  let showThemeMenu = $state(false);
 
-  // Initialize auth on mount
+  // Close theme menu when clicking outside
+  $effect(() => {
+    if (showThemeMenu && browser) {
+      const handleClick = (e: MouseEvent) => {
+        const target = e.target as HTMLElement;
+        if (!target.closest('.theme-menu-container')) {
+          showThemeMenu = false;
+        }
+      };
+      document.addEventListener('click', handleClick);
+      return () => document.removeEventListener('click', handleClick);
+    }
+  });
+
+  // Initialize auth and theme on mount
   onMount(() => {
     auth.init();
+    theme.init();
   });
 
   // Reactive navigation based on auth state (only in browser)
@@ -61,6 +81,11 @@
     actions.clearError(type);
   }
 
+  function setTheme(newTheme: 'light' | 'dark' | 'system') {
+    theme.set(newTheme);
+    showThemeMenu = false;
+  }
+
   // Navigation items
   const navItems = [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -69,7 +94,7 @@
   ];
 </script>
 
-<div class="min-h-screen bg-gray-50">
+<div class="min-h-screen bg-gray-50 dark:bg-gray-900">
   {#if $auth.isAuthenticated}
     <!-- Sidebar - Desktop -->
     <aside class="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
@@ -107,7 +132,7 @@
         <div class="flex-shrink-0 border-t border-gray-800 p-4">
           <button
             onclick={handleLogout}
-            class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg"
+            class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 dark:text-gray-400 hover:bg-gray-800 dark:hover:bg-gray-700 hover:text-white transition-colors duration-200 rounded-lg"
           >
             <LogOut class="w-5 h-5" />
             <span>Logout</span>
@@ -120,7 +145,7 @@
     {#if isMobileMenuOpen}
       <div class="lg:hidden">
         <div
-          class="fixed inset-0 bg-black bg-opacity-50 z-40"
+          class="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-70 z-40"
           onclick={() => (isMobileMenuOpen = false)}
           onkeydown={e => e.key === 'Escape' && (isMobileMenuOpen = false)}
           role="button"
@@ -143,7 +168,7 @@
             </div>
             <button
               onclick={() => (isMobileMenuOpen = false)}
-              class="text-gray-400 hover:text-white"
+              class="text-gray-400 dark:text-gray-500 hover:text-white"
             >
               <X class="w-6 h-6" />
             </button>
@@ -181,7 +206,7 @@
     <div class="lg:pl-64 flex flex-col flex-1">
       <!-- Top Header -->
       <header
-        class="sticky top-0 z-30 bg-white shadow-sm border-b border-gray-200"
+        class="sticky top-0 z-30 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700"
       >
         <div class="px-4 sm:px-6 lg:px-8">
           <div class="flex items-center justify-between h-16">
@@ -195,7 +220,9 @@
 
             <!-- Page title - hidden on mobile, shown on desktop -->
             <div class="hidden lg:block">
-              <h1 class="text-xl font-semibold text-gray-900">
+              <h1
+                class="text-xl font-semibold text-gray-900 dark:text-gray-100"
+              >
                 {navItems.find(item => item.href === $page.url.pathname)
                   ?.label || 'Admin'}
               </h1>
@@ -208,6 +235,61 @@
                   v{$configVersion.version}
                 </span>
               {/if}
+
+              <!-- Theme Toggle -->
+              <div class="relative theme-menu-container">
+                <button
+                  onclick={() => (showThemeMenu = !showThemeMenu)}
+                  class="btn btn-secondary text-sm flex items-center space-x-2"
+                  title="Theme"
+                >
+                  {#if $theme === 'light'}
+                    <Sun class="w-4 h-4" />
+                  {:else if $theme === 'dark'}
+                    <Moon class="w-4 h-4" />
+                  {:else}
+                    <Monitor class="w-4 h-4" />
+                  {/if}
+                </button>
+
+                {#if showThemeMenu}
+                  <div
+                    class="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
+                    onclick={e => e.stopPropagation()}
+                  >
+                    <button
+                      onclick={() => setTheme('light')}
+                      class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center space-x-2 {$theme ===
+                      'light'
+                        ? 'bg-gray-100 dark:bg-gray-700'
+                        : ''}"
+                    >
+                      <Sun class="w-4 h-4" />
+                      <span>Light</span>
+                    </button>
+                    <button
+                      onclick={() => setTheme('dark')}
+                      class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center space-x-2 {$theme ===
+                      'dark'
+                        ? 'bg-gray-100 dark:bg-gray-700'
+                        : ''}"
+                    >
+                      <Moon class="w-4 h-4" />
+                      <span>Dark</span>
+                    </button>
+                    <button
+                      onclick={() => setTheme('system')}
+                      class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center space-x-2 {$theme ===
+                      'system'
+                        ? 'bg-gray-100 dark:bg-gray-700'
+                        : ''}"
+                    >
+                      <Monitor class="w-4 h-4" />
+                      <span>System</span>
+                    </button>
+                  </div>
+                {/if}
+              </div>
 
               <button
                 onclick={handleReloadConfig}
@@ -231,7 +313,7 @@
           <div class="flex">
             <div class="shrink-0">
               <svg
-                class="h-5 w-5 text-red-400"
+                class="h-5 w-5 text-red-400 dark:text-red-500"
                 viewBox="0 0 20 20"
                 fill="currentColor"
               >
@@ -243,12 +325,14 @@
               </svg>
             </div>
             <div class="ml-3">
-              <p class="text-sm text-red-700">{$errors.general}</p>
+              <p class="text-sm text-red-700 dark:text-red-400">
+                {$errors.general}
+              </p>
             </div>
             <div class="ml-auto pl-3">
               <button
                 onclick={() => clearError('general')}
-                class="text-red-400 hover:text-red-600"
+                class="text-red-400 dark:text-red-500 hover:text-red-600 dark:hover:text-red-400"
                 aria-label="Close error message"
               >
                 <X class="h-5 w-5" />
