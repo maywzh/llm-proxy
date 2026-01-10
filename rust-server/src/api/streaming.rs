@@ -8,7 +8,7 @@ use crate::core::error::AppError;
 use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
 use axum::body::Body;
-use axum::response::{IntoResponse, Response as AxumResponse};
+use axum::response::Response as AxumResponse;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use reqwest::Response;
@@ -407,59 +407,6 @@ fn finalize_stream(state: &StreamState) {
             }
         }
     }
-}
-
-/// Create an SSE stream from a provider response with token counting (legacy version without TTFT timeout).
-///
-/// This is a convenience wrapper that calls create_sse_stream with no TTFT timeout.
-pub async fn create_sse_stream_legacy(
-    response: Response,
-    original_model: String,
-    provider_name: String,
-    input_tokens: Option<usize>,
-) -> AxumResponse {
-    match create_sse_stream(response, original_model.clone(), provider_name.clone(), input_tokens, None).await {
-        Ok(response) => response,
-        Err(e) => e.into_response(),
-    }
-}
-
-// Use unfold to process stream with sequential state updates (kept for reference but no longer used directly)
-#[allow(dead_code)]
-fn create_stream_unfold(initial_state: StreamState) -> impl Stream<Item = Result<Vec<u8>, std::io::Error>> {
-    futures::stream::unfold(initial_state, |mut state| async move {
-        match state.stream.next().await {
-            Some(Ok(bytes)) => {
-                let output = process_chunk(&mut state, bytes);
-                Some((Ok(output), state))
-            }
-            Some(Err(e)) => {
-                tracing::error!("Stream error: {}", e);
-                let error_event = json!({
-                    "error": {
-                        "message": e.to_string(),
-                        "type": "stream_error",
-                        "code": "provider_error"
-                    }
-                });
-                let error_message = format!(
-                    "event: error\ndata: {}\n\ndata: [DONE]\n\n",
-                    error_event
-                );
-                
-                let terminated_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
-                    Box::pin(futures::stream::empty());
-                let mut final_state = state;
-                final_state.stream = terminated_stream;
-                
-                Some((Ok(error_message.into_bytes()), final_state))
-            }
-            None => {
-                finalize_stream(&state);
-                None
-            }
-        }
-    })
 }
 
 fn extract_text_segments(value: &Value) -> Vec<String> {

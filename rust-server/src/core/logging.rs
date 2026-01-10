@@ -78,6 +78,51 @@ macro_rules! provider_span {
     };
 }
 
+/// Execute an async block with request context (request_id, api_key_name, provider).
+///
+/// This macro simplifies the nested scope pattern used in handlers.
+///
+/// # Arguments
+///
+/// * `request_id` - The request ID string
+/// * `api_key_name` - The API key name string
+/// * `provider_name` - The provider name string
+/// * `body` - The async block to execute
+///
+/// # Example
+///
+/// ```ignore
+/// with_request_context!(request_id, api_key_name, provider_name, async {
+///     // handler logic here
+/// })
+/// ```
+#[macro_export]
+macro_rules! with_request_context {
+    ($request_id:expr, $api_key_name:expr, $provider_name:expr, $body:expr) => {
+        $crate::core::logging::REQUEST_ID
+            .scope($request_id, async {
+                $crate::core::logging::API_KEY_NAME
+                    .scope($api_key_name, async {
+                        $crate::core::logging::PROVIDER_CONTEXT
+                            .scope($provider_name, $body)
+                            .await
+                    })
+                    .await
+            })
+            .await
+    };
+    // Version without provider context
+    ($request_id:expr, $api_key_name:expr, $body:expr) => {
+        $crate::core::logging::REQUEST_ID
+            .scope($request_id, async {
+                $crate::core::logging::API_KEY_NAME
+                    .scope($api_key_name, $body)
+                    .await
+            })
+            .await
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

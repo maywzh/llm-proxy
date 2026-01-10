@@ -52,6 +52,7 @@ class ProviderModel(Base):
     api_base: Mapped[str] = mapped_column(String(500), nullable=False)
     api_key: Mapped[str] = mapped_column(String(500), nullable=False)
     model_mapping: Mapped[dict] = mapped_column(JSONB, nullable=False, default={})
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -389,7 +390,7 @@ class DynamicConfig:
                 name=p.provider_key,
                 api_base=p.api_base,
                 api_key=p.api_key,
-                weight=1,
+                weight=p.weight,
                 model_mapping=p.get_model_mapping(),
             )
             for p in versioned_config.providers
