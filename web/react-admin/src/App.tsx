@@ -10,6 +10,7 @@ import Login from './pages/Login.tsx';
 import Providers from './pages/Providers.tsx';
 import Credentials from './pages/Credentials.tsx';
 import Dashboard from './pages/Dashboard.tsx';
+import Chat from './pages/Chat.tsx';
 
 function App() {
   const { isAuthenticated } = useAuth();
@@ -21,6 +22,18 @@ function App() {
           path="/"
           element={
             isAuthenticated ? <Navigate to="/dashboard" replace /> : <Login />
+          }
+        />
+        <Route
+          path="/dashboard"
+          element={
+            isAuthenticated ? (
+              <Layout>
+                <Dashboard />
+              </Layout>
+            ) : (
+              <Navigate to="/" replace />
+            )
           }
         />
         <Route
@@ -48,11 +61,11 @@ function App() {
           }
         />
         <Route
-          path="/dashboard"
+          path="/chat"
           element={
             isAuthenticated ? (
               <Layout>
-                <Dashboard />
+                <Chat />
               </Layout>
             ) : (
               <Navigate to="/" replace />

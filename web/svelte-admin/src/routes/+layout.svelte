@@ -17,6 +17,7 @@
     Sun,
     Moon,
     Monitor,
+    MessageSquare,
   } from 'lucide-svelte';
 
   let { children }: { children: Snippet } = $props();
@@ -25,7 +26,6 @@
   let isReloading = $state(false);
   let showThemeMenu = $state(false);
 
-  // Close theme menu when clicking outside
   $effect(() => {
     if (showThemeMenu && browser) {
       const handleClick = (e: MouseEvent) => {
@@ -39,13 +39,11 @@
     }
   });
 
-  // Initialize auth and theme on mount
   onMount(() => {
     auth.init();
     theme.init();
   });
 
-  // Reactive navigation based on auth state (only in browser)
   $effect(() => {
     if (browser) {
       if (
@@ -86,20 +84,18 @@
     showThemeMenu = false;
   }
 
-  // Navigation items
   const navItems = [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/providers', label: 'Providers', icon: Plug },
     { href: '/credentials', label: 'Credentials', icon: Key },
+    { href: '/chat', label: 'Chat', icon: MessageSquare },
   ];
 </script>
 
 <div class="min-h-screen bg-gray-50 dark:bg-gray-900">
   {#if $auth.isAuthenticated}
-    <!-- Sidebar - Desktop -->
     <aside class="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
       <div class="flex flex-col grow bg-gray-900 overflow-y-auto">
-        <!-- Logo -->
         <div
           class="flex items-center shrink-0 px-4 py-5 border-b border-gray-800"
         >
@@ -113,7 +109,6 @@
           </div>
         </div>
 
-        <!-- Navigation -->
         <nav class="flex-1 px-2 py-4 space-y-1">
           {#each navItems as item}
             {@const Icon = item.icon}
@@ -128,7 +123,6 @@
           {/each}
         </nav>
 
-        <!-- User Section -->
         <div class="shrink-0 border-t border-gray-800 p-4">
           <button
             onclick={handleLogout}
@@ -141,7 +135,6 @@
       </div>
     </aside>
 
-    <!-- Mobile Sidebar -->
     {#if isMobileMenuOpen}
       <div class="lg:hidden">
         <div
@@ -168,12 +161,11 @@
             </div>
             <button
               onclick={() => (isMobileMenuOpen = false)}
-              class="text-gray-400 dark:text-gray-500 hover:text-white"
+              class="text-gray-400 hover:text-white"
             >
               <X class="w-6 h-6" />
             </button>
           </div>
-
           <nav class="flex-1 px-2 py-4 space-y-1">
             {#each navItems as item}
               {@const Icon = item.icon}
@@ -188,11 +180,13 @@
               </a>
             {/each}
           </nav>
-
           <div class="shrink-0 border-t border-gray-800 p-4">
             <button
-              onclick={handleLogout}
-              class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg"
+              onclick={() => {
+                handleLogout();
+                isMobileMenuOpen = false;
+              }}
+              class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 dark:text-gray-400 hover:bg-gray-800 dark:hover:bg-gray-700 hover:text-white transition-colors duration-200 rounded-lg"
             >
               <LogOut class="w-5 h-5" />
               <span>Logout</span>
@@ -202,15 +196,10 @@
       </div>
     {/if}
 
-    <!-- Main Content -->
     <div class="lg:pl-64 flex flex-col flex-1">
-      <!-- Top Header -->
-      <header
-        class="sticky top-0 z-30 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700"
-      >
+      <header class="sticky top-0 z-30 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
         <div class="px-4 sm:px-6 lg:px-8">
           <div class="flex items-center justify-between h-16">
-            <!-- Mobile menu button -->
             <button
               onclick={() => (isMobileMenuOpen = true)}
               class="lg:hidden btn-icon"
@@ -218,17 +207,13 @@
               <Menu class="w-6 h-6" />
             </button>
 
-            <!-- Page title - hidden on mobile, shown on desktop -->
             <div class="hidden lg:block">
-              <h1
-                class="text-xl font-semibold text-gray-900 dark:text-gray-100"
-              >
+              <h1 class="text-xl font-semibold text-gray-900 dark:text-gray-100">
                 {navItems.find(item => item.href === $page.url.pathname)
                   ?.label || 'Admin'}
               </h1>
             </div>
 
-            <!-- Right side actions -->
             <div class="flex items-center space-x-4 ml-auto">
               {#if $configVersion}
                 <span class="badge badge-info">
@@ -236,7 +221,6 @@
                 </span>
               {/if}
 
-              <!-- Theme Toggle -->
               <div class="relative theme-menu-container">
                 <button
                   onclick={() => (showThemeMenu = !showThemeMenu)}
@@ -310,7 +294,6 @@
         </div>
       </header>
 
-      <!-- Error Notifications -->
       {#if $errors.general}
         <div class="alert-error mx-4 mt-4">
           <div class="flex">
@@ -345,13 +328,11 @@
         </div>
       {/if}
 
-      <!-- Main Content Area -->
       <main class="flex-1 py-6 px-4 sm:px-6 lg:px-8">
         {@render children()}
       </main>
     </div>
   {:else}
-    <!-- Login Layout -->
     {@render children()}
   {/if}
 </div>

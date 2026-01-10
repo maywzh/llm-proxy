@@ -1,4 +1,4 @@
-FROM cndevops-base-docker-local.arf.tesla.cn/base/node:20-alpine AS builder
+FROM cndevops-base-docker-local.arf.tesla.cn/base/node:24-alpine AS builder
 
 WORKDIR /app
 
@@ -12,9 +12,13 @@ COPY . .
 ARG VITE_PUBLIC_API_BASE_URL=http://127.0.0.1:18000
 ENV VITE_PUBLIC_API_BASE_URL=${VITE_PUBLIC_API_BASE_URL}
 
+ARG VITE_PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=
+ENV VITE_PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=${VITE_PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL}
+
+
 RUN pnpm build
 
-FROM cndevops-base-docker-local.arf.tesla.cn/base/node:20-alpine AS runner
+FROM cndevops-base-docker-local.arf.tesla.cn/base/node:24-alpine AS runner
 
 WORKDIR /app
 

@@ -5,7 +5,6 @@ A Svelte-based admin interface for managing LLM Proxy configurations.
 ## Quick Start
 
 ### Prerequisites
-
 - Node.js 18+
 - pnpm (recommended)
 
@@ -30,7 +29,7 @@ Copy `.env.example` to `.env.local` and configure:
 VITE_PUBLIC_API_BASE_URL=http://127.0.0.1:17999
 
 # Optional: Grafana Public Dashboard URL for dashboard page
-# Create a public dashboard in Grafana and paste the URL here
+# Create a public dashboard in Grafana and paste URL here
 # See: https://grafana.com/docs/grafana/latest/dashboards/dashboard-public/
 PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=
 ```
@@ -43,7 +42,12 @@ PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=
 ## Features
 
 - **Provider Management**: Create, edit, delete, and toggle LLM providers
-- **Master Key Management**: Manage API keys with rate limiting and model restrictions
+- **Credential Management**: Manage API keys with rate limiting and model restrictions
+- **Chat Interface**: Interactive chat with LLM models using streaming responses
+  - Model selection from all available providers
+  - Real-time streaming responses
+  - Configurable parameters (max_tokens)
+  - Stop generation and clear conversation controls
 - **Authentication**: Secure login with admin API key
 - **Configuration**: Real-time config version display and reload
 - **Dashboard**: Embedded Grafana dashboard for monitoring (requires Public Dashboard URL)
@@ -54,6 +58,7 @@ PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=
 - Vite (build tool)
 - Tailwind CSS (styling)
 - pnpm (package manager)
+- Lucide Svelte (icons)
 
 ## Available Scripts
 
@@ -65,6 +70,34 @@ pnpm run check       # Run Svelte check
 pnpm run check:watch # Run Svelte check in watch mode
 ```
 
+## Chat Feature
+
+The Chat page allows you to interact with LLM models through the proxy:
+
+### Usage
+
+1. **Select a Model**: Choose from available models from enabled providers
+2. **Configure Parameters** (optional):
+   - **Max Tokens**: Maximum response length (100 - 8000, default: 2000)
+3. **Set Credential Key**: Open Settings and set credential key
+4. **Start Chatting**: Type your message and press Enter
+4. **Streaming Responses**: Responses stream in real-time
+5. **Controls**:
+   - **Stop**: Interrupt generation at any time
+   - **Clear**: Reset conversation history
+
+### Keyboard Shortcuts
+
+- `Enter`: Send message
+- `Shift + Enter`: Insert new line
+
+### Notes
+
+- Chat uses `/v1/chat/completions` API with streaming enabled
+- Requires valid credential keys configured in the system
+- Chat page requires a credential key input (separate from the admin key)
+- Models are loaded from `/v1/models` using the credential key (respects allowed_models)
+
 ## Troubleshooting
 
 ### Connection Issues
@@ -73,6 +106,13 @@ pnpm run check:watch # Run Svelte check in watch mode
 2. Check API Base URL is correct
 3. Ensure `ADMIN_KEY` is configured on server
 4. Check browser console for errors
+
+### Chat Issues
+
+1. Ensure at least one provider and credential are configured
+2. Check that providers are enabled
+3. Verify credential keys are valid
+4. Check network requests in browser dev tools
 
 ### Build Issues
 
@@ -95,6 +135,7 @@ src/
 │   ├── +page.svelte     # Login page
 │   ├── providers/       # Provider management
 │   ├── credentials/     # Credential management
+│   ├── chat/           # Chat interface
 │   └── dashboard/       # Grafana dashboard
 └── app.css              # Global styles
 ```
@@ -106,11 +147,13 @@ The Dashboard page embeds a Grafana Public Dashboard via iframe. To enable:
 1. **Enable Public Dashboard in Grafana**:
    - Set `GF_FEATURE_TOGGLES_ENABLE=publicDashboards` in Grafana config
    - Set `GF_SECURITY_ALLOW_EMBEDDING=true` for iframe support
-
 2. **Create a Public Dashboard**:
    - Open your dashboard in Grafana
    - Click Share → Public Dashboard
-   - Enable and copy the URL
-
-3. **Configure the URL**:
+   - Enable and copy URL
+3. **Configure URL**:
    - Set `PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL` in your `.env.local`
+
+---
+
+Last Updated: 2025-12-28 03:58 (Asia/Shanghai)
