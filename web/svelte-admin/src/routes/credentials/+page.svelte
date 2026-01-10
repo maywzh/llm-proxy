@@ -132,8 +132,8 @@
   <!-- Header -->
   <div class="flex justify-between items-center">
     <div>
-      <h1 class="text-2xl font-bold text-gray-900">Credentials</h1>
-      <p class="text-gray-600">
+      <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Credentials</h1>
+      <p class="text-gray-600 dark:text-gray-400">
         Manage API credentials for client authentication
       </p>
     </div>
@@ -197,7 +197,7 @@
         tabindex="-1"
       >
         <div class="modal-header">
-          <h3 class="text-lg font-semibold text-gray-900">
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
             {editingCredential ? 'Edit Credential' : 'Add Credential'}
           </h3>
           <button onclick={resetForm} class="btn-icon">
@@ -286,7 +286,7 @@
               bind:checked={formData.is_enabled}
               class="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
             />
-            <label for="is_enabled" class="ml-2 block text-sm text-gray-900">
+            <label for="is_enabled" class="ml-2 block text-sm text-gray-900 dark:text-gray-100">
               Enable this credential
             </label>
           </div>
@@ -321,7 +321,7 @@
         Credentials ({filteredCredentials.length})
       </h2>
       {#if $loading.credentials}
-        <div class="flex items-center text-gray-500">
+        <div class="flex items-center text-gray-500 dark:text-gray-400">
           <Loader2 class="w-5 h-5 animate-spin mr-2" />
           <span class="text-sm">Loading...</span>
         </div>
@@ -330,7 +330,7 @@
 
     <div class="card-body p-0">
       {#if filteredCredentials.length === 0}
-        <div class="text-center py-12 text-gray-500">
+        <div class="text-center py-12 text-gray-500 dark:text-gray-400">
           {searchTerm
             ? 'No credentials match your search.'
             : 'No credentials configured yet.'}
@@ -352,29 +352,29 @@
               {#each filteredCredentials as credential}
                 <tr>
                   <td>
-                    <div class="text-sm font-medium text-gray-900">
+                    <div class="text-sm font-medium text-gray-900 dark:text-gray-100">
                       {credential.name}
                     </div>
-                    <div class="text-xs text-gray-500">
+                    <div class="text-xs text-gray-500 dark:text-gray-400">
                       ID: {credential.id}
                     </div>
                   </td>
                   <td>
                     <code
-                      class="text-sm bg-gray-100 px-2 py-1 rounded font-mono"
+                      class="text-sm bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded font-mono"
                     >
                       {credential.key_preview}
                     </code>
                   </td>
                   <td>
-                    <div class="text-sm text-gray-500">
+                    <div class="text-sm text-gray-500 dark:text-gray-400">
                       {credential.allowed_models.length === 0
                         ? 'All models'
                         : `${credential.allowed_models.length} models`}
                     </div>
                   </td>
                   <td>
-                    <div class="text-sm text-gray-500">
+                    <div class="text-sm text-gray-500 dark:text-gray-400">
                       {credential.rate_limit
                         ? `${credential.rate_limit}/s`
                         : 'No limit'}
@@ -449,13 +449,13 @@
         tabindex="-1"
       >
         <div class="modal-header">
-          <h3 class="text-lg font-semibold text-gray-900">Delete Credential</h3>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Delete Credential</h3>
           <button onclick={() => (deleteConfirm = null)} class="btn-icon">
             <X class="w-5 h-5" />
           </button>
         </div>
         <div class="modal-body">
-          <p class="text-sm text-gray-600">
+          <p class="text-sm text-gray-600 dark:text-gray-400">
             Are you sure you want to delete credential
             <strong>{deleteConfirm.name}</strong>? This action cannot be undone.
           </p>
@@ -501,13 +501,13 @@
         tabindex="-1"
       >
         <div class="modal-header">
-          <h3 class="text-lg font-semibold text-gray-900">Rotate API Key</h3>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Rotate API Key</h3>
           <button onclick={() => (rotateConfirm = null)} class="btn-icon">
             <X class="w-5 h-5" />
           </button>
         </div>
         <div class="modal-body">
-          <p class="text-sm text-gray-600">
+          <p class="text-sm text-gray-600 dark:text-gray-400">
             Are you sure you want to rotate the key for
             <strong>{rotateConfirm.name}</strong>? The old key will be
             invalidated immediately.
@@ -554,7 +554,7 @@
         tabindex="-1"
       >
         <div class="modal-header">
-          <h3 class="text-lg font-semibold text-gray-900">
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
             New API Key Generated
           </h3>
           <button onclick={() => (newRotatedKey = null)} class="btn-icon">
@@ -563,14 +563,14 @@
         </div>
         <div class="modal-body">
           <div class="alert-success mb-4">
-            <p class="text-sm text-green-700 font-medium">
+            <p class="text-sm text-green-700 dark:text-green-400 font-medium">
               Key rotated successfully!
             </p>
           </div>
-          <p class="text-sm text-gray-600 mb-3">
+          <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">
             Save this key securely. It will not be shown again.
           </p>
-          <div class="bg-gray-50 rounded-lg p-4 border border-gray-200">
+          <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
             <code class="text-sm font-mono break-all">
               {newRotatedKey}
             </code>

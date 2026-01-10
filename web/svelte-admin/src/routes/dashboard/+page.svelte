@@ -40,11 +40,11 @@
   <title>Dashboard - LLM Proxy Admin</title>
 </svelte:head>
 
-<div class="space-y-4 {isFullscreen ? 'fixed inset-0 z-50 bg-white p-4' : ''}">
+<div class="space-y-4 {isFullscreen ? 'fixed inset-0 z-50 bg-white dark:bg-gray-900 p-4' : ''}">
   <div class="flex items-center justify-between">
     <div class="flex items-center space-x-3">
       <LayoutDashboard class="w-6 h-6 text-primary-600" />
-      <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+      <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Dashboard</h1>
     </div>
 
     {#if publicDashboardUrl}
@@ -85,11 +85,11 @@
   {#if !publicDashboardUrl}
     <div class="card p-8 text-center">
       <LayoutDashboard class="w-16 h-16 text-gray-300 mx-auto mb-4" />
-      <h2 class="text-xl font-semibold text-gray-700 mb-2">
+      <h2 class="text-xl font-semibold text-gray-700 dark:text-gray-300 mb-2">
         Grafana Dashboard Not Configured
       </h2>
-      <p class="text-gray-500 mb-4">
-        Please set the <code class="bg-gray-100 px-2 py-1 rounded"
+      <p class="text-gray-500 dark:text-gray-400 mb-4">
+        Please set the <code class="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded"
           >PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL</code
         > environment variable.
       </p>
@@ -107,13 +107,13 @@
     <div class="card p-0 overflow-hidden relative">
       {#if isLoading}
         <div
-          class="absolute inset-0 flex items-center justify-center bg-gray-50 z-10"
+          class="absolute inset-0 flex items-center justify-center bg-gray-50 dark:bg-gray-800 z-10"
         >
           <div class="text-center">
             <div
               class="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"
             ></div>
-            <p class="mt-4 text-gray-600">Loading dashboard...</p>
+            <p class="mt-4 text-gray-600 dark:text-gray-400">Loading dashboard...</p>
           </div>
         </div>
       {/if}
