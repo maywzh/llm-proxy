@@ -18,6 +18,7 @@ import type {
   ChatContentPart,
 } from '../types';
 import { renderMarkdownToHtml } from '../utils/markdown';
+import { ChatMessageActions } from '../components/ChatMessageActions';
 
 const VISION_MODEL_ALLOWLIST = (
   import.meta.env.VITE_CHAT_VISION_MODEL_ALLOWLIST as string | undefined
@@ -46,6 +47,32 @@ const maskCredentialKey = (key: string) => {
   return `${trimmed.slice(0, prefixLen)}*****`;
 };
 
+const getMessageCopyText = (msg: ChatMessage): string => {
+  if (typeof msg.content === 'string') return msg.content;
+  return msg.content
+    .filter((p): p is Extract<ChatContentPart, { type: 'text' }> => p.type === 'text')
+    .map(p => p.text)
+    .join('\n');
+};
+
+const copyToClipboard = async (text: string) => {
+  const value = text ?? '';
+  if (!value) return;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
+};
+
 const Chat: React.FC = () => {
   const { apiClient } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -65,6 +92,7 @@ const Chat: React.FC = () => {
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [maxTokens, setMaxTokens] = useState(2000);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const credentialKeyInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -73,6 +101,12 @@ const Chat: React.FC = () => {
     const stored = localStorage.getItem('chat-credential-key');
     if (stored) setCredentialKey(stored);
   }, []);
+
+  useEffect(() => {
+    if (selectedModel.trim()) {
+      localStorage.setItem('chat-selected-model', selectedModel.trim());
+    }
+  }, [selectedModel]);
 
   useEffect(() => {
     if (credentialKey.trim()) {
@@ -123,9 +157,16 @@ const Chat: React.FC = () => {
       setModels(response.data);
       setModelsError(null);
 
-      if (!selectedModel && response.data.length > 0) {
-        setSelectedModel(response.data[0].id);
-      }
+      const savedModel = localStorage
+        .getItem('chat-selected-model')
+        ?.trim();
+      const available = new Set(response.data.map(m => m.id));
+      const nextModel =
+        (savedModel && available.has(savedModel) && savedModel) ||
+        (selectedModel && available.has(selectedModel) && selectedModel) ||
+        (response.data[0]?.id ?? '');
+
+      if (nextModel !== selectedModel) setSelectedModel(nextModel);
     } catch (error) {
       console.error('Failed to load models:', error);
       setModels([]);
@@ -375,6 +416,14 @@ const Chat: React.FC = () => {
     );
   };
 
+  const handleCopy = async (msg: ChatMessage, index: number) => {
+    await copyToClipboard(getMessageCopyText(msg));
+    setCopiedIndex(index);
+    window.setTimeout(() => {
+      setCopiedIndex(current => (current === index ? null : current));
+    }, 1500);
+  };
+
   return (
     <div className="max-w-7xl mx-auto">
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 h-[calc(100vh-180px)] flex flex-col">
@@ -512,14 +561,28 @@ const Chat: React.FC = () => {
                 key={index}
                 className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
-                <div
-                  className={`max-w-[80%] rounded-lg px-4 py-3 ${
-                    msg.role === 'user'
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
-                  }`}
-                >
-                  {renderMessageContent(msg, index)}
+                <div className="group max-w-[80%]">
+                  <div
+                    className={`rounded-lg px-4 py-3 ${
+                      msg.role === 'user'
+                        ? 'bg-primary-600 text-white'
+                        : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
+                    }`}
+                  >
+                    {renderMessageContent(msg, index)}
+                  </div>
+                  {msg.role === 'assistant' ? (
+                    <ChatMessageActions
+                      copied={copiedIndex === index}
+                      onCopy={() => handleCopy(msg, index)}
+                      disabled={
+                        isWaitingFirstToken &&
+                        typeof msg.content === 'string' &&
+                        !msg.content &&
+                        index === messages.length - 1
+                      }
+                    />
+                  ) : null}
                 </div>
               </div>
             ))
