@@ -1,7 +1,39 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Send, Loader2, Trash2, Settings, Zap, StopCircle } from 'lucide-react';
-import type { ChatMessage, ChatRequest, StreamChunk, Model } from '../types';
+import {
+  Send,
+  Loader2,
+  Trash2,
+  Settings,
+  Zap,
+  StopCircle,
+  ImagePlus,
+  X,
+} from 'lucide-react';
+import type {
+  ChatMessage,
+  ChatRequest,
+  StreamChunk,
+  Model,
+  ChatContentPart,
+} from '../types';
+import { renderMarkdownToHtml } from '../utils/markdown';
+
+const VISION_MODEL_ALLOWLIST = (
+  import.meta.env.VITE_CHAT_VISION_MODEL_ALLOWLIST as string | undefined
+)
+  ?.split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const isVisionModel = (model: string) => {
+  if (!VISION_MODEL_ALLOWLIST || VISION_MODEL_ALLOWLIST.length === 0)
+    return false;
+  const normalized = model.trim().toLowerCase();
+  return VISION_MODEL_ALLOWLIST.some(prefix =>
+    normalized.startsWith(prefix.toLowerCase())
+  );
+};
 
 const maskCredentialKey = (key: string) => {
   const trimmed = key.trim();
@@ -20,6 +52,8 @@ const Chat: React.FC = () => {
   const [input, setInput] = useState('');
   const [credentialKey, setCredentialKey] = useState('');
   const [isEditingCredentialKey, setIsEditingCredentialKey] = useState(false);
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isWaitingFirstToken, setIsWaitingFirstToken] = useState(false);
@@ -33,6 +67,7 @@ const Chat: React.FC = () => {
   const [maxTokens, setMaxTokens] = useState(2000);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const credentialKeyInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const stored = localStorage.getItem('chat-credential-key');
@@ -101,18 +136,85 @@ const Chat: React.FC = () => {
     }
   };
 
+  const handlePickImage = () => {
+    setImageError(null);
+    if (!isVisionModel(selectedModel)) {
+      setImageError('当前选择的模型不支持图片输入');
+      return;
+    }
+    imageInputRef.current?.click();
+  };
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setImageError(null);
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!isVisionModel(selectedModel)) {
+      setImageError('当前选择的模型不支持图片输入');
+      e.target.value = '';
+      return;
+    }
+
+    const maxBytes = 5 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      setImageError('图片过大（最大 5MB）');
+      e.target.value = '';
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setImageError('仅支持图片文件');
+      e.target.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === 'string') {
+        setImageDataUrl(result);
+      } else {
+        setImageError('读取图片失败');
+      }
+    };
+    reader.onerror = () => setImageError('读取图片失败');
+    reader.readAsDataURL(file);
+
+    e.target.value = '';
+  };
+
   const handleSend = async () => {
-    if (!input.trim() || !selectedModel || !credentialKey.trim() || isLoading)
+    if (
+      (!input.trim() && !imageDataUrl) ||
+      !selectedModel ||
+      !credentialKey.trim() ||
+      isLoading
+    )
       return;
 
-    const userMessage: ChatMessage = {
-      role: 'user',
-      content: input.trim(),
-    };
+    if (imageDataUrl && !isVisionModel(selectedModel)) {
+      setImageError('当前选择的模型不支持图片输入');
+      return;
+    }
+
+    const contentText = input.trim();
+    let content: ChatMessage['content'];
+    if (imageDataUrl) {
+      const parts: ChatContentPart[] = [];
+      if (contentText) parts.push({ type: 'text', text: contentText });
+      parts.push({ type: 'image_url', image_url: { url: imageDataUrl } });
+      content = parts;
+    } else {
+      content = contentText;
+    }
+
+    const userMessage: ChatMessage = { role: 'user', content };
 
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     setInput('');
+    setImageDataUrl(null);
     setIsLoading(true);
     setIsStreaming(true);
     setIsWaitingFirstToken(true);
@@ -205,6 +307,8 @@ const Chat: React.FC = () => {
 
   const handleClear = () => {
     setMessages([]);
+    setImageDataUrl(null);
+    setImageError(null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -216,6 +320,59 @@ const Chat: React.FC = () => {
 
   const getAllModels = () => {
     return models.map(m => ({ value: m.id, label: m.id }));
+  };
+
+  const renderMessageContent = (msg: ChatMessage, index: number) => {
+    if (
+      msg.role === 'assistant' &&
+      typeof msg.content === 'string' &&
+      !msg.content &&
+      isWaitingFirstToken &&
+      index === messages.length - 1
+    ) {
+      return (
+        <span className="inline-block animate-pulse" aria-label="typing">
+          ▍
+        </span>
+      );
+    }
+
+    if (typeof msg.content === 'string') {
+      return (
+        <div
+          className="markdown break-words"
+          dangerouslySetInnerHTML={{
+            __html: renderMarkdownToHtml(msg.content),
+          }}
+        />
+      );
+    }
+
+    return (
+      <div className="space-y-2">
+        {msg.content.map((part, partIndex) => {
+          if (part.type === 'text') {
+            return (
+              <div
+                key={partIndex}
+                className="markdown break-words"
+                dangerouslySetInnerHTML={{
+                  __html: renderMarkdownToHtml(part.text),
+                }}
+              />
+            );
+          }
+          return (
+            <img
+              key={partIndex}
+              src={part.image_url.url}
+              alt="uploaded"
+              className="max-h-64 rounded-lg border border-gray-200 dark:border-gray-600"
+            />
+          );
+        })}
+      </div>
+    );
   };
 
   return (
@@ -362,19 +519,7 @@ const Chat: React.FC = () => {
                       : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
                   }`}
                 >
-                  <p className="whitespace-pre-wrap break-words">
-                    {msg.content ||
-                      (msg.role === 'assistant' &&
-                      isWaitingFirstToken &&
-                      index === messages.length - 1 ? (
-                        <span
-                          className="inline-block animate-pulse"
-                          aria-label="typing"
-                        >
-                          ▍
-                        </span>
-                      ) : null)}
-                  </p>
+                  {renderMessageContent(msg, index)}
                 </div>
               </div>
             ))
@@ -384,6 +529,28 @@ const Chat: React.FC = () => {
 
         {/* Input Area */}
         <div className="border-t border-gray-200 dark:border-gray-700 p-4">
+          {imageDataUrl ? (
+            <div className="mb-3 flex items-center space-x-3">
+              <img
+                src={imageDataUrl}
+                alt="preview"
+                className="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600"
+              />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setImageDataUrl(null)}
+                title="Remove image"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ) : null}
+          {imageError ? (
+            <p className="mb-3 text-sm text-red-600 dark:text-red-400">
+              {imageError}
+            </p>
+          ) : null}
           <div className="flex space-x-2">
             <textarea
               value={input}
@@ -395,6 +562,26 @@ const Chat: React.FC = () => {
               disabled={isLoading}
             />
             <div className="flex flex-col space-y-2">
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleImageChange}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={handlePickImage}
+                disabled={!isVisionModel(selectedModel) || isLoading}
+                className="btn btn-secondary flex items-center justify-center"
+                title={
+                  isVisionModel(selectedModel)
+                    ? 'Attach image'
+                    : 'Image input is disabled for this model'
+                }
+              >
+                <ImagePlus className="w-5 h-5" />
+              </button>
               {isStreaming ? (
                 <button
                   onClick={handleStop}
@@ -406,7 +593,11 @@ const Chat: React.FC = () => {
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={!input.trim() || !credentialKey.trim() || isLoading}
+                  disabled={
+                    (!input.trim() && !imageDataUrl) ||
+                    !credentialKey.trim() ||
+                    isLoading
+                  }
                   className="btn btn-primary flex items-center justify-center"
                   title="Send Message"
                 >
