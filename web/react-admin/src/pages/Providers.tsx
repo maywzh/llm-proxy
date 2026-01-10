@@ -199,8 +199,8 @@ const Providers: React.FC = () => {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Providers</h1>
-          <p className="text-gray-600">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Providers</h1>
+          <p className="text-gray-600 dark:text-gray-400">
             Manage your LLM provider configurations
           </p>
         </div>
@@ -251,7 +251,7 @@ const Providers: React.FC = () => {
         <div className="modal-overlay" onClick={resetForm}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="text-lg font-semibold text-gray-900">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 {editingProvider ? 'Edit Provider' : 'Add Provider'}
               </h3>
               <button
@@ -388,7 +388,7 @@ const Providers: React.FC = () => {
               />
               <label
                 htmlFor="is_enabled"
-                className="ml-2 block text-sm text-gray-900"
+                className="ml-2 block text-sm text-gray-900 dark:text-gray-100"
               >
                 Enable this provider
               </label>
@@ -423,7 +423,7 @@ const Providers: React.FC = () => {
         <div className="card-header flex justify-between items-center">
           <h2 className="card-title">Providers ({filteredProviders.length})</h2>
           {loading && (
-            <div className="flex items-center text-gray-500">
+            <div className="flex items-center text-gray-500 dark:text-gray-400">
               <Loader2 className="w-5 h-5 animate-spin mr-2" />
               <span className="text-sm">Loading...</span>
             </div>
@@ -432,7 +432,7 @@ const Providers: React.FC = () => {
 
         <div className="card-body p-0">
           {filteredProviders.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">
+            <div className="text-center py-12 text-gray-500 dark:text-gray-400">
               {searchTerm
                 ? 'No providers match your search.'
                 : 'No providers configured yet.'}
@@ -454,10 +454,10 @@ const Providers: React.FC = () => {
                   {filteredProviders.map(provider => (
                     <tr key={provider.id}>
                       <td>
-                        <div className="text-sm font-medium text-gray-900">
+                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                           {provider.provider_key}
                         </div>
-                        <div className="text-xs text-gray-500">
+                        <div className="text-xs text-gray-500 dark:text-gray-400">
                           ID: {provider.id}
                         </div>
                       </td>
@@ -468,14 +468,14 @@ const Providers: React.FC = () => {
                       </td>
                       <td>
                         <div
-                          className="text-sm text-gray-900 max-w-xs truncate"
+                          className="text-sm text-gray-900 dark:text-gray-100 max-w-xs truncate"
                           title={provider.api_base}
                         >
                           {provider.api_base}
                         </div>
                       </td>
                       <td>
-                        <div className="text-sm text-gray-500">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">
                           {Object.keys(provider.model_mapping).length} mappings
                         </div>
                       </td>
@@ -533,7 +533,7 @@ const Providers: React.FC = () => {
         <div className="modal-overlay" onClick={() => setDeleteConfirm(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="text-lg font-semibold text-gray-900">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Delete Provider
               </h3>
               <button
@@ -544,7 +544,7 @@ const Providers: React.FC = () => {
               </button>
             </div>
             <div className="modal-body">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
                 Are you sure you want to delete provider{' '}
                 <strong>{deleteConfirm.provider_key}</strong>? This action
                 cannot be undone.

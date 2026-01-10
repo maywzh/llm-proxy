@@ -21,6 +21,6 @@
     <div
       class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"
     ></div>
-    <p class="mt-2 text-gray-600">Redirecting to login...</p>
+    <p class="mt-2 text-gray-600 dark:text-gray-400">Redirecting to login...</p>
   </div>
 </div>

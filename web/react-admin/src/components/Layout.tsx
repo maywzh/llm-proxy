@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useTheme } from '../contexts/ThemeContext';
 import {
   Plug,
   Key,
@@ -9,6 +10,9 @@ import {
   Menu,
   X,
   LayoutDashboard,
+  Sun,
+  Moon,
+  Monitor,
 } from 'lucide-react';
 import type { ConfigVersionResponse } from '../types';
 
@@ -18,11 +22,14 @@ interface LayoutProps {
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const { apiClient, logout } = useAuth();
+  const { theme, setTheme } = useTheme();
   const location = useLocation();
   const [configVersion, setConfigVersion] =
     useState<ConfigVersionResponse | null>(null);
   const [isReloading, setIsReloading] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
+  const themeMenuRef = useRef<HTMLDivElement>(null);
 
   // Navigation items
   const navItems = [
@@ -37,6 +44,23 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       apiClient.getConfigVersion().then(setConfigVersion).catch(console.error);
     }
   }, [apiClient]);
+
+  // Close theme menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        themeMenuRef.current &&
+        !themeMenuRef.current.contains(event.target as Node)
+      ) {
+        setShowThemeMenu(false);
+      }
+    };
+
+    if (showThemeMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showThemeMenu]);
 
   const handleLogout = () => {
     logout();
@@ -59,8 +83,14 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     }
   };
 
+  const getThemeIcon = () => {
+    if (theme === 'light') return <Sun className="w-4 h-4" />;
+    if (theme === 'dark') return <Moon className="w-4 h-4" />;
+    return <Monitor className="w-4 h-4" />;
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       {/* Sidebar - Desktop */}
       <aside className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
         <div className="flex flex-col grow bg-gray-900 overflow-y-auto">
@@ -111,7 +141,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       {isMobileMenuOpen && (
         <div className="lg:hidden">
           <div
-            className="fixed inset-0 bg-black bg-opacity-50 z-40"
+            className="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-70 z-40"
             onClick={() => setIsMobileMenuOpen(false)}
           />
           <aside className="fixed inset-y-0 left-0 flex flex-col w-64 bg-gray-900 z-50">
@@ -126,7 +156,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               </div>
               <button
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="text-gray-400 hover:text-white"
+                className="text-gray-400 dark:text-gray-500 hover:text-white"
               >
                 <X className="w-6 h-6" />
               </button>
@@ -166,7 +196,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       {/* Main Content */}
       <div className="lg:pl-64 flex flex-col flex-1">
         {/* Top Header */}
-        <header className="sticky top-0 z-30 bg-white shadow-sm border-b border-gray-200">
+        <header className="sticky top-0 z-30 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
           <div className="px-4 sm:px-6 lg:px-8">
             <div className="flex items-center justify-between h-16">
               {/* Mobile menu button */}
@@ -179,7 +209,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
               {/* Page title - hidden on mobile, shown on desktop */}
               <div className="hidden lg:block">
-                <h1 className="text-xl font-semibold text-gray-900">
+                <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
                   {navItems.find(item => item.href === location.pathname)
                     ?.label || 'Admin'}
                 </h1>
@@ -192,6 +222,67 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                     v{configVersion.version}
                   </span>
                 )}
+
+                {/* Theme Toggle */}
+                <div className="relative" ref={themeMenuRef}>
+                  <button
+                    onClick={() => setShowThemeMenu(!showThemeMenu)}
+                    className="btn btn-secondary text-sm flex items-center space-x-2"
+                    title="Theme"
+                  >
+                    {getThemeIcon()}
+                  </button>
+
+                  {showThemeMenu && (
+                    <div
+                      className="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <button
+                        onClick={() => {
+                          setTheme('light');
+                          setShowThemeMenu(false);
+                        }}
+                        className={`w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center space-x-2 ${
+                          theme === 'light'
+                            ? 'bg-gray-100 dark:bg-gray-700'
+                            : ''
+                        }`}
+                      >
+                        <Sun className="w-4 h-4" />
+                        <span>Light</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setTheme('dark');
+                          setShowThemeMenu(false);
+                        }}
+                        className={`w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center space-x-2 ${
+                          theme === 'dark'
+                            ? 'bg-gray-100 dark:bg-gray-700'
+                            : ''
+                        }`}
+                      >
+                        <Moon className="w-4 h-4" />
+                        <span>Dark</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setTheme('system');
+                          setShowThemeMenu(false);
+                        }}
+                        className={`w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center space-x-2 ${
+                          theme === 'system'
+                            ? 'bg-gray-100 dark:bg-gray-700'
+                            : ''
+                        }`}
+                      >
+                        <Monitor className="w-4 h-4" />
+                        <span>System</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
 
                 <button
                   onClick={handleReloadConfig}

@@ -32,7 +32,7 @@ VITE_PUBLIC_API_BASE_URL=http://127.0.0.1:17999
 # Optional: Grafana Public Dashboard URL for dashboard page
 # Create a public dashboard in Grafana and paste the URL here
 # See: https://grafana.com/docs/grafana/latest/dashboards/dashboard-public/
-VITE_GRAFANA_PUBLIC_DASHBOARD_URL=
+PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=
 ```
 
 ### Login Credentials
@@ -111,4 +111,4 @@ The Dashboard page embeds a Grafana Public Dashboard via iframe. To enable:
    - Enable and copy the URL
 
 3. **Configure the URL**:
-   - Set `VITE_GRAFANA_PUBLIC_DASHBOARD_URL` in your `.env.local`
+   - Set `PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL` in your `.env.local`

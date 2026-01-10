@@ -33,7 +33,7 @@
 
       await Promise.all([
         actions.loadProviders(),
-        actions.loadMasterKeys(),
+        actions.loadCredentials(),
         actions.loadConfigVersion(),
       ]);
     } catch (err) {
@@ -56,7 +56,7 @@
 </svelte:head>
 
 <div
-  class="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 py-12 px-4 sm:px-6 lg:px-8"
+  class="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 py-12 px-4 sm:px-6 lg:px-8"
 >
   <div class="max-w-md w-full">
     <div class="card p-8">
@@ -67,8 +67,10 @@
         >
           <Plug class="w-8 h-8 text-white" />
         </div>
-        <h2 class="text-3xl font-bold text-gray-900">LLM Proxy</h2>
-        <p class="mt-2 text-sm text-gray-600">
+        <h2 class="text-3xl font-bold text-gray-900 dark:text-gray-100">
+          LLM Proxy
+        </h2>
+        <p class="mt-2 text-sm text-gray-600 dark:text-gray-400">
           Sign in to manage your proxy configuration
         </p>
       </div>
@@ -130,9 +132,11 @@
         </div>
 
         <div class="text-center">
-          <div class="text-sm text-gray-600">
+          <div class="text-sm text-gray-600 dark:text-gray-400">
             <p class="mb-2 font-medium">Need help?</p>
-            <ul class="text-xs space-y-1 text-left bg-gray-50 rounded-lg p-3">
+            <ul
+              class="text-xs space-y-1 text-left bg-gray-50 dark:bg-gray-800 rounded-lg p-3"
+            >
               <li class="flex items-start">
                 <span class="text-primary-600 mr-2">•</span>
                 <span>Make sure your LLM Proxy server is running</span>

@@ -212,8 +212,8 @@ const Credentials: React.FC = () => {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Credentials</h1>
-          <p className="text-gray-600">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Credentials</h1>
+          <p className="text-gray-600 dark:text-gray-400">
             Manage API credentials for client authentication
           </p>
         </div>
@@ -264,7 +264,7 @@ const Credentials: React.FC = () => {
         <div className="modal-overlay" onClick={resetForm}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="text-lg font-semibold text-gray-900">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 {editingCredential ? 'Edit Credential' : 'Add Credential'}
               </h3>
               <button onClick={resetForm} className="btn-icon">
@@ -379,7 +379,7 @@ const Credentials: React.FC = () => {
                 />
                 <label
                   htmlFor="is_enabled"
-                  className="ml-2 block text-sm text-gray-900"
+                  className="ml-2 block text-sm text-gray-900 dark:text-gray-100"
                 >
                   Enable this credential
                 </label>
@@ -417,7 +417,7 @@ const Credentials: React.FC = () => {
             Credentials ({filteredCredentials.length})
           </h2>
           {loading && (
-            <div className="flex items-center text-gray-500">
+            <div className="flex items-center text-gray-500 dark:text-gray-400">
               <Loader2 className="w-5 h-5 animate-spin mr-2" />
               <span className="text-sm">Loading...</span>
             </div>
@@ -426,7 +426,7 @@ const Credentials: React.FC = () => {
 
         <div className="card-body p-0">
           {filteredCredentials.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">
+            <div className="text-center py-12 text-gray-500 dark:text-gray-400">
               {searchTerm
                 ? 'No credentials match your search.'
                 : 'No credentials configured yet.'}
@@ -448,27 +448,27 @@ const Credentials: React.FC = () => {
                   {filteredCredentials.map(credential => (
                     <tr key={credential.id}>
                       <td>
-                        <div className="text-sm font-medium text-gray-900">
+                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                           {credential.name}
                         </div>
-                        <div className="text-xs text-gray-500">
+                        <div className="text-xs text-gray-500 dark:text-gray-400">
                           ID: {credential.id}
                         </div>
                       </td>
                       <td>
-                        <code className="text-sm bg-gray-100 px-2 py-1 rounded font-mono">
+                        <code className="text-sm bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded font-mono">
                           {credential.key_preview}
                         </code>
                       </td>
                       <td>
-                        <div className="text-sm text-gray-500">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">
                           {credential.allowed_models.length === 0
                             ? 'All models'
                             : `${credential.allowed_models.length} models`}
                         </div>
                       </td>
                       <td>
-                        <div className="text-sm text-gray-500">
+                        <div className="text-sm text-gray-500 dark:text-gray-400">
                           {credential.rate_limit
                             ? `${credential.rate_limit}/s`
                             : 'No limit'}
@@ -535,7 +535,7 @@ const Credentials: React.FC = () => {
         <div className="modal-overlay" onClick={() => setDeleteConfirm(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="text-lg font-semibold text-gray-900">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Delete Credential
               </h3>
               <button
@@ -546,7 +546,7 @@ const Credentials: React.FC = () => {
               </button>
             </div>
             <div className="modal-body">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
                 Are you sure you want to delete credential{' '}
                 <strong>{deleteConfirm.name}</strong>? This action cannot be
                 undone.
@@ -577,7 +577,7 @@ const Credentials: React.FC = () => {
         <div className="modal-overlay" onClick={() => setRotateConfirm(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="text-lg font-semibold text-gray-900">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Rotate API Key
               </h3>
               <button
@@ -588,7 +588,7 @@ const Credentials: React.FC = () => {
               </button>
             </div>
             <div className="modal-body">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
                 Are you sure you want to rotate the key for{' '}
                 <strong>{rotateConfirm.name}</strong>? The old key will be
                 invalidated immediately.
@@ -619,7 +619,7 @@ const Credentials: React.FC = () => {
         <div className="modal-overlay" onClick={() => setNewRotatedKey(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="text-lg font-semibold text-gray-900">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 New API Key Generated
               </h3>
               <button
@@ -635,10 +635,10 @@ const Credentials: React.FC = () => {
                   Key rotated successfully!
                 </p>
               </div>
-              <p className="text-sm text-gray-600 mb-3">
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
                 Save this key securely. It will not be shown again.
               </p>
-              <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+              <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
                 <code className="text-sm font-mono break-all">
                   {newRotatedKey}
                 </code>
