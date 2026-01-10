@@ -228,6 +228,123 @@
   .alert-info {
     @apply bg-blue-50 dark:bg-blue-900/20 border-l-4 border-blue-400 dark:border-blue-500 p-4 rounded-r-lg;
   }
+
+  /* Markdown Styles */
+  .markdown {
+    @apply leading-relaxed;
+  }
+
+  .markdown > :first-child {
+    @apply mt-0;
+  }
+
+  .markdown > :last-child {
+    @apply mb-0;
+  }
+
+  .markdown :where(p) {
+    @apply my-2;
+  }
+
+  .markdown :where(ul) {
+    @apply my-2 pl-4 list-disc list-inside;
+  }
+
+  .markdown :where(ol) {
+    @apply my-2 pl-4 list-decimal list-inside;
+  }
+
+  .markdown :where(li) {
+    @apply my-1;
+  }
+
+  .markdown :where(ul ul, ol ol, ul ol, ol ul) {
+    @apply mt-1 mb-1 pl-4;
+  }
+
+  .markdown :where(li)::marker {
+    color: currentColor;
+  }
+
+  .markdown :where(a) {
+    @apply underline underline-offset-2 break-words text-inherit;
+  }
+
+  .markdown :where(strong) {
+    @apply font-semibold;
+  }
+
+  .markdown :where(em) {
+    @apply italic;
+  }
+
+  .markdown :where(del) {
+    @apply line-through opacity-90;
+  }
+
+  .markdown :where(h1) {
+    @apply text-xl font-semibold mt-4 mb-2;
+  }
+
+  .markdown :where(h2) {
+    @apply text-lg font-semibold mt-4 mb-2;
+  }
+
+  .markdown :where(h3) {
+    @apply text-base font-semibold mt-3 mb-1;
+  }
+
+  .markdown :where(h4) {
+    @apply text-sm font-semibold mt-3 mb-1;
+  }
+
+  .markdown :where(h5) {
+    @apply text-sm font-semibold mt-3 mb-1;
+  }
+
+  .markdown :where(h6) {
+    @apply text-sm font-semibold mt-3 mb-1;
+  }
+
+  .markdown :where(blockquote) {
+    @apply my-3 pl-4 border-l-4 border-gray-300 dark:border-gray-600 opacity-90;
+  }
+
+  .markdown :where(code) {
+    @apply font-mono text-[0.875em] px-1 py-0.5 rounded bg-black/5 dark:bg-white/10;
+  }
+
+  .markdown :where(pre) {
+    @apply my-3 p-3 rounded-lg overflow-x-auto bg-black/5 dark:bg-white/10 text-sm whitespace-pre;
+  }
+
+  .markdown :where(pre code) {
+    @apply bg-transparent p-0 whitespace-pre;
+  }
+
+  .markdown :where(kbd) {
+    @apply font-mono text-[0.85em] px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-600 bg-white/40 dark:bg-black/20;
+  }
+
+  .markdown :where(hr) {
+    @apply my-4 border-gray-200 dark:border-gray-600;
+  }
+
+  .markdown :where(table) {
+    @apply my-3 w-full border-collapse;
+  }
+
+  .markdown :where(th, td) {
+    @apply border border-gray-200 dark:border-gray-600 px-3 py-2 align-top;
+  }
+
+  .markdown :where(th) {
+    @apply bg-gray-50 dark:bg-gray-800 font-medium;
+  }
+
+  .markdown :where(img) {
+    @apply max-w-full h-auto rounded-lg border border-gray-200 dark:border-gray-600;
+  }
 }
 
 @keyframes slideInRight {

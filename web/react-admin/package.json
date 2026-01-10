@@ -12,7 +12,9 @@
     "format": "prettier --write \"src/**/*.{js,ts,jsx,tsx,css,json,md}\""
   },
   "dependencies": {
+    "isomorphic-dompurify": "^2.35.0",
     "lucide-react": "^0.513.0",
+    "marked": "^17.0.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "react-router-dom": "^7.6.1"
