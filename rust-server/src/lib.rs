@@ -35,7 +35,7 @@ pub mod core;
 pub mod services;
 
 // Re-export commonly used types for convenience
-pub use api::{admin_router, AdminApiDoc, AdminState, AppState, ChatCompletionRequest, ChatCompletionResponse, CombinedApiDoc, V1ApiDoc};
+pub use api::{admin_router, combined_openapi, AdminApiDoc, AdminState, AppState, ChatCompletionRequest, ChatCompletionResponse, V1ApiDoc};
 pub use core::{
     admin_logging_middleware, AppConfig, AppError, Database, DatabaseConfig, DynamicConfig,
     Result, RuntimeConfig,

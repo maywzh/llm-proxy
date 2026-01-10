@@ -117,79 +117,43 @@ pub struct AdminApiDoc;
 )]
 pub struct V1ApiDoc;
 
-/// Combined OpenAPI documentation for all APIs
-#[derive(OpenApi)]
-#[openapi(
-    paths(
-        // Admin API paths
-        validate_admin_key,
-        list_providers,
-        create_provider,
-        get_provider,
-        update_provider,
-        delete_provider,
-        list_credentials,
-        create_credential,
-        get_credential,
-        update_credential,
-        delete_credential,
-        get_config_version,
-        reload_config,
-        // V1 API paths
-        crate::api::handlers::chat_completions,
-        crate::api::handlers::completions,
-        crate::api::handlers::list_models,
-    ),
-    components(
-        schemas(
-            // Admin API schemas
-            AuthValidateResponse,
-            ProviderListResponse,
-            ProviderResponse,
-            CreateProviderRequest,
-            UpdateProviderRequest,
-            CredentialListResponse,
-            CredentialResponse,
-            CreateCredentialRequest,
-            UpdateCredentialRequest,
-            ConfigVersionResponse,
-            AdminErrorResponse,
-            // V1 API schemas
-            crate::api::models::ChatCompletionRequest,
-            crate::api::models::ChatCompletionResponse,
-            crate::api::models::Message,
-            crate::api::models::Choice,
-            crate::api::models::Usage,
-            crate::api::models::ModelList,
-            crate::api::models::ModelInfo,
-            crate::api::models::ApiErrorResponse,
-            crate::api::models::ApiErrorDetail,
-        )
-    ),
-    tags(
-        (name = "completions", description = "OpenAI-compatible completion endpoints"),
-        (name = "models", description = "OpenAI-compatible model listing endpoints"),
-        (name = "auth", description = "Authentication endpoints"),
-        (name = "providers", description = "Provider management endpoints"),
-        (name = "credentials", description = "Credential management endpoints"),
-        (name = "config", description = "Configuration management endpoints")
-    ),
-    info(
-        title = "LLM Proxy API",
-        version = "1.0.0",
-        description = "LLM Proxy API with OpenAI-compatible endpoints and Admin API for configuration management.",
-        license(name = "MIT")
-    ),
-    servers(
-        (url = "http://127.0.0.1:17999", description = "Local development server"),
-        (url = "http://localhost:17999", description = "Local development server (localhost)")
-    ),
-    security(
-        ("bearer_auth" = [])
-    ),
-    modifiers(&SecurityAddon)
-)]
-pub struct CombinedApiDoc;
+/// Create combined OpenAPI documentation by merging Admin and V1 APIs at runtime.
+/// This avoids duplication in the source code while providing a unified API doc.
+pub fn combined_openapi() -> utoipa::openapi::OpenApi {
+    let mut combined = AdminApiDoc::openapi();
+    let v1_doc = V1ApiDoc::openapi();
+    
+    // Merge paths
+    for (path, item) in v1_doc.paths.paths {
+        combined.paths.paths.insert(path, item);
+    }
+    
+    // Merge components (schemas)
+    if let Some(v1_components) = v1_doc.components {
+        if let Some(ref mut combined_components) = combined.components {
+            for (name, schema) in v1_components.schemas {
+                combined_components.schemas.insert(name, schema);
+            }
+        }
+    }
+    
+    // Merge tags
+    if let Some(v1_tags) = v1_doc.tags {
+        if let Some(ref mut combined_tags) = combined.tags {
+            combined_tags.extend(v1_tags);
+        } else {
+            combined.tags = Some(v1_tags);
+        }
+    }
+    
+    // Update info for combined doc
+    combined.info.title = "LLM Proxy API".to_string();
+    combined.info.description = Some(
+        "LLM Proxy API with OpenAI-compatible endpoints and Admin API for configuration management.".to_string()
+    );
+    
+    combined
+}
 
 struct SecurityAddon;
 
@@ -307,6 +271,7 @@ pub struct ProviderListResponse {
     "provider_type": "openai",
     "api_base": "https://api.openai.com/v1",
     "model_mapping": {"gpt-4": "gpt-4-turbo"},
+    "weight": 1,
     "is_enabled": true,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
@@ -322,6 +287,8 @@ pub struct ProviderResponse {
     pub api_base: String,
     /// Model name mapping (request model -> provider model)
     pub model_mapping: std::collections::HashMap<String, String>,
+    /// Weight for load balancing (higher = more traffic)
+    pub weight: i32,
     /// Whether this provider is enabled
     pub is_enabled: bool,
     /// Creation timestamp (RFC 3339 format)
@@ -338,6 +305,7 @@ impl From<ProviderEntity> for ProviderResponse {
             provider_type: e.provider_type,
             api_base: e.api_base,
             model_mapping: e.model_mapping.0,
+            weight: e.weight,
             is_enabled: e.is_enabled,
             created_at: e.created_at.to_rfc3339(),
             updated_at: e.updated_at.to_rfc3339(),
@@ -353,6 +321,7 @@ impl From<ProviderEntity> for ProviderResponse {
     "api_base": "https://api.openai.com/v1",
     "api_key": "sk-your-api-key",
     "model_mapping": {"gpt-4": "gpt-4-turbo"},
+    "weight": 1,
     "is_enabled": true
 }))]
 pub struct CreateProviderRequest {
@@ -367,6 +336,9 @@ pub struct CreateProviderRequest {
     /// Model name mapping (request model -> provider model)
     #[serde(default)]
     pub model_mapping: std::collections::HashMap<String, String>,
+    /// Weight for load balancing (default: 1, higher = more traffic)
+    #[serde(default = "default_weight")]
+    pub weight: i32,
     /// Whether this provider is enabled (default: true)
     #[serde(default = "default_true")]
     pub is_enabled: bool,
@@ -376,6 +348,7 @@ pub struct CreateProviderRequest {
 #[derive(Debug, Deserialize, ToSchema)]
 #[schema(example = json!({
     "api_base": "https://api.openai.com/v1",
+    "weight": 2,
     "is_enabled": false
 }))]
 pub struct UpdateProviderRequest {
@@ -387,6 +360,8 @@ pub struct UpdateProviderRequest {
     pub api_key: Option<String>,
     /// Model name mapping (request model -> provider model)
     pub model_mapping: Option<std::collections::HashMap<String, String>>,
+    /// Weight for load balancing (higher = more traffic)
+    pub weight: Option<i32>,
     /// Whether this provider is enabled
     pub is_enabled: Option<bool>,
 }
@@ -563,6 +538,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_weight() -> i32 {
+    1
+}
+
 // ============================================================================
 // Provider Handlers
 // ============================================================================
@@ -673,6 +652,7 @@ pub async fn create_provider(
         api_base: req.api_base,
         api_key: req.api_key,
         model_mapping: req.model_mapping,
+        weight: req.weight,
         is_enabled: req.is_enabled,
     };
 
@@ -715,6 +695,7 @@ pub async fn update_provider(
         api_base: req.api_base,
         api_key: req.api_key,
         model_mapping: req.model_mapping,
+        weight: req.weight,
         is_enabled: req.is_enabled,
     };
 
