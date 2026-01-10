@@ -98,10 +98,10 @@
   {#if $auth.isAuthenticated}
     <!-- Sidebar - Desktop -->
     <aside class="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
-      <div class="flex flex-col flex-grow bg-gray-900 overflow-y-auto">
+      <div class="flex flex-col grow bg-gray-900 overflow-y-auto">
         <!-- Logo -->
         <div
-          class="flex items-center flex-shrink-0 px-4 py-5 border-b border-gray-800"
+          class="flex items-center shrink-0 px-4 py-5 border-b border-gray-800"
         >
           <div class="flex items-center space-x-3">
             <div
@@ -129,7 +129,7 @@
         </nav>
 
         <!-- User Section -->
-        <div class="flex-shrink-0 border-t border-gray-800 p-4">
+        <div class="shrink-0 border-t border-gray-800 p-4">
           <button
             onclick={handleLogout}
             class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 dark:text-gray-400 hover:bg-gray-800 dark:hover:bg-gray-700 hover:text-white transition-colors duration-200 rounded-lg"
@@ -189,7 +189,7 @@
             {/each}
           </nav>
 
-          <div class="flex-shrink-0 border-t border-gray-800 p-4">
+          <div class="shrink-0 border-t border-gray-800 p-4">
             <button
               onclick={handleLogout}
               class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg"
@@ -256,6 +256,9 @@
                   <div
                     class="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
                     onclick={e => e.stopPropagation()}
+                    onkeydown={e => e.stopPropagation()}
+                    role="menu"
+                    tabindex="-1"
                   >
                     <button
                       onclick={() => setTheme('light')}

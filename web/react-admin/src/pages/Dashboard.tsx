@@ -13,7 +13,7 @@ const Dashboard: React.FC = () => {
 
   // Public Dashboard URL - from environment variable
   const publicDashboardUrl =
-    import.meta.env.PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL || '';
+    import.meta.env.VITE_PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL || '';
 
   const handleIframeLoad = () => {
     setIsLoading(false);
@@ -25,7 +25,12 @@ const Dashboard: React.FC = () => {
       'grafana-iframe'
     ) as HTMLIFrameElement;
     if (iframe) {
-      iframe.src = iframe.src;
+      const currentSrc = iframe.src;
+      iframe.src = '';
+      // Use setTimeout to ensure the src is cleared before reassigning
+      setTimeout(() => {
+        iframe.src = currentSrc;
+      }, 0);
     }
   };
 
@@ -53,7 +58,7 @@ const Dashboard: React.FC = () => {
           <p className="text-gray-500 dark:text-gray-400 mb-4">
             Please set the{' '}
             <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
-              PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL
+              VITE_PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL
             </code>{' '}
             environment variable.
           </p>
@@ -121,7 +126,9 @@ const Dashboard: React.FC = () => {
           <div className="absolute inset-0 flex items-center justify-center bg-gray-50 dark:bg-gray-800 z-10">
             <div className="text-center">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"></div>
-              <p className="mt-4 text-gray-600 dark:text-gray-400">Loading dashboard...</p>
+              <p className="mt-4 text-gray-600 dark:text-gray-400">
+                Loading dashboard...
+              </p>
             </div>
           </div>
         )}
