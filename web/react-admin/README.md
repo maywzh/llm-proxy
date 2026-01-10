@@ -46,7 +46,9 @@ PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=
 - **Chat Interface**: Interactive chat with LLM models using streaming responses
   - Model selection from all available providers
   - Real-time streaming responses
+  - Markdown rendering for messages (sanitized HTML)
   - Configurable parameters (max_tokens)
+  - Image upload for allowlisted vision models (e.g. grok-4/grok-3)
   - Stop generation and clear conversation controls
 - **Authentication**: Secure login with admin API key
 - **Configuration**: Real-time config version display and reload
@@ -96,6 +98,7 @@ The Chat page allows you to interact with LLM models through the proxy:
 - Requires valid credential keys configured in the system
 - Chat page requires a credential key input (separate from the admin key)
 - Models are loaded from `/v1/models` using the credential key (respects allowed_models)
+ - Image upload is enabled only for allowlisted models via `VITE_CHAT_VISION_MODEL_ALLOWLIST`
 
 ## Troubleshooting
 
@@ -156,4 +159,4 @@ The Dashboard page embeds a Grafana Public Dashboard via iframe. To enable:
 
 ---
 
-Last Updated: 2025-12-28 03:58 (Asia/Shanghai)
+Last Updated: 2025-12-28 10:58 (Asia/Shanghai)
