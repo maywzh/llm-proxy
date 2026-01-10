@@ -2,17 +2,18 @@
   import { onMount } from 'svelte';
   import { browser } from '$app/environment';
   import { auth } from '$lib/stores';
-  import { renderMarkdownToHtml } from '$lib/markdown';
-  import {
-    Send,
-    Loader2,
-    Trash2,
-    Settings,
-    Zap,
-    StopCircle,
-    ImagePlus,
-    X,
-  } from 'lucide-svelte';
+	  import { renderMarkdownToHtml } from '$lib/markdown';
+	  import ChatMessageActions from '$lib/components/ChatMessageActions.svelte';
+	  import {
+	    Send,
+	    Loader2,
+	    Trash2,
+	    Settings,
+	    Zap,
+	    StopCircle,
+	    ImagePlus,
+	    X,
+	  } from 'lucide-svelte';
   import type {
     ChatMessage,
     ChatRequest,
@@ -66,24 +67,32 @@
   let models: Model[] = $state([]);
   let modelsError = $state<string | null>(null);
   let showSettings = $state(false);
-  let maxTokens = $state(2000);
-  let messagesEnd = $state<HTMLElement | null>(null);
-  let credentialKeyInput: HTMLInputElement | null = $state(null);
-  let imageInput: HTMLInputElement | null = $state(null);
+	  let maxTokens = $state(2000);
+	  let copiedIndex = $state<number | null>(null);
+	  let copyResetTimer: number | null = $state(null);
+	  let messagesEnd = $state<HTMLElement | null>(null);
+	  let credentialKeyInput: HTMLInputElement | null = $state(null);
+	  let imageInput: HTMLInputElement | null = $state(null);
 
-  onMount(() => {
-    if (browser) {
-      const stored = localStorage.getItem('chat-credential-key');
-      if (stored) credentialKey = stored;
-    }
-    loadModels();
-  });
+	  onMount(() => {
+	    if (browser) {
+	      const stored = localStorage.getItem('chat-credential-key');
+	      if (stored) credentialKey = stored;
+	    }
+	    loadModels();
+	  });
 
-  $effect(() => {
-    if (!auth.apiClient) return;
-    if (!credentialKey.trim()) {
-      models = [];
-      selectedModel = '';
+	  $effect(() => {
+	    if (browser && selectedModel.trim()) {
+	      localStorage.setItem('chat-selected-model', selectedModel.trim());
+	    }
+	  });
+
+	  $effect(() => {
+	    if (!auth.apiClient) return;
+	    if (!credentialKey.trim()) {
+	      models = [];
+	      selectedModel = '';
       modelsError = null;
       return;
     }
@@ -111,26 +120,68 @@
     }
   });
 
-  function scrollToBottom() {
-    messagesEnd?.scrollIntoView({ behavior: 'smooth' });
-  }
+	  function scrollToBottom() {
+	    messagesEnd?.scrollIntoView({ behavior: 'smooth' });
+	  }
 
-  async function loadModels() {
-    try {
-      if (!auth.apiClient) return;
+	  function getMessageCopyText(msg: ChatMessage): string {
+	    if (typeof msg.content === 'string') return msg.content;
+	    return msg.content
+	      .filter((p): p is Extract<ChatContentPart, { type: 'text' }> => p.type === 'text')
+	      .map(p => p.text)
+	      .join('\n');
+	  }
+
+	  async function copyToClipboard(text: string) {
+	    const value = text ?? '';
+	    if (!value) return;
+	    if (navigator.clipboard?.writeText) {
+	      await navigator.clipboard.writeText(value);
+	      return;
+	    }
+	    const textarea = document.createElement('textarea');
+	    textarea.value = value;
+	    textarea.setAttribute('readonly', 'true');
+	    textarea.style.position = 'fixed';
+	    textarea.style.left = '-9999px';
+	    document.body.appendChild(textarea);
+	    textarea.select();
+	    document.execCommand('copy');
+	    document.body.removeChild(textarea);
+	  }
+
+	  async function handleCopy(msg: ChatMessage, index: number) {
+	    await copyToClipboard(getMessageCopyText(msg));
+	    copiedIndex = index;
+	    if (copyResetTimer) window.clearTimeout(copyResetTimer);
+	    copyResetTimer = window.setTimeout(() => {
+	      if (copiedIndex === index) copiedIndex = null;
+	    }, 1500);
+	  }
+
+	  async function loadModels() {
+	    try {
+	      if (!auth.apiClient) return;
       if (!credentialKey.trim()) return;
 
-      const response = await auth.apiClient.listModels(credentialKey.trim());
-      models = response.data;
-      modelsError = null;
+	      const response = await auth.apiClient.listModels(credentialKey.trim());
+	      models = response.data;
+	      modelsError = null;
 
-      if (!selectedModel && response.data.length > 0) {
-        selectedModel = response.data[0].id;
-      }
-    } catch (error) {
-      console.error('Failed to load models:', error);
-      models = [];
-      selectedModel = '';
+	      const savedModel = browser
+	        ? localStorage.getItem('chat-selected-model')?.trim()
+	        : null;
+	      const available = new Set(response.data.map(m => m.id));
+	      const nextModel =
+	        (savedModel && available.has(savedModel) && savedModel) ||
+	        (selectedModel && available.has(selectedModel) && selectedModel) ||
+	        (response.data[0]?.id ?? '');
+
+	      if (nextModel !== selectedModel) selectedModel = nextModel;
+	    } catch (error) {
+	      console.error('Failed to load models:', error);
+	      models = [];
+	      selectedModel = '';
       modelsError =
         error instanceof Error ? error.message : 'Failed to load models';
     }
@@ -444,45 +495,59 @@
           <p class="text-sm">Select a model and type your message below</p>
         </div>
       {:else}
-        {#each messages as msg (msg)}
-          <div
-            class="flex {msg.role === 'user' ? 'justify-end' : 'justify-start'}"
-          >
-            <div
-              class="max-w-[80%] rounded-lg px-4 py-3 {msg.role === 'user'
-                ? 'bg-primary-600 text-white'
-                : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'}"
-            >
-              {#if isContentString(msg.content)}
-                {#if msg.content}
-                  <div class="markdown break-words">
-                    {@html renderMarkdownToHtml(msg.content)}
-                  </div>
-                {:else if msg.role === 'assistant' && isWaitingFirstToken}
-                  <span class="inline-block animate-pulse" aria-label="typing">
-                    ▍
-                  </span>
-                {/if}
-              {:else}
-                <div class="space-y-2">
-                  {#each msg.content as part, partIndex (partIndex)}
-                    {#if part.type === 'text'}
-                      <div class="markdown break-words">
-                        {@html renderMarkdownToHtml(part.text)}
-                      </div>
-                    {:else}
-                      <img
-                        src={part.image_url.url}
-                        alt="uploaded"
-                        class="max-h-64 rounded-lg border border-gray-200 dark:border-gray-600"
-                      />
-                    {/if}
-                  {/each}
-                </div>
-              {/if}
-            </div>
-          </div>
-        {/each}
+	        {#each messages as msg, msgIndex (msg)}
+	          <div
+	            class="flex {msg.role === 'user' ? 'justify-end' : 'justify-start'}"
+	          >
+	            <div
+	              class="group max-w-[80%]"
+	            >
+	              <div
+	                class="rounded-lg px-4 py-3 {msg.role === 'user'
+	                  ? 'bg-primary-600 text-white'
+	                  : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'}"
+	              >
+	                {#if isContentString(msg.content)}
+	                  {#if msg.content}
+	                    <div class="markdown break-words">
+	                      {@html renderMarkdownToHtml(msg.content)}
+	                    </div>
+	                  {:else if msg.role === 'assistant' && isWaitingFirstToken}
+	                    <span class="inline-block animate-pulse" aria-label="typing">
+	                      ▍
+	                    </span>
+	                  {/if}
+	                {:else}
+	                  <div class="space-y-2">
+	                    {#each msg.content as part, partIndex (partIndex)}
+	                      {#if part.type === 'text'}
+	                        <div class="markdown break-words">
+	                          {@html renderMarkdownToHtml(part.text)}
+	                        </div>
+	                      {:else}
+	                        <img
+	                          src={part.image_url.url}
+	                          alt="uploaded"
+	                          class="max-h-64 rounded-lg border border-gray-200 dark:border-gray-600"
+	                        />
+	                      {/if}
+	                    {/each}
+	                  </div>
+	                {/if}
+	              </div>
+	              {#if msg.role === 'assistant'}
+	                <ChatMessageActions
+	                  copied={copiedIndex === msgIndex}
+	                  onCopy={() => handleCopy(msg, msgIndex)}
+	                  disabled={isWaitingFirstToken &&
+	                    isContentString(msg.content) &&
+	                    !msg.content &&
+	                    msgIndex === messages.length - 1}
+	                />
+	              {/if}
+	            </div>
+	          </div>
+	        {/each}
         <div bind:this={messagesEnd}></div>
       {/if}
     </div>
