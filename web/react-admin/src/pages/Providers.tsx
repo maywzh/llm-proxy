@@ -199,7 +199,9 @@ const Providers: React.FC = () => {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Providers</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+            Providers
+          </h1>
           <p className="text-gray-600 dark:text-gray-400">
             Manage your LLM provider configurations
           </p>
@@ -254,146 +256,146 @@ const Providers: React.FC = () => {
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 {editingProvider ? 'Edit Provider' : 'Add Provider'}
               </h3>
-              <button
-                onClick={resetForm}
-                className="btn-icon"
-              >
+              <button onClick={resetForm} className="btn-icon">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleSubmit} className="modal-body space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="provider_key" className="label">
-                  Provider Key
-                </label>
-                <input
-                  id="provider_key"
-                  type="text"
-                  value={formData.provider_key}
-                  onChange={e =>
-                    setFormData(prev => ({
-                      ...prev,
-                      provider_key: e.target.value,
-                    }))
-                  }
-                  disabled={!!editingProvider}
-                  className="input"
-                  placeholder="e.g., openai-primary"
-                  required={!editingProvider}
-                />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="provider_key" className="label">
+                    Provider Key
+                  </label>
+                  <input
+                    id="provider_key"
+                    type="text"
+                    value={formData.provider_key}
+                    onChange={e =>
+                      setFormData(prev => ({
+                        ...prev,
+                        provider_key: e.target.value,
+                      }))
+                    }
+                    disabled={!!editingProvider}
+                    className="input"
+                    placeholder="e.g., openai-primary"
+                    required={!editingProvider}
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="provider_type" className="label">
+                    Provider Type
+                  </label>
+                  <select
+                    id="provider_type"
+                    value={formData.provider_type}
+                    onChange={e =>
+                      setFormData(prev => ({
+                        ...prev,
+                        provider_type: e.target.value,
+                      }))
+                    }
+                    className="input"
+                    required
+                  >
+                    <option value="openai">OpenAI</option>
+                    <option value="azure">Azure OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="google">Google</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </div>
               </div>
 
               <div>
-                <label htmlFor="provider_type" className="label">
-                  Provider Type
+                <label htmlFor="api_base" className="label">
+                  API Base URL
                 </label>
-                <select
-                  id="provider_type"
-                  value={formData.provider_type}
+                <input
+                  id="api_base"
+                  type="url"
+                  value={formData.api_base}
                   onChange={e =>
-                    setFormData(prev => ({
-                      ...prev,
-                      provider_type: e.target.value,
-                    }))
+                    setFormData(prev => ({ ...prev, api_base: e.target.value }))
                   }
                   className="input"
+                  placeholder="https://api.openai.com/v1"
                   required
-                >
-                  <option value="openai">OpenAI</option>
-                  <option value="azure">Azure OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="google">Google</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label htmlFor="api_base" className="label">
-                API Base URL
-              </label>
-              <input
-                id="api_base"
-                type="url"
-                value={formData.api_base}
-                onChange={e =>
-                  setFormData(prev => ({ ...prev, api_base: e.target.value }))
-                }
-                className="input"
-                placeholder="https://api.openai.com/v1"
-                required
-              />
-            </div>
-
-            <div>
-              <label htmlFor="api_key" className="label">
-                API Key {editingProvider ? '(leave empty to keep current)' : ''}
-              </label>
-              <div className="flex space-x-2">
-                <input
-                  id="api_key"
-                  type="password"
-                  value={formData.api_key}
-                  onChange={e =>
-                    setFormData(prev => ({ ...prev, api_key: e.target.value }))
-                  }
-                  className="input flex-1"
-                  placeholder={
-                    editingProvider ? 'Enter new API key...' : 'sk-...'
-                  }
-                  required={!editingProvider}
                 />
-                <button
-                  type="button"
-                  onClick={generateRandomKey}
-                  className="btn btn-secondary flex items-center space-x-2"
-                  title="Generate random key"
-                >
-                  <Shuffle className="w-4 h-4" />
-                </button>
               </div>
-            </div>
 
-            <div>
-              <label htmlFor="model_mapping" className="label">
-                Model Mapping (optional)
-              </label>
-              <textarea
-                id="model_mapping"
-                value={modelMappingText}
-                onChange={e => updateModelMapping(e.target.value)}
-                className="input"
-                rows={3}
-                placeholder="gpt-4=gpt-4-turbo&#10;gpt-3.5-turbo=gpt-3.5-turbo-16k"
-              />
-              <p className="helper-text">
-                One mapping per line in format: source_model=target_model
-              </p>
-            </div>
+              <div>
+                <label htmlFor="api_key" className="label">
+                  API Key{' '}
+                  {editingProvider ? '(leave empty to keep current)' : ''}
+                </label>
+                <div className="flex space-x-2">
+                  <input
+                    id="api_key"
+                    type="password"
+                    value={formData.api_key}
+                    onChange={e =>
+                      setFormData(prev => ({
+                        ...prev,
+                        api_key: e.target.value,
+                      }))
+                    }
+                    className="input flex-1"
+                    placeholder={
+                      editingProvider ? 'Enter new API key...' : 'sk-...'
+                    }
+                    required={!editingProvider}
+                  />
+                  <button
+                    type="button"
+                    onClick={generateRandomKey}
+                    className="btn btn-secondary flex items-center space-x-2"
+                    title="Generate random key"
+                  >
+                    <Shuffle className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
 
-            <div className="flex items-center">
-              <input
-                id="is_enabled"
-                type="checkbox"
-                checked={formData.is_enabled}
-                onChange={e =>
-                  setFormData(prev => ({
-                    ...prev,
-                    is_enabled: e.target.checked,
-                  }))
-                }
-                className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-              />
-              <label
-                htmlFor="is_enabled"
-                className="ml-2 block text-sm text-gray-900 dark:text-gray-100"
-              >
-                Enable this provider
-              </label>
-            </div>
+              <div>
+                <label htmlFor="model_mapping" className="label">
+                  Model Mapping (optional)
+                </label>
+                <textarea
+                  id="model_mapping"
+                  value={modelMappingText}
+                  onChange={e => updateModelMapping(e.target.value)}
+                  className="input"
+                  rows={3}
+                  placeholder="gpt-4=gpt-4-turbo&#10;gpt-3.5-turbo=gpt-3.5-turbo-16k"
+                />
+                <p className="helper-text">
+                  One mapping per line in format: source_model=target_model
+                </p>
+              </div>
 
+              <div className="flex items-center">
+                <input
+                  id="is_enabled"
+                  type="checkbox"
+                  checked={formData.is_enabled}
+                  onChange={e =>
+                    setFormData(prev => ({
+                      ...prev,
+                      is_enabled: e.target.checked,
+                    }))
+                  }
+                  className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                />
+                <label
+                  htmlFor="is_enabled"
+                  className="ml-2 block text-sm text-gray-900 dark:text-gray-100"
+                >
+                  Enable this provider
+                </label>
+              </div>
             </form>
 
             <div className="modal-footer">

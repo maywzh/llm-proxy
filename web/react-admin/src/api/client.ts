@@ -17,6 +17,10 @@ import type {
   HealthResponse,
   AuthValidateResponse,
   ApiError,
+  ChatRequest,
+  ChatResponse,
+  StreamChunk,
+  ModelsResponse,
 } from '../types';
 
 export class ApiClient {
@@ -24,11 +28,19 @@ export class ApiClient {
   private apiKey: string;
 
   constructor(baseUrl: string, apiKey: string) {
-    this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
+    this.baseUrl = baseUrl.replace(/\/$/, '');
     this.apiKey = apiKey;
   }
 
   private async request<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    return this.requestWithApiKey<T>(this.apiKey, endpoint, options);
+  }
+
+  private async requestWithApiKey<T>(
+    apiKey: string,
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
@@ -38,7 +50,7 @@ export class ApiClient {
       ...options,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         ...options.headers,
       },
     });
@@ -50,13 +62,12 @@ export class ApiClient {
         const errorData: ApiError = await response.json();
         errorMessage = errorData.detail || errorMessage;
       } catch {
-        // If we can't parse the error response, use the default message
+        // ignore
       }
 
       throw new Error(errorMessage);
     }
 
-    // Handle 204 No Content responses
     if (response.status === 204) {
       return {} as T;
     }
@@ -64,14 +75,12 @@ export class ApiClient {
     return response.json();
   }
 
-  // Admin Key Validation - dedicated endpoint for UI login
   async validateAdminKey(): Promise<AuthValidateResponse> {
     return this.request<AuthValidateResponse>('/admin/v1/auth/validate', {
       method: 'POST',
     });
   }
 
-  // Health Check - use config version endpoint since health endpoint doesn't exist in Rust server
   async health(): Promise<HealthResponse> {
     const config = await this.request<{ version: number; timestamp: string }>(
       '/admin/v1/config/version'
@@ -85,7 +94,6 @@ export class ApiClient {
     };
   }
 
-  // Provider Management
   async listProviders(): Promise<ProviderListResponse> {
     return this.request<ProviderListResponse>('/admin/v1/providers');
   }
@@ -132,7 +140,6 @@ export class ApiClient {
     );
   }
 
-  // Credential Management
   async listCredentials(): Promise<CredentialListResponse> {
     return this.request<CredentialListResponse>('/admin/v1/credentials');
   }
@@ -188,7 +195,6 @@ export class ApiClient {
     );
   }
 
-  // Configuration Management
   async getConfigVersion(): Promise<ConfigVersionResponse> {
     return this.request<ConfigVersionResponse>('/admin/v1/config/version');
   }
@@ -198,9 +204,123 @@ export class ApiClient {
       method: 'POST',
     });
   }
+
+  // Chat API
+  async listModels(credentialKey: string): Promise<ModelsResponse> {
+    return this.requestWithApiKey<ModelsResponse>(credentialKey, '/v1/models');
+  }
+
+  async createChatCompletion(
+    request: ChatRequest,
+    credentialKey: string
+  ): Promise<ChatResponse> {
+    return this.requestWithApiKey<ChatResponse>(
+      credentialKey,
+      '/v1/chat/completions',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ...request, stream: false }),
+      }
+    );
+  }
+
+  async createChatCompletionStream(
+    request: ChatRequest,
+    credentialKey: string,
+    onChunk: (chunk: StreamChunk) => void,
+    onComplete: () => void,
+    onError: (error: Error) => void
+  ): Promise<() => void> {
+    const url = `${this.baseUrl}/v1/chat/completions`;
+
+    try {
+      const abortController = new AbortController();
+      const response = await fetch(url, {
+        method: 'POST',
+        signal: abortController.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${credentialKey}`,
+        },
+        body: JSON.stringify({ ...request, stream: true }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+        try {
+          const errorData: ApiError = await response.json();
+          errorMessage = errorData.detail || errorMessage;
+        } catch {
+          // ignore
+        }
+        throw new Error(errorMessage);
+      }
+
+      if (!response.body) {
+        throw new Error('Response body is null');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let stopped = false;
+      let buffer = '';
+
+      const read = async () => {
+        try {
+          while (!stopped) {
+            const { done, value } = await reader.read();
+            if (done) {
+              onComplete();
+              break;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            while (true) {
+              const newlineIndex = buffer.indexOf('\n');
+              if (newlineIndex === -1) break;
+
+              const rawLine = buffer.slice(0, newlineIndex);
+              buffer = buffer.slice(newlineIndex + 1);
+
+              const line = rawLine.trim();
+              if (!line.startsWith('data:')) continue;
+
+              const data = line.slice(5).trim();
+              if (!data) continue;
+              if (data === '[DONE]') {
+                onComplete();
+                return;
+              }
+
+              try {
+                const parsed: StreamChunk = JSON.parse(data);
+                onChunk(parsed);
+              } catch {
+                // ignore
+              }
+            }
+          }
+        } catch (error) {
+          if (!stopped) {
+            onError(error instanceof Error ? error : new Error(String(error)));
+          }
+        }
+      };
+
+      read();
+
+      return () => {
+        stopped = true;
+        abortController.abort();
+        reader.cancel().catch(() => {});
+      };
+    } catch (error) {
+      onError(error instanceof Error ? error : new Error(String(error)));
+      return () => {};
+    }
+  }
 }
 
-// Utility function to generate random API keys
 export function generateApiKey(): string {
   const chars =
     'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -211,12 +331,10 @@ export function generateApiKey(): string {
   return result;
 }
 
-// Utility function to validate API key format
 export function isValidApiKey(key: string): boolean {
   return /^sk-[A-Za-z0-9]{48}$/.test(key);
 }
 
-// Utility function to validate URL format
 export function isValidUrl(url: string): boolean {
   try {
     new URL(url);

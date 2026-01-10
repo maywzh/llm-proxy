@@ -13,6 +13,7 @@ import {
   Sun,
   Moon,
   Monitor,
+  MessageSquare,
 } from 'lucide-react';
 import type { ConfigVersionResponse } from '../types';
 
@@ -31,21 +32,19 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [showThemeMenu, setShowThemeMenu] = useState(false);
   const themeMenuRef = useRef<HTMLDivElement>(null);
 
-  // Navigation items
   const navItems = [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/providers', label: 'Providers', icon: Plug },
     { href: '/credentials', label: 'Credentials', icon: Key },
+    { href: '/chat', label: 'Chat', icon: MessageSquare },
   ];
 
-  // Load config version on mount
   useEffect(() => {
     if (apiClient) {
       apiClient.getConfigVersion().then(setConfigVersion).catch(console.error);
     }
   }, [apiClient]);
 
-  // Close theme menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (
@@ -58,7 +57,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
     if (showThemeMenu) {
       document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
+      return () =>
+        document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [showThemeMenu]);
 
@@ -94,7 +94,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       {/* Sidebar - Desktop */}
       <aside className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
         <div className="flex flex-col grow bg-gray-900 overflow-y-auto">
-          {/* Logo */}
           <div className="flex items-center shrink-0 px-4 py-5 border-b border-gray-800">
             <div className="flex items-center space-x-3">
               <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
@@ -106,7 +105,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </div>
           </div>
 
-          {/* Navigation */}
           <nav className="flex-1 px-2 py-4 space-y-1">
             {navItems.map(item => {
               const Icon = item.icon;
@@ -124,7 +122,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             })}
           </nav>
 
-          {/* User Section */}
           <div className="shrink-0 border-t border-gray-800 p-4">
             <button
               onClick={handleLogout}
@@ -137,7 +134,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         </div>
       </aside>
 
-      {/* Mobile Sidebar */}
       {isMobileMenuOpen && (
         <div className="lg:hidden">
           <div
@@ -156,12 +152,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               </div>
               <button
                 onClick={() => setIsMobileMenuOpen(false)}
-                className="text-gray-400 dark:text-gray-500 hover:text-white"
+                className="text-gray-400 hover:text-white"
               >
                 <X className="w-6 h-6" />
               </button>
             </div>
-
             <nav className="flex-1 px-2 py-4 space-y-1">
               {navItems.map(item => {
                 const Icon = item.icon;
@@ -179,10 +174,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 );
               })}
             </nav>
-
             <div className="shrink-0 border-t border-gray-800 p-4">
               <button
-                onClick={handleLogout}
+                onClick={() => {
+                  handleLogout();
+                  setIsMobileMenuOpen(false);
+                }}
                 className="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg"
               >
                 <LogOut className="w-5 h-5" />
@@ -193,13 +190,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         </div>
       )}
 
-      {/* Main Content */}
       <div className="lg:pl-64 flex flex-col flex-1">
-        {/* Top Header */}
         <header className="sticky top-0 z-30 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
           <div className="px-4 sm:px-6 lg:px-8">
             <div className="flex items-center justify-between h-16">
-              {/* Mobile menu button */}
               <button
                 onClick={() => setIsMobileMenuOpen(true)}
                 className="lg:hidden btn-icon"
@@ -207,7 +201,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <Menu className="w-6 h-6" />
               </button>
 
-              {/* Page title - hidden on mobile, shown on desktop */}
               <div className="hidden lg:block">
                 <h1 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
                   {navItems.find(item => item.href === location.pathname)
@@ -215,7 +208,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 </h1>
               </div>
 
-              {/* Right side actions */}
               <div className="flex items-center space-x-4 ml-auto">
                 {configVersion && (
                   <span className="badge badge-info">
@@ -223,7 +215,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                   </span>
                 )}
 
-                {/* Theme Toggle */}
                 <div className="relative" ref={themeMenuRef}>
                   <button
                     onClick={() => setShowThemeMenu(!showThemeMenu)}
@@ -258,9 +249,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                           setShowThemeMenu(false);
                         }}
                         className={`w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center space-x-2 ${
-                          theme === 'dark'
-                            ? 'bg-gray-100 dark:bg-gray-700'
-                            : ''
+                          theme === 'dark' ? 'bg-gray-100 dark:bg-gray-700' : ''
                         }`}
                       >
                         <Moon className="w-4 h-4" />
@@ -300,7 +289,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           </div>
         </header>
 
-        {/* Main Content Area */}
         <main className="flex-1 py-6 px-4 sm:px-6 lg:px-8">{children}</main>
       </div>
     </div>

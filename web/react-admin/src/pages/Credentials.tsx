@@ -212,7 +212,9 @@ const Credentials: React.FC = () => {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Credentials</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+            Credentials
+          </h1>
           <p className="text-gray-600 dark:text-gray-400">
             Manage API credentials for client authentication
           </p>

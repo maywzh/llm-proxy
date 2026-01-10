@@ -48,7 +48,9 @@ const Login: React.FC = () => {
             <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl mb-4">
               <Plug className="w-8 h-8 text-white" />
             </div>
-            <h2 className="text-3xl font-bold text-gray-900 dark:text-gray-100">LLM Proxy</h2>
+            <h2 className="text-3xl font-bold text-gray-900 dark:text-gray-100">
+              LLM Proxy
+            </h2>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
               Sign in to manage your proxy configuration
             </p>
@@ -62,7 +64,9 @@ const Login: React.FC = () => {
                     <AlertCircle className="h-5 w-5 text-red-400" />
                   </div>
                   <div className="ml-3">
-                    <p className="text-sm text-red-700 dark:text-red-400">{error}</p>
+                    <p className="text-sm text-red-700 dark:text-red-400">
+                      {error}
+                    </p>
                   </div>
                 </div>
               </div>
