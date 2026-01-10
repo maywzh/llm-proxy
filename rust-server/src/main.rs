@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
 };
 use llm_proxy_rust::{
-    admin_router, CombinedApiDoc,
+    admin_router, combined_openapi,
     api::{chat_completions, completions, list_models, metrics_handler, AdminState, AppState},
     core::{
         admin_logging_middleware, init_metrics, AppConfig, Database, DatabaseConfig,
@@ -22,7 +22,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use chrono::Local;
 
@@ -160,7 +159,7 @@ fn build_router(
 
     // Swagger UI for API documentation (includes both V1 and Admin APIs)
     let swagger_ui = SwaggerUi::new("/swagger-ui")
-        .url("/api-docs/openapi.json", CombinedApiDoc::openapi());
+        .url("/api-docs/openapi.json", combined_openapi());
 
     // Get current config
     let config = dynamic_config.get_full();
@@ -230,7 +229,7 @@ fn convert_runtime_to_app_config(
             name: p.provider_key.clone(),
             api_base: p.api_base.clone(),
             api_key: p.api_key.clone(),
-            weight: 1, // Default weight
+            weight: p.weight as u32,
             model_mapping: p.model_mapping.0.clone(),
         })
         .collect();

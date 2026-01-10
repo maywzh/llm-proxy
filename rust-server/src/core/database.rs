@@ -170,7 +170,7 @@ impl Database {
     pub async fn load_providers(&self) -> Result<Vec<ProviderEntity>, sqlx::Error> {
         let providers = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
             FROM providers
             WHERE is_enabled = true
             ORDER BY id
@@ -185,7 +185,7 @@ impl Database {
     pub async fn load_all_providers(&self) -> Result<Vec<ProviderEntity>, sqlx::Error> {
         let providers = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
             FROM providers
             ORDER BY id
             "#,
@@ -199,7 +199,7 @@ impl Database {
     pub async fn get_provider(&self, id: i32) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let provider = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
             FROM providers
             WHERE id = $1
             "#,
@@ -214,7 +214,7 @@ impl Database {
     pub async fn get_provider_by_key(&self, provider_key: &str) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let provider = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
             FROM providers
             WHERE provider_key = $1
             "#,
@@ -229,9 +229,9 @@ impl Database {
     pub async fn create_provider(&self, provider: &CreateProvider) -> Result<ProviderEntity, sqlx::Error> {
         let entity = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            INSERT INTO providers (provider_key, provider_type, api_base, api_key, model_mapping, is_enabled)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            INSERT INTO providers (provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
             "#,
         )
         .bind(&provider.provider_key)
@@ -239,6 +239,7 @@ impl Database {
         .bind(&provider.api_base)
         .bind(&provider.api_key)
         .bind(sqlx::types::Json(&provider.model_mapping))
+        .bind(provider.weight)
         .bind(provider.is_enabled)
         .fetch_one(&self.pool)
         .await?;
@@ -254,10 +255,11 @@ impl Database {
                 api_base = COALESCE($3, api_base),
                 api_key = COALESCE($4, api_key),
                 model_mapping = COALESCE($5, model_mapping),
-                is_enabled = COALESCE($6, is_enabled),
+                weight = COALESCE($6, weight),
+                is_enabled = COALESCE($7, is_enabled),
                 updated_at = NOW()
             WHERE id = $1
-            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, is_enabled, created_at, updated_at
+            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
             "#,
         )
         .bind(id)
@@ -265,6 +267,7 @@ impl Database {
         .bind(&update.api_base)
         .bind(&update.api_key)
         .bind(update.model_mapping.as_ref().map(|m| sqlx::types::Json(m)))
+        .bind(update.weight)
         .bind(update.is_enabled)
         .fetch_optional(&self.pool)
         .await?;
@@ -405,6 +408,7 @@ impl Database {
     "api_base": "https://api.openai.com/v1",
     "api_key": "sk-***",
     "model_mapping": {"gpt-4": "gpt-4-turbo"},
+    "weight": 1,
     "is_enabled": true,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
@@ -424,6 +428,8 @@ pub struct ProviderEntity {
     /// Model name mapping (request model -> provider model)
     #[schema(value_type = HashMap<String, String>)]
     pub model_mapping: sqlx::types::Json<HashMap<String, String>>,
+    /// Weight for load balancing (higher = more traffic)
+    pub weight: i32,
     /// Whether this provider is enabled
     pub is_enabled: bool,
     /// Creation timestamp
@@ -440,6 +446,7 @@ pub struct ProviderEntity {
     "api_base": "https://api.openai.com/v1",
     "api_key": "sk-your-api-key",
     "model_mapping": {"gpt-4": "gpt-4-turbo"},
+    "weight": 1,
     "is_enabled": true
 }))]
 pub struct CreateProvider {
@@ -454,6 +461,9 @@ pub struct CreateProvider {
     /// Model name mapping (request model -> provider model)
     #[serde(default)]
     pub model_mapping: HashMap<String, String>,
+    /// Weight for load balancing (default: 1, higher = more traffic)
+    #[serde(default = "default_weight")]
+    pub weight: i32,
     /// Whether this provider is enabled (default: true)
     #[serde(default = "default_true")]
     pub is_enabled: bool,
@@ -463,6 +473,7 @@ pub struct CreateProvider {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
     "api_base": "https://api.openai.com/v1",
+    "weight": 2,
     "is_enabled": false
 }))]
 pub struct UpdateProvider {
@@ -474,6 +485,8 @@ pub struct UpdateProvider {
     pub api_key: Option<String>,
     /// Model name mapping (request model -> provider model)
     pub model_mapping: Option<HashMap<String, String>>,
+    /// Weight for load balancing (higher = more traffic)
+    pub weight: Option<i32>,
     /// Whether this provider is enabled
     pub is_enabled: Option<bool>,
 }
@@ -556,6 +569,10 @@ pub struct UpdateCredential {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_weight() -> i32 {
+    1
 }
 
 /// Hash a key for secure storage using SHA-256

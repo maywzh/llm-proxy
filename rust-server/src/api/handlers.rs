@@ -9,11 +9,12 @@ use crate::api::streaming::{
 };
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
-use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID, API_KEY_NAME};
+use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
 use crate::core::{AppError, RateLimiter, Result};
 use crate::services::ProviderService;
+use crate::with_request_context;
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -142,84 +143,81 @@ pub async fn chat_completions(
     let key_config = verify_auth(&headers, &state)?;
     let api_key_name = get_key_name(&key_config);
 
-    REQUEST_ID
-        .scope(request_id.clone(), async move {
-            API_KEY_NAME
-                .scope(api_key_name.clone(), async move {
-                    if !payload.is_object() {
-                        return Err(AppError::BadRequest(
-                            "Request body must be a JSON object".to_string(),
-                        ));
-                    }
+    with_request_context!(request_id.clone(), api_key_name.clone(), async move {
+        if !payload.is_object() {
+            return Err(AppError::BadRequest(
+                "Request body must be a JSON object".to_string(),
+            ));
+        }
 
-                    let original_model = payload
-                        .get("model")
-                        .and_then(|m| m.as_str())
-                        .map(|m| m.to_string());
-                    
-                    // Strip provider suffix if configured (e.g., "Proxy/gpt-4" -> "gpt-4")
-                    let effective_model = original_model.as_ref().map(|m| {
-                        strip_provider_suffix(m, state.config.provider_suffix.as_deref())
-                    });
-                    let model_label = effective_model
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_string());
+        let original_model = payload
+            .get("model")
+            .and_then(|m| m.as_str())
+            .map(|m| m.to_string());
 
-                    // Select provider based on the effective model (with suffix stripped)
-                    // Return 400 (Bad Request) if no provider available, not 500
-                    let provider = match state
-                        .provider_service
-                        .get_next_provider(effective_model.as_deref())
-                    {
-                        Ok(p) => p,
-                        Err(err) => {
-                            tracing::error!(
-                                request_id = %request_id,
-                                error = %err,
-                                model = %model_label,
-                                "Provider selection failed - no available provider for model"
-                            );
-                            return Err(AppError::BadRequest(err));
-                        }
-                    };
+        // Strip provider suffix if configured (e.g., "Proxy/gpt-4" -> "gpt-4")
+        let effective_model = original_model.as_ref().map(|m| {
+            strip_provider_suffix(m, state.config.provider_suffix.as_deref())
+        });
+        let model_label = effective_model
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
 
-                    // Map model if needed (use effective_model for mapping lookup)
-                    if let Some(eff_model) = effective_model.as_ref() {
-                        if let Some(mapped) = provider.model_mapping.get(eff_model) {
-                            if let Some(obj) = payload.as_object_mut() {
-                                obj.insert(
-                                    "model".to_string(),
-                                    serde_json::Value::String(mapped.clone()),
-                                );
-                            }
-                        } else if original_model.as_ref() != effective_model.as_ref() {
-                            // If no mapping found but we stripped a prefix, update the model in payload
-                            if let Some(obj) = payload.as_object_mut() {
-                                obj.insert(
-                                    "model".to_string(),
-                                    serde_json::Value::String(eff_model.clone()),
-                                );
-                            }
-                        }
-                    }
+        // Select provider based on the effective model (with suffix stripped)
+        // Return 400 (Bad Request) if no provider available, not 500
+        let provider = match state
+            .provider_service
+            .get_next_provider(effective_model.as_deref())
+        {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %err,
+                    model = %model_label,
+                    "Provider selection failed - no available provider for model"
+                );
+                return Err(AppError::BadRequest(err));
+            }
+        };
 
-                    let url = format!("{}/chat/completions", provider.api_base);
-                    let is_stream = payload
-                        .get("stream")
-                        .and_then(|s| s.as_bool())
-                        .unwrap_or(false);
+        // Map model if needed (use effective_model for mapping lookup)
+        if let Some(eff_model) = effective_model.as_ref() {
+            if let Some(mapped) = provider.model_mapping.get(eff_model) {
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert(
+                        "model".to_string(),
+                        serde_json::Value::String(mapped.clone()),
+                    );
+                }
+            } else if original_model.as_ref() != effective_model.as_ref() {
+                // If no mapping found but we stripped a prefix, update the model in payload
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert(
+                        "model".to_string(),
+                        serde_json::Value::String(eff_model.clone()),
+                    );
+                }
+            }
+        }
 
-                    let prompt_tokens_for_fallback = payload
-                        .get("messages")
-                        .and_then(|m| m.as_array())
-                        .map(|messages| {
-                            let count_model = effective_model.as_deref().unwrap_or("gpt-3.5-turbo");
-                            calculate_message_tokens(messages, count_model)
-                        });
+        let url = format!("{}/chat/completions", provider.api_base);
+        let is_stream = payload
+            .get("stream")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false);
 
-                    // Execute request within provider context scope
-                    PROVIDER_CONTEXT
-                        .scope(provider.name.clone(), async move {
+        let prompt_tokens_for_fallback = payload
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|messages| {
+                let count_model = effective_model.as_deref().unwrap_or("gpt-3.5-turbo");
+                calculate_message_tokens(messages, count_model)
+            });
+
+        // Execute request within provider context scope
+        PROVIDER_CONTEXT
+            .scope(provider.name.clone(), async move {
                             tracing::debug!(
                                 request_id = %request_id,
                                 provider = %provider.name,
@@ -380,23 +378,20 @@ pub async fn chat_completions(
                             };
 
                             // Add model, provider, and api_key_name info to response extensions for middleware logging
-                            final_response
-                                .extensions_mut()
-                                .insert(ModelName(model_label));
-                            final_response
-                                .extensions_mut()
-                                .insert(ProviderName(provider.name));
-                            final_response
-                                .extensions_mut()
-                                .insert(ApiKeyName(api_key_name));
+                final_response
+                    .extensions_mut()
+                    .insert(ModelName(model_label));
+                final_response
+                    .extensions_mut()
+                    .insert(ProviderName(provider.name));
+                final_response
+                    .extensions_mut()
+                    .insert(ApiKeyName(api_key_name));
 
-                            Ok(final_response)
-                        })
-                        .await
-                })
-                .await
-        })
-        .await
+                Ok(final_response)
+            })
+            .await
+    })
 }
 
 /// Handle legacy completions endpoint.
@@ -429,42 +424,39 @@ pub async fn completions(
     let key_config = verify_auth(&headers, &state)?;
     let api_key_name = get_key_name(&key_config);
 
-    REQUEST_ID
-        .scope(request_id.clone(), async move {
-            API_KEY_NAME
-                .scope(api_key_name.clone(), async move {
-                    if !payload.is_object() {
-                        return Err(AppError::BadRequest(
-                            "Request body must be a JSON object".to_string(),
-                        ));
-                    }
+    with_request_context!(request_id.clone(), api_key_name.clone(), async move {
+        if !payload.is_object() {
+            return Err(AppError::BadRequest(
+                "Request body must be a JSON object".to_string(),
+            ));
+        }
 
-                    // Extract model from payload if available
-                    let original_model = payload.get("model").and_then(|m| m.as_str());
-                    
-                    // Strip provider suffix if configured (e.g., "Proxy/gpt-4" -> "gpt-4")
-                    let effective_model = original_model.map(|m| {
-                        strip_provider_suffix(m, state.config.provider_suffix.as_deref())
-                    });
-                    let model_label = effective_model.as_deref().unwrap_or("unknown").to_string();
+        // Extract model from payload if available
+        let original_model = payload.get("model").and_then(|m| m.as_str());
 
-                    let provider = match state.provider_service.get_next_provider(effective_model.as_deref()) {
-                        Ok(p) => p,
-                        Err(err) => {
-                            tracing::error!(
-                                request_id = %request_id,
-                                error = %err,
-                                "Provider selection failed"
-                            );
-                            return Err(AppError::BadRequest(err));
-                        }
-                    };
+        // Strip provider suffix if configured (e.g., "Proxy/gpt-4" -> "gpt-4")
+        let effective_model = original_model.map(|m| {
+            strip_provider_suffix(m, state.config.provider_suffix.as_deref())
+        });
+        let model_label = effective_model.as_deref().unwrap_or("unknown").to_string();
 
-                    let url = format!("{}/completions", provider.api_base);
+        let provider = match state.provider_service.get_next_provider(effective_model.as_deref()) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %err,
+                    "Provider selection failed"
+                );
+                return Err(AppError::BadRequest(err));
+            }
+        };
 
-                    // Execute request within provider context scope
-                    PROVIDER_CONTEXT
-                        .scope(provider.name.clone(), async move {
+        let url = format!("{}/completions", provider.api_base);
+
+        // Execute request within provider context scope
+        PROVIDER_CONTEXT
+            .scope(provider.name.clone(), async move {
                             tracing::debug!(
                                 request_id = %request_id,
                                 provider = %provider.name,
@@ -583,26 +575,23 @@ pub async fn completions(
                                     ));
                                 }
                             };
-                            let mut final_response = Json(response_data).into_response();
+                let mut final_response = Json(response_data).into_response();
 
-                            // Add model, provider, and api_key_name info to response extensions for middleware logging
-                            final_response
-                                .extensions_mut()
-                                .insert(ModelName(model_label));
-                            final_response
-                                .extensions_mut()
-                                .insert(ProviderName(provider.name));
-                            final_response
-                                .extensions_mut()
-                                .insert(ApiKeyName(api_key_name));
+                // Add model, provider, and api_key_name info to response extensions for middleware logging
+                final_response
+                    .extensions_mut()
+                    .insert(ModelName(model_label));
+                final_response
+                    .extensions_mut()
+                    .insert(ProviderName(provider.name));
+                final_response
+                    .extensions_mut()
+                    .insert(ApiKeyName(api_key_name));
 
-                            Ok(final_response)
-                        })
-                        .await
-                })
-                .await
-        })
-        .await
+                Ok(final_response)
+            })
+            .await
+    })
 }
 
 /// List available models.
