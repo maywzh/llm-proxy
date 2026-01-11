@@ -214,10 +214,14 @@ export class ApiClient {
     request: ChatRequest,
     credentialKey: string
   ): Promise<ChatResponse> {
-    return this.requestWithApiKey<ChatResponse>(credentialKey, '/v1/chat/completions', {
-      method: 'POST',
-      body: JSON.stringify({ ...request, stream: false }),
-    });
+    return this.requestWithApiKey<ChatResponse>(
+      credentialKey,
+      '/v1/chat/completions',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ...request, stream: false }),
+      }
+    );
   }
 
   async createChatCompletionStream(
@@ -228,7 +232,7 @@ export class ApiClient {
     onError: (error: Error) => void
   ): Promise<() => void> {
     const url = `${this.baseUrl}/v1/chat/completions`;
-    
+
     try {
       const abortController = new AbortController();
       const response = await fetch(url, {

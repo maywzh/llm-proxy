@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
-import { useTheme } from '../contexts/ThemeContext';
+import { useAuth } from '../hooks/useAuth';
+import { useTheme } from '../hooks/useTheme';
 import {
   Plug,
   Key,
@@ -41,7 +41,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   useEffect(() => {
     if (apiClient) {
-      apiClient.getConfigVersion().then(setConfigVersion).catch(console.error);
+      apiClient
+        .getConfigVersion()
+        .then(setConfigVersion)
+        .catch(() => setConfigVersion(null));
     }
   }, [apiClient]);
 
@@ -76,8 +79,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         version: response.version,
         timestamp: response.timestamp,
       });
-    } catch (error) {
-      console.error('Failed to reload config:', error);
     } finally {
       setIsReloading(false);
     }

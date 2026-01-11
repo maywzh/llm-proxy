@@ -147,8 +147,12 @@
   <!-- Header -->
   <div class="flex justify-between items-center">
     <div>
-      <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Providers</h1>
-      <p class="text-gray-600 dark:text-gray-400">Manage your LLM provider configurations</p>
+      <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">
+        Providers
+      </h1>
+      <p class="text-gray-600 dark:text-gray-400">
+        Manage your LLM provider configurations
+      </p>
     </div>
     <button
       onclick={handleCreate}
@@ -317,7 +321,10 @@
               bind:checked={formData.is_enabled}
               class="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
             />
-            <label for="is_enabled" class="ml-2 block text-sm text-gray-900 dark:text-gray-100">
+            <label
+              for="is_enabled"
+              class="ml-2 block text-sm text-gray-900 dark:text-gray-100"
+            >
               Enable this provider
             </label>
           </div>
@@ -376,10 +383,12 @@
               </tr>
             </thead>
             <tbody>
-              {#each filteredProviders as provider}
+              {#each filteredProviders as provider (provider.id)}
                 <tr>
                   <td>
-                    <div class="text-sm font-medium text-gray-900 dark:text-gray-100">
+                    <div
+                      class="text-sm font-medium text-gray-900 dark:text-gray-100"
+                    >
                       {provider.provider_key}
                     </div>
                     <div class="text-xs text-gray-500 dark:text-gray-400">
@@ -466,7 +475,9 @@
         tabindex="-1"
       >
         <div class="modal-header">
-          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Delete Provider</h3>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Delete Provider
+          </h3>
           <button onclick={() => (deleteConfirm = null)} class="btn-icon">
             <X class="w-5 h-5" />
           </button>

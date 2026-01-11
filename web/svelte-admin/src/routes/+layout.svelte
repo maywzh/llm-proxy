@@ -110,7 +110,7 @@
         </div>
 
         <nav class="flex-1 px-2 py-4 space-y-1">
-          {#each navItems as item}
+          {#each navItems as item (item.href)}
             {@const Icon = item.icon}
             {@const isActive = $page.url.pathname === item.href}
             <a
@@ -167,7 +167,7 @@
             </button>
           </div>
           <nav class="flex-1 px-2 py-4 space-y-1">
-            {#each navItems as item}
+            {#each navItems as item (item.href)}
               {@const Icon = item.icon}
               {@const isActive = $page.url.pathname === item.href}
               <a
@@ -197,7 +197,9 @@
     {/if}
 
     <div class="lg:pl-64 flex flex-col flex-1">
-      <header class="sticky top-0 z-30 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
+      <header
+        class="sticky top-0 z-30 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700"
+      >
         <div class="px-4 sm:px-6 lg:px-8">
           <div class="flex items-center justify-between h-16">
             <button
@@ -208,7 +210,9 @@
             </button>
 
             <div class="hidden lg:block">
-              <h1 class="text-xl font-semibold text-gray-900 dark:text-gray-100">
+              <h1
+                class="text-xl font-semibold text-gray-900 dark:text-gray-100"
+              >
                 {navItems.find(item => item.href === $page.url.pathname)
                   ?.label || 'Admin'}
               </h1>
