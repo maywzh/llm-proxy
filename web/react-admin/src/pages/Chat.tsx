@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { API_BASE_URL } from '../contexts/auth-context';
 import {
   Send,
   Loader2,
@@ -19,6 +20,7 @@ import type {
 } from '../types';
 import { renderMarkdownToHtml } from '../utils/markdown';
 import { ChatMessageActions } from '../components/ChatMessageActions';
+import { useChatSettings } from '../stores/chat-settings';
 
 const VISION_MODEL_ALLOWLIST = (
   import.meta.env.VITE_CHAT_VISION_MODEL_ALLOWLIST as string | undefined
@@ -75,11 +77,58 @@ const copyToClipboard = async (text: string) => {
   document.body.removeChild(textarea);
 };
 
+const getMessagesForGeneration = (current: ChatMessage[]): ChatMessage[] => {
+  if (current.length === 0) return [];
+  const last = current[current.length - 1];
+  if (last?.role === 'assistant') return current.slice(0, -1);
+  return current;
+};
+
+const getMessagesForShareAt = (
+  current: ChatMessage[],
+  index: number
+): ChatMessage[] => {
+  if (index <= 0) return [];
+  return current.slice(0, index);
+};
+
+const withSystemPrompt = (
+  conversationMessages: ChatMessage[],
+  systemPrompt: string
+): ChatMessage[] => {
+  const prompt = systemPrompt.trim();
+  if (!prompt) return conversationMessages;
+  return [{ role: 'system', content: prompt }, ...conversationMessages];
+};
+
+const buildChatCurl = (request: ChatRequest, key: string): string => {
+  const baseUrl = API_BASE_URL.replace(/\/$/, '');
+  const url = `${baseUrl}/v1/chat/completions`;
+  const payload = JSON.stringify({ ...request, stream: true }, null, 2);
+  const toSingleQuotedShellString = (value: string) =>
+    `'${value.replace(/'/g, "'\\''")}'`;
+  return [
+    `curl --location --request POST ${toSingleQuotedShellString(url)} \\`,
+    `--header ${toSingleQuotedShellString('Content-Type: application/json')} \\`,
+    `--header ${toSingleQuotedShellString(`Authorization: Bearer ${key}`)} \\`,
+    `--data-raw ${toSingleQuotedShellString(payload)}`,
+  ].join('\n');
+};
+
 const Chat: React.FC = () => {
   const { apiClient } = useAuth();
+  const {
+    credentialKey,
+    selectedModel,
+    maxTokens,
+    systemPrompt,
+    setCredentialKey,
+    setSelectedModel,
+    setMaxTokens,
+    setSystemPrompt,
+  } = useChatSettings();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
-  const [credentialKey, setCredentialKey] = useState('');
   const [isEditingCredentialKey, setIsEditingCredentialKey] = useState(false);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
@@ -89,32 +138,23 @@ const Chat: React.FC = () => {
   const [abortController, setAbortController] = useState<(() => void) | null>(
     null
   );
-  const [selectedModel, setSelectedModel] = useState<string>('');
   const [models, setModels] = useState<Model[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [maxTokens, setMaxTokens] = useState(2000);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [sharedIndex, setSharedIndex] = useState<number | null>(null);
+  const shareResetTimerRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const credentialKeyInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const stored = localStorage.getItem('chat-credential-key');
-    if (stored) setCredentialKey(stored);
+    return () => {
+      if (shareResetTimerRef.current) {
+        window.clearTimeout(shareResetTimerRef.current);
+      }
+    };
   }, []);
-
-  useEffect(() => {
-    if (selectedModel.trim()) {
-      localStorage.setItem('chat-selected-model', selectedModel.trim());
-    }
-  }, [selectedModel]);
-
-  useEffect(() => {
-    if (credentialKey.trim()) {
-      localStorage.setItem('chat-credential-key', credentialKey.trim());
-    }
-  }, [credentialKey]);
 
   const loadModels = useCallback(async () => {
     if (!apiClient) return;
@@ -123,11 +163,8 @@ const Chat: React.FC = () => {
       const response = await apiClient.listModels(credentialKey.trim());
       setModels(response.data);
       setModelsError(null);
-
-      const savedModel = localStorage.getItem('chat-selected-model')?.trim();
       const available = new Set(response.data.map(m => m.id));
       const nextModel =
-        (savedModel && available.has(savedModel) && savedModel) ||
         (selectedModel && available.has(selectedModel) && selectedModel) ||
         (response.data[0]?.id ?? '');
 
@@ -139,7 +176,7 @@ const Chat: React.FC = () => {
         error instanceof Error ? error.message : 'Failed to load models'
       );
     }
-  }, [apiClient, credentialKey, selectedModel]);
+  }, [apiClient, credentialKey, selectedModel, setSelectedModel]);
 
   useEffect(() => {
     if (!apiClient) return;
@@ -154,7 +191,7 @@ const Chat: React.FC = () => {
       void loadModels();
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [apiClient, credentialKey, loadModels]);
+  }, [apiClient, credentialKey, loadModels, setSelectedModel]);
 
   useEffect(() => {
     scrollToBottom();
@@ -171,6 +208,85 @@ const Chat: React.FC = () => {
   };
 
   // loadModels moved to useCallback above
+
+  const startStreaming = async (conversationMessages: ChatMessage[]) => {
+    if (!apiClient) return;
+    if (!credentialKey.trim() || !selectedModel) return;
+
+    setIsLoading(true);
+    setIsStreaming(true);
+    setIsWaitingFirstToken(true);
+
+    const request: ChatRequest = {
+      model: selectedModel,
+      messages: withSystemPrompt(conversationMessages, systemPrompt),
+      stream: true,
+      max_tokens: maxTokens,
+    };
+
+    let assistantContent = '';
+    let receivedFirstToken = false;
+    const assistantMessage: ChatMessage = { role: 'assistant', content: '' };
+    setMessages([...conversationMessages, assistantMessage]);
+
+    try {
+      const stopStreaming = await apiClient.createChatCompletionStream(
+        request,
+        credentialKey.trim(),
+        (chunk: StreamChunk) => {
+          const delta = chunk.choices[0]?.delta;
+          if (delta?.content) {
+            if (!receivedFirstToken) {
+              receivedFirstToken = true;
+              setIsWaitingFirstToken(false);
+            }
+            assistantContent += delta.content;
+            setMessages(prev => {
+              const updated = [...prev];
+              updated[updated.length - 1] = {
+                role: 'assistant',
+                content: assistantContent,
+              };
+              return updated;
+            });
+          }
+        },
+        () => {
+          setIsLoading(false);
+          setIsStreaming(false);
+          setIsWaitingFirstToken(false);
+          setAbortController(null);
+        },
+        (error: Error) => {
+          setMessages(prev => {
+            const updated = [...prev];
+            updated[updated.length - 1] = {
+              role: 'assistant',
+              content: `Error: ${error.message}`,
+            };
+            return updated;
+          });
+          setIsLoading(false);
+          setIsStreaming(false);
+          setIsWaitingFirstToken(false);
+          setAbortController(null);
+        }
+      );
+
+      setAbortController(() => stopStreaming);
+    } catch (error) {
+      setMessages([
+        ...conversationMessages,
+        {
+          role: 'assistant',
+          content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        },
+      ]);
+      setIsLoading(false);
+      setIsStreaming(false);
+      setIsWaitingFirstToken(false);
+    }
+  };
 
   const handlePickImage = () => {
     setImageError(null);
@@ -248,85 +364,38 @@ const Chat: React.FC = () => {
     const userMessage: ChatMessage = { role: 'user', content };
 
     const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
     setInput('');
     setImageDataUrl(null);
-    setIsLoading(true);
-    setIsStreaming(true);
-    setIsWaitingFirstToken(true);
+    await startStreaming(newMessages);
+  };
 
-    try {
-      const request: ChatRequest = {
-        model: selectedModel,
-        messages: newMessages,
-        stream: true,
-        max_tokens: maxTokens,
-      };
-
-      let assistantContent = '';
-      let receivedFirstToken = false;
-      const assistantMessage: ChatMessage = {
-        role: 'assistant',
-        content: '',
-      };
-      setMessages(prev => [...prev, assistantMessage]);
-
-      const stopStreaming = await apiClient!.createChatCompletionStream(
-        request,
-        credentialKey.trim(),
-        (chunk: StreamChunk) => {
-          const delta = chunk.choices[0]?.delta;
-          if (delta?.content) {
-            if (!receivedFirstToken) {
-              receivedFirstToken = true;
-              setIsWaitingFirstToken(false);
-            }
-            assistantContent += delta.content;
-            setMessages(prev => {
-              const updated = [...prev];
-              updated[updated.length - 1] = {
-                role: 'assistant',
-                content: assistantContent,
-              };
-              return updated;
-            });
-          }
-        },
-        () => {
-          setIsLoading(false);
-          setIsStreaming(false);
-          setIsWaitingFirstToken(false);
-          setAbortController(null);
-        },
-        (error: Error) => {
-          setMessages(prev => {
-            const updated = [...prev];
-            updated[updated.length - 1] = {
-              role: 'assistant',
-              content: `Error: ${error.message}`,
-            };
-            return updated;
-          });
-          setIsLoading(false);
-          setIsStreaming(false);
-          setIsWaitingFirstToken(false);
-          setAbortController(null);
-        }
-      );
-
-      setAbortController(() => stopStreaming);
-    } catch (error) {
-      setMessages(prev => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        },
-      ]);
-      setIsLoading(false);
-      setIsStreaming(false);
-      setIsWaitingFirstToken(false);
+  const handleShareAt = async (index: number) => {
+    if (isLoading || isStreaming) return;
+    if (!credentialKey.trim() || !selectedModel) return;
+    const requestMessages = getMessagesForShareAt(messages, index);
+    if (!requestMessages.some(m => m.role === 'user')) return;
+    const request: ChatRequest = {
+      model: selectedModel,
+      messages: withSystemPrompt(requestMessages, systemPrompt),
+      stream: true,
+      max_tokens: maxTokens,
+    };
+    await copyToClipboard(buildChatCurl(request, credentialKey.trim()));
+    setSharedIndex(index);
+    if (shareResetTimerRef.current) {
+      window.clearTimeout(shareResetTimerRef.current);
     }
+    shareResetTimerRef.current = window.setTimeout(() => {
+      setSharedIndex(current => (current === index ? null : current));
+    }, 1500);
+  };
+
+  const handleRegenerate = async () => {
+    if (isLoading || isStreaming) return;
+    if (!credentialKey.trim() || !selectedModel) return;
+    const requestMessages = getMessagesForGeneration(messages);
+    if (!requestMessages.some(m => m.role === 'user')) return;
+    await startStreaming(requestMessages);
   };
 
   const handleStop = () => {
@@ -533,6 +602,23 @@ const Chat: React.FC = () => {
                     disabled={isLoading}
                   />
                 </div>
+                <div>
+                  <label
+                    htmlFor="system-prompt"
+                    className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                  >
+                    System Prompt
+                  </label>
+                  <textarea
+                    id="system-prompt"
+                    value={systemPrompt}
+                    onChange={e => setSystemPrompt(e.target.value)}
+                    placeholder="Optional. Prepended as the first system message."
+                    className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
+                    disabled={isLoading}
+                    rows={3}
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -564,10 +650,31 @@ const Chat: React.FC = () => {
                   >
                     {renderMessageContent(msg, index)}
                   </div>
-                  {msg.role === 'assistant' ? (
+                  {msg.role === 'assistant' &&
+                  (!isStreaming || index !== messages.length - 1) ? (
                     <ChatMessageActions
                       copied={copiedIndex === index}
                       onCopy={() => handleCopy(msg, index)}
+                      shared={sharedIndex === index}
+                      onShare={() => void handleShareAt(index)}
+                      shareDisabled={
+                        isLoading ||
+                        isStreaming ||
+                        !credentialKey.trim() ||
+                        !selectedModel ||
+                        !getMessagesForShareAt(messages, index).some(
+                          m => m.role === 'user'
+                        )
+                      }
+                      showRegenerate={index === messages.length - 1}
+                      regenerateDisabled={
+                        isLoading ||
+                        isStreaming ||
+                        !getMessagesForGeneration(messages).some(
+                          m => m.role === 'user'
+                        )
+                      }
+                      onRegenerate={() => void handleRegenerate()}
                       disabled={
                         isWaitingFirstToken &&
                         typeof msg.content === 'string' &&
