@@ -17,7 +17,11 @@ export function ChatMessageActions({ copied, disabled, onCopy }: Props) {
           disabled={disabled}
           aria-label="Copy message"
         >
-          {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+          {copied ? (
+            <Check className="w-4 h-4" />
+          ) : (
+            <Copy className="w-4 h-4" />
+          )}
         </button>
         <div className="pointer-events-none absolute -top-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-black px-2 py-1 text-xs text-white opacity-0 group-hover/copy:opacity-100 transition-opacity shadow">
           {copied ? 'Copied' : 'Copy'}

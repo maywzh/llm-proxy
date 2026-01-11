@@ -50,7 +50,9 @@ const maskCredentialKey = (key: string) => {
 const getMessageCopyText = (msg: ChatMessage): string => {
   if (typeof msg.content === 'string') return msg.content;
   return msg.content
-    .filter((p): p is Extract<ChatContentPart, { type: 'text' }> => p.type === 'text')
+    .filter(
+      (p): p is Extract<ChatContentPart, { type: 'text' }> => p.type === 'text'
+    )
     .map(p => p.text)
     .join('\n');
 };
@@ -157,9 +159,7 @@ const Chat: React.FC = () => {
       setModels(response.data);
       setModelsError(null);
 
-      const savedModel = localStorage
-        .getItem('chat-selected-model')
-        ?.trim();
+      const savedModel = localStorage.getItem('chat-selected-model')?.trim();
       const available = new Set(response.data.map(m => m.id));
       const nextModel =
         (savedModel && available.has(savedModel) && savedModel) ||
@@ -381,7 +381,7 @@ const Chat: React.FC = () => {
     if (typeof msg.content === 'string') {
       return (
         <div
-          className="markdown break-words"
+          className="markdown warp-break-word"
           dangerouslySetInnerHTML={{
             __html: renderMarkdownToHtml(msg.content),
           }}
@@ -396,7 +396,7 @@ const Chat: React.FC = () => {
             return (
               <div
                 key={partIndex}
-                className="markdown break-words"
+                className="markdown warp-break-word"
                 dangerouslySetInnerHTML={{
                   __html: renderMarkdownToHtml(part.text),
                 }}
