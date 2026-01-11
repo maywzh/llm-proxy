@@ -162,11 +162,17 @@ export type ChatContentPart =
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string | ChatContentPart[];
+  thinking?: string;
+}
+
+export interface ChatRequestMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string | ChatContentPart[];
 }
 
 export interface ChatRequest {
   model: string;
-  messages: ChatMessage[];
+  messages: ChatRequestMessage[];
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
@@ -203,6 +209,9 @@ export interface StreamChunk {
     delta: {
       role?: string;
       content?: string;
+      reasoning?: string;
+      reasoning_content?: string;
+      thinking?: string;
     };
     finish_reason: string | null;
   }[];
