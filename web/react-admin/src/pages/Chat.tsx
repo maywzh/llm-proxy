@@ -14,6 +14,7 @@ import {
 import type {
   ChatMessage,
   ChatRequest,
+  ChatRequestMessage,
   StreamChunk,
   Model,
   ChatContentPart,
@@ -93,13 +94,16 @@ const getMessagesForShareAt = (
 };
 
 const withSystemPrompt = (
-  conversationMessages: ChatMessage[],
+  conversationMessages: ChatRequestMessage[],
   systemPrompt: string
-): ChatMessage[] => {
+): ChatRequestMessage[] => {
   const prompt = systemPrompt.trim();
   if (!prompt) return conversationMessages;
   return [{ role: 'system', content: prompt }, ...conversationMessages];
 };
+
+const toRequestMessages = (messages: ChatMessage[]): ChatRequestMessage[] =>
+  messages.map(({ role, content }) => ({ role, content }));
 
 const buildChatCurl = (request: ChatRequest, key: string): string => {
   const baseUrl = API_BASE_URL.replace(/\/$/, '');
@@ -219,14 +223,22 @@ const Chat: React.FC = () => {
 
     const request: ChatRequest = {
       model: selectedModel,
-      messages: withSystemPrompt(conversationMessages, systemPrompt),
+      messages: withSystemPrompt(
+        toRequestMessages(conversationMessages),
+        systemPrompt
+      ),
       stream: true,
       max_tokens: maxTokens,
     };
 
     let assistantContent = '';
+    let assistantThinking = '';
     let receivedFirstToken = false;
-    const assistantMessage: ChatMessage = { role: 'assistant', content: '' };
+    const assistantMessage: ChatMessage = {
+      role: 'assistant',
+      content: '',
+      thinking: '',
+    };
     setMessages([...conversationMessages, assistantMessage]);
 
     try {
@@ -235,21 +247,35 @@ const Chat: React.FC = () => {
         credentialKey.trim(),
         (chunk: StreamChunk) => {
           const delta = chunk.choices[0]?.delta;
-          if (delta?.content) {
-            if (!receivedFirstToken) {
-              receivedFirstToken = true;
-              setIsWaitingFirstToken(false);
-            }
-            assistantContent += delta.content;
-            setMessages(prev => {
-              const updated = [...prev];
-              updated[updated.length - 1] = {
-                role: 'assistant',
-                content: assistantContent,
-              };
-              return updated;
-            });
+          const thinkingDelta =
+            typeof delta?.reasoning_content === 'string'
+              ? delta.reasoning_content
+              : typeof delta?.thinking === 'string'
+                ? delta.thinking
+                : typeof delta?.reasoning === 'string'
+                  ? delta.reasoning
+                  : '';
+          const contentDelta =
+            typeof delta?.content === 'string' ? delta.content : '';
+
+          if (!thinkingDelta && !contentDelta) return;
+
+          if (!receivedFirstToken) {
+            receivedFirstToken = true;
+            setIsWaitingFirstToken(false);
           }
+
+          assistantThinking += thinkingDelta;
+          assistantContent += contentDelta;
+          setMessages(prev => {
+            const updated = [...prev];
+            updated[updated.length - 1] = {
+              role: 'assistant',
+              content: assistantContent,
+              ...(assistantThinking ? { thinking: assistantThinking } : {}),
+            };
+            return updated;
+          });
         },
         () => {
           setIsLoading(false);
@@ -376,7 +402,10 @@ const Chat: React.FC = () => {
     if (!requestMessages.some(m => m.role === 'user')) return;
     const request: ChatRequest = {
       model: selectedModel,
-      messages: withSystemPrompt(requestMessages, systemPrompt),
+      messages: withSystemPrompt(
+        toRequestMessages(requestMessages),
+        systemPrompt
+      ),
       stream: true,
       max_tokens: maxTokens,
     };
@@ -475,6 +504,29 @@ const Chat: React.FC = () => {
           );
         })}
       </div>
+    );
+  };
+
+  const renderThinkingContent = (msg: ChatMessage, index: number) => {
+    if (msg.role !== 'assistant') return null;
+    const thinking = msg.thinking?.trim();
+    if (!thinking) return null;
+    const open = isStreaming && index === messages.length - 1;
+    return (
+      <details
+        open={open}
+        className="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10"
+      >
+        <summary className="cursor-pointer select-none px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+          Thinking
+        </summary>
+        <div
+          className="px-3 pb-3 markdown break-words text-sm text-gray-700 dark:text-gray-200"
+          dangerouslySetInnerHTML={{
+            __html: renderMarkdownToHtml(thinking),
+          }}
+        />
+      </details>
     );
   };
 
@@ -648,6 +700,7 @@ const Chat: React.FC = () => {
                         : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
                     }`}
                   >
+                    {renderThinkingContent(msg, index)}
                     {renderMessageContent(msg, index)}
                   </div>
                   {msg.role === 'assistant' &&
