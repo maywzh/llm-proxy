@@ -182,7 +182,6 @@
 
       if (nextModel !== selectedModel) selectedModel = nextModel;
     } catch (error) {
-      console.error('Failed to load models:', error);
       models = [];
       selectedModel = '';
       modelsError =
@@ -318,7 +317,6 @@
           abortController = null;
         },
         (error: Error) => {
-          console.error('Stream error:', error);
           const updated = [...messages];
           updated[updated.length - 1] = {
             role: 'assistant',
@@ -334,7 +332,6 @@
 
       abortController = stopStreaming;
     } catch (error) {
-      console.error('Failed to send message:', error);
       messages = [
         ...messages,
         {
@@ -393,7 +390,7 @@
                 >Set credential key in Settings to load models</option
               >
             {/if}
-            {#each getAllModels() as model}
+            {#each getAllModels() as model (model.value)}
               <option value={model.value}>{model.label}</option>
             {/each}
           </select>
@@ -510,7 +507,8 @@
               >
                 {#if isContentString(msg.content)}
                   {#if msg.content}
-                    <div class="markdown wrap-break-word">
+                    <div class="markdown break-words">
+                      <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
                       {@html renderMarkdownToHtml(msg.content)}
                     </div>
                   {:else if msg.role === 'assistant' && isWaitingFirstToken}
@@ -525,7 +523,8 @@
                   <div class="space-y-2">
                     {#each msg.content as part, partIndex (partIndex)}
                       {#if part.type === 'text'}
-                        <div class="markdown wrap-break-word">
+                        <div class="markdown break-words">
+                          <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
                           {@html renderMarkdownToHtml(part.text)}
                         </div>
                       {:else}

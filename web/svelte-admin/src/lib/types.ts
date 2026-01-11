@@ -233,6 +233,6 @@ export type ModalType =
 
 export interface ModalState {
   type: ModalType;
-  data?: any;
+  data?: unknown;
   isOpen: boolean;
 }

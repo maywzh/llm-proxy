@@ -267,7 +267,7 @@
   }
 
   .markdown :where(a) {
-    @apply underline underline-offset-2 warp-break-word text-inherit;
+    @apply underline underline-offset-2 break-words text-inherit;
   }
 
   .markdown :where(strong) {
