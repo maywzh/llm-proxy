@@ -26,13 +26,139 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Cached ProviderService with version tracking for efficient hot reload.
+/// Only rebuilds when the config version changes.
+struct CachedProviderService {
+    version: i64,
+    service: ProviderService,
+    credentials: Vec<crate::core::config::CredentialConfig>,
+}
+
+/// Convert database credential to config credential
+fn convert_credential(c: &crate::core::database::CredentialEntity) -> crate::core::config::CredentialConfig {
+    crate::core::config::CredentialConfig {
+        credential_key: c.credential_key.clone(),
+        name: c.name.clone(),
+        description: None,
+        rate_limit: c.rate_limit.map(|rps| crate::core::config::RateLimitConfig {
+            requests_per_second: rps as u32,
+            burst_size: (rps as u32).saturating_mul(2),
+        }),
+        enabled: c.is_enabled,
+        allowed_models: c.allowed_models.clone(),
+    }
+}
+
+/// Convert database provider to config provider
+fn convert_provider(p: &crate::core::database::ProviderEntity) -> crate::core::config::ProviderConfig {
+    crate::core::config::ProviderConfig {
+        name: p.provider_key.clone(),
+        api_base: p.api_base.clone(),
+        api_key: p.api_key.clone(),
+        weight: p.weight as u32,
+        model_mapping: p.model_mapping.0.clone(),
+    }
+}
+
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
     pub config: crate::core::config::AppConfig,
-    pub provider_service: ProviderService,
     pub rate_limiter: Arc<RateLimiter>,
     pub http_client: reqwest::Client,
+    pub dynamic_config: Option<Arc<crate::core::DynamicConfig>>,
+    /// Cached ProviderService with version tracking for O(1) access
+    cached_service: Arc<arc_swap::ArcSwap<CachedProviderService>>,
+}
+
+impl AppState {
+    /// Create a new AppState with cached ProviderService
+    pub fn new(
+        config: crate::core::config::AppConfig,
+        provider_service: ProviderService,
+        rate_limiter: Arc<RateLimiter>,
+        http_client: reqwest::Client,
+        dynamic_config: Option<Arc<crate::core::DynamicConfig>>,
+    ) -> Self {
+        let (initial_version, initial_credentials) = match &dynamic_config {
+            Some(dc) => {
+                let rc = dc.get_full();
+                (rc.version, rc.credentials.iter().map(convert_credential).collect())
+            }
+            None => (0, config.credentials.clone()),
+        };
+
+        let cached = CachedProviderService {
+            version: initial_version,
+            service: provider_service,
+            credentials: initial_credentials,
+        };
+
+        Self {
+            config,
+            rate_limiter,
+            http_client,
+            dynamic_config,
+            cached_service: Arc::new(arc_swap::ArcSwap::from_pointee(cached)),
+        }
+    }
+
+    /// Rebuild cache from current DynamicConfig state
+    fn rebuild_cache(&self, runtime_config: &crate::core::database::RuntimeConfig) -> CachedProviderService {
+        let providers: Vec<_> = runtime_config.providers.iter().map(convert_provider).collect();
+        let credentials: Vec<_> = runtime_config.credentials.iter().map(convert_credential).collect();
+
+        let app_config = crate::core::config::AppConfig {
+            providers,
+            server: self.config.server.clone(),
+            verify_ssl: self.config.verify_ssl,
+            request_timeout_secs: self.config.request_timeout_secs,
+            ttft_timeout_secs: self.config.ttft_timeout_secs,
+            credentials: credentials.clone(),
+            provider_suffix: self.config.provider_suffix.clone(),
+        };
+
+        CachedProviderService {
+            version: runtime_config.version,
+            service: ProviderService::new(app_config),
+            credentials,
+        }
+    }
+
+    /// Get cached service, rebuilding if version changed.
+    /// Returns Arc to avoid cloning on fast path.
+    fn get_cached(&self) -> arc_swap::Guard<Arc<CachedProviderService>> {
+        let cached = self.cached_service.load();
+        
+        if let Some(ref dc) = self.dynamic_config {
+            let runtime_config = dc.get_full();
+            if cached.version != runtime_config.version {
+                // Version changed, rebuild cache
+                let new_cached = Arc::new(self.rebuild_cache(&runtime_config));
+                self.cached_service.store(new_cached);
+                
+                tracing::debug!(
+                    old_version = cached.version,
+                    new_version = runtime_config.version,
+                    "ProviderService cache updated"
+                );
+                
+                return self.cached_service.load();
+            }
+        }
+        
+        cached
+    }
+
+    /// Get ProviderService - O(1) for most requests
+    pub fn get_provider_service(&self) -> ProviderService {
+        self.get_cached().service.clone()
+    }
+
+    /// Get credentials - O(1) for most requests
+    pub fn get_credentials(&self) -> Vec<crate::core::config::CredentialConfig> {
+        self.get_cached().credentials.clone()
+    }
 }
 
 /// Verify API key authentication and check rate limits.
@@ -57,8 +183,11 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<Credentia
         None
     };
 
+    // Get credentials from DynamicConfig if available
+    let credentials = state.get_credentials();
+    
     // Check if any authentication is required
-    if state.config.credentials.is_empty() {
+    if credentials.is_empty() {
         return Ok(None);
     }
 
@@ -68,7 +197,7 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<Credentia
     let provided_key_hash = hash_key(provided_key);
 
     // Check against credentials configuration
-    for credential_config in &state.config.credentials {
+    for credential_config in credentials {
         if credential_config.enabled && credential_config.credential_key == provided_key_hash {
             // Check rate limit for this credential using the hash
             state.rate_limiter.check_rate_limit(&credential_config.credential_key)?;
@@ -163,10 +292,12 @@ pub async fn chat_completions(
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
 
+        // Get fresh provider service from DynamicConfig
+        let provider_service = state.get_provider_service();
+        
         // Select provider based on the effective model (with suffix stripped)
         // Return 400 (Bad Request) if no provider available, not 500
-        let provider = match state
-            .provider_service
+        let provider = match provider_service
             .get_next_provider(effective_model.as_deref())
         {
             Ok(p) => p,
@@ -440,7 +571,10 @@ pub async fn completions(
         });
         let model_label = effective_model.as_deref().unwrap_or("unknown").to_string();
 
-        let provider = match state.provider_service.get_next_provider(effective_model.as_deref()) {
+        // Get fresh provider service from DynamicConfig
+        let provider_service = state.get_provider_service();
+        
+        let provider = match provider_service.get_next_provider(effective_model.as_deref()) {
             Ok(p) => p,
             Err(err) => {
                 tracing::error!(
@@ -626,7 +760,9 @@ pub async fn list_models(
                 "Listing available models"
             );
 
-            let all_models = state.provider_service.get_all_models();
+            // Get fresh provider service from DynamicConfig
+            let provider_service = state.get_provider_service();
+            let all_models = provider_service.get_all_models();
             
             // Filter models based on allowed_models if configured
             let filtered_models: HashSet<String> = if let Some(ref config) = key_config {
