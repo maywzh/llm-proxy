@@ -189,12 +189,13 @@ fn build_router(
         }
     }
 
-    let state = Arc::new(AppState {
-        config: app_config,
+    let state = Arc::new(AppState::new(
+        app_config,
         provider_service,
         rate_limiter,
         http_client,
-    });
+        Some(dynamic_config),
+    ));
 
     // Build API routes with AppState
     let api_routes = Router::new()

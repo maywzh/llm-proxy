@@ -43,12 +43,13 @@ fn create_test_app(config: AppConfig) -> Router {
         .build()
         .expect("Failed to build HTTP client");
     
-    let state = Arc::new(AppState {
+    let state = Arc::new(AppState::new(
         config,
         provider_service,
         rate_limiter,
         http_client,
-    });
+        None,
+    ));
 
     Router::new()
         .route(

@@ -136,12 +136,13 @@ fn test_app_state_with_rate_limiter() {
         .build()
         .expect("Failed to build HTTP client");
 
-    let _state = AppState {
+    let _state = AppState::new(
         config,
         provider_service,
-        rate_limiter: rate_limiter.clone(),
+        rate_limiter.clone(),
         http_client,
-    };
+        None,
+    );
 
     // Test rate limiting through the rate_limiter
     for _ in 0..10 {

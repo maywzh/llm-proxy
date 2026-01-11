@@ -68,12 +68,13 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
         .build()
         .expect("Failed to build HTTP client");
     
-    let state = Arc::new(AppState {
+    let state = Arc::new(AppState::new(
         config,
         provider_service,
         rate_limiter,
         http_client,
-    });
+        None,
+    ));
 
     Router::new()
         .route(
