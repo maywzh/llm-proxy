@@ -21,6 +21,7 @@
   import type {
     ChatMessage,
     ChatRequest,
+    ChatRequestMessage,
     StreamChunk,
     Model,
     ChatContentPart,
@@ -168,11 +169,15 @@
   }
 
   function withSystemPrompt(
-    conversationMessages: ChatMessage[]
-  ): ChatMessage[] {
+    conversationMessages: ChatRequestMessage[]
+  ): ChatRequestMessage[] {
     const prompt = $chatSettings.systemPrompt.trim();
     if (!prompt) return conversationMessages;
     return [{ role: 'system', content: prompt }, ...conversationMessages];
+  }
+
+  function toRequestMessages(messages: ChatMessage[]): ChatRequestMessage[] {
+    return messages.map(({ role, content }) => ({ role, content }));
   }
 
   function buildChatCurl(request: ChatRequest, key: string): string {
@@ -197,7 +202,7 @@
     if (!requestMessages.some(m => m.role === 'user')) return;
     const request: ChatRequest = {
       model: $chatSettings.selectedModel,
-      messages: withSystemPrompt(requestMessages),
+      messages: withSystemPrompt(toRequestMessages(requestMessages)),
       stream: true,
       max_tokens: $chatSettings.maxTokens,
     };
@@ -222,14 +227,19 @@
 
     const request: ChatRequest = {
       model: $chatSettings.selectedModel,
-      messages: withSystemPrompt(conversationMessages),
+      messages: withSystemPrompt(toRequestMessages(conversationMessages)),
       stream: true,
       max_tokens: $chatSettings.maxTokens,
     };
 
     let assistantContent = '';
+    let assistantThinking = '';
     let receivedFirstToken = false;
-    const assistantMessage: ChatMessage = { role: 'assistant', content: '' };
+    const assistantMessage: ChatMessage = {
+      role: 'assistant',
+      content: '',
+      thinking: '',
+    };
     messages = [...conversationMessages, assistantMessage];
 
     try {
@@ -238,19 +248,33 @@
         $chatSettings.credentialKey.trim(),
         (chunk: StreamChunk) => {
           const delta = chunk.choices[0]?.delta;
-          if (delta?.content) {
-            if (!receivedFirstToken) {
-              receivedFirstToken = true;
-              isWaitingFirstToken = false;
-            }
-            assistantContent += delta.content;
-            const updated = [...messages];
-            updated[updated.length - 1] = {
-              role: 'assistant',
-              content: assistantContent,
-            };
-            messages = updated;
+          const thinkingDelta =
+            typeof delta?.reasoning_content === 'string'
+              ? delta.reasoning_content
+              : typeof delta?.thinking === 'string'
+                ? delta.thinking
+                : typeof delta?.reasoning === 'string'
+                  ? delta.reasoning
+                  : '';
+          const contentDelta =
+            typeof delta?.content === 'string' ? delta.content : '';
+
+          if (!thinkingDelta && !contentDelta) return;
+
+          if (!receivedFirstToken) {
+            receivedFirstToken = true;
+            isWaitingFirstToken = false;
           }
+
+          assistantThinking += thinkingDelta;
+          assistantContent += contentDelta;
+          const updated = [...messages];
+          updated[updated.length - 1] = {
+            role: 'assistant',
+            content: assistantContent,
+            ...(assistantThinking ? { thinking: assistantThinking } : {}),
+          };
+          messages = updated;
         },
         () => {
           isLoading = false;
@@ -598,6 +622,24 @@
                   ? 'bg-primary-600 text-white'
                   : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'}"
               >
+                {#if msg.role === 'assistant' && msg.thinking?.trim()}
+                  <details
+                    class="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10"
+                    open={isStreaming && msgIndex === messages.length - 1}
+                  >
+                    <summary
+                      class="cursor-pointer select-none px-3 py-2 text-xs text-gray-600 dark:text-gray-300"
+                    >
+                      Thinking
+                    </summary>
+                    <div
+                      class="px-3 pb-3 markdown break-words text-sm text-gray-700 dark:text-gray-200"
+                    >
+                      <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
+                      {@html renderMarkdownToHtml(msg.thinking)}
+                    </div>
+                  </details>
+                {/if}
                 {#if isContentString(msg.content)}
                   {#if msg.content}
                     <div class="markdown break-words">
