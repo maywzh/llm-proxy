@@ -1,7 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { browser } from '$app/environment';
   import { auth } from '$lib/stores';
+  import {
+    chatSettings,
+    initChatSettings,
+    updateChatSettings,
+  } from '$lib/chat-settings';
   import { renderMarkdownToHtml } from '$lib/markdown';
   import ChatMessageActions from '$lib/components/ChatMessageActions.svelte';
   import {
@@ -25,6 +29,9 @@
   function isContentString(content: ChatMessage['content']): content is string {
     return typeof content === 'string';
   }
+
+  const API_BASE_URL =
+    import.meta.env.VITE_PUBLIC_API_BASE_URL || 'http://127.0.0.1:18000';
 
   const VISION_MODEL_ALLOWLIST = (
     import.meta.env.VITE_CHAT_VISION_MODEL_ALLOWLIST as string | undefined
@@ -55,7 +62,6 @@
 
   let messages: ChatMessage[] = $state([]);
   let input = $state('');
-  let credentialKey = $state('');
   let isEditingCredentialKey = $state(false);
   let imageDataUrl = $state<string | null>(null);
   let imageError = $state<string | null>(null);
@@ -63,36 +69,29 @@
   let isStreaming = $state(false);
   let isWaitingFirstToken = $state(false);
   let abortController: (() => void) | null = $state(null);
-  let selectedModel = $state('');
   let models: Model[] = $state([]);
   let modelsError = $state<string | null>(null);
   let showSettings = $state(false);
-  let maxTokens = $state(2000);
   let copiedIndex = $state<number | null>(null);
   let copyResetTimer: number | null = $state(null);
+  let sharedIndex = $state<number | null>(null);
+  let shareResetTimer: number | null = $state(null);
   let messagesEnd = $state<HTMLElement | null>(null);
   let credentialKeyInput: HTMLInputElement | null = $state(null);
   let imageInput: HTMLInputElement | null = $state(null);
 
   onMount(() => {
-    if (browser) {
-      const stored = localStorage.getItem('chat-credential-key');
-      if (stored) credentialKey = stored;
-    }
+    initChatSettings();
     loadModels();
   });
 
   $effect(() => {
-    if (browser && selectedModel.trim()) {
-      localStorage.setItem('chat-selected-model', selectedModel.trim());
-    }
-  });
-
-  $effect(() => {
     if (!auth.apiClient) return;
-    if (!credentialKey.trim()) {
+    if (!$chatSettings.credentialKey.trim()) {
       models = [];
-      selectedModel = '';
+      if ($chatSettings.selectedModel) {
+        updateChatSettings({ selectedModel: '' });
+      }
       modelsError = null;
       return;
     }
@@ -102,12 +101,6 @@
     }, 400);
 
     return () => window.clearTimeout(timer);
-  });
-
-  $effect(() => {
-    if (browser && credentialKey.trim()) {
-      localStorage.setItem('chat-credential-key', credentialKey.trim());
-    }
   });
 
   $effect(() => {
@@ -162,138 +155,87 @@
     }, 1500);
   }
 
-  async function loadModels() {
-    try {
-      if (!auth.apiClient) return;
-      if (!credentialKey.trim()) return;
-
-      const response = await auth.apiClient.listModels(credentialKey.trim());
-      models = response.data;
-      modelsError = null;
-
-      const savedModel = browser
-        ? localStorage.getItem('chat-selected-model')?.trim()
-        : null;
-      const available = new Set(response.data.map(m => m.id));
-      const nextModel =
-        (savedModel && available.has(savedModel) && savedModel) ||
-        (selectedModel && available.has(selectedModel) && selectedModel) ||
-        (response.data[0]?.id ?? '');
-
-      if (nextModel !== selectedModel) selectedModel = nextModel;
-    } catch (error) {
-      models = [];
-      selectedModel = '';
-      modelsError =
-        error instanceof Error ? error.message : 'Failed to load models';
-    }
+  function getMessagesForGeneration(): ChatMessage[] {
+    if (messages.length === 0) return [];
+    const last = messages[messages.length - 1];
+    if (last?.role === 'assistant') return messages.slice(0, -1);
+    return messages;
   }
 
-  function handlePickImage() {
-    imageError = null;
-    if (!isVisionModel(selectedModel)) {
-      imageError = '当前选择的模型不支持图片输入';
-      return;
-    }
-    imageInput?.click();
+  function getMessagesForShareAt(index: number): ChatMessage[] {
+    if (index <= 0) return [];
+    return messages.slice(0, index);
   }
 
-  function handleImageChange(e: Event) {
-    imageError = null;
-    const target = e.target as HTMLInputElement;
-    const file = target.files?.[0];
-    if (!file) return;
+  function withSystemPrompt(
+    conversationMessages: ChatMessage[]
+  ): ChatMessage[] {
+    const prompt = $chatSettings.systemPrompt.trim();
+    if (!prompt) return conversationMessages;
+    return [{ role: 'system', content: prompt }, ...conversationMessages];
+  }
 
-    if (!isVisionModel(selectedModel)) {
-      imageError = '当前选择的模型不支持图片输入';
-      target.value = '';
+  function buildChatCurl(request: ChatRequest, key: string): string {
+    const baseUrl = API_BASE_URL.replace(/\/$/, '');
+    const url = `${baseUrl}/v1/chat/completions`;
+    const payload = JSON.stringify({ ...request, stream: true }, null, 2);
+    const toSingleQuotedShellString = (value: string) =>
+      `'${value.replace(/'/g, "'\\''")}'`;
+    return [
+      `curl --location --request POST ${toSingleQuotedShellString(url)} \\`,
+      `--header ${toSingleQuotedShellString('Content-Type: application/json')} \\`,
+      `--header ${toSingleQuotedShellString(`Authorization: Bearer ${key}`)} \\`,
+      `--data-raw ${toSingleQuotedShellString(payload)}`,
+    ].join('\n');
+  }
+
+  async function handleShareAt(index: number) {
+    if (isLoading || isStreaming) return;
+    if (!$chatSettings.selectedModel || !$chatSettings.credentialKey.trim())
       return;
-    }
-
-    const maxBytes = 5 * 1024 * 1024;
-    if (file.size > maxBytes) {
-      imageError = '图片过大（最大 5MB）';
-      target.value = '';
-      return;
-    }
-
-    if (!file.type.startsWith('image/')) {
-      imageError = '仅支持图片文件';
-      target.value = '';
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result === 'string') {
-        imageDataUrl = result;
-      } else {
-        imageError = '读取图片失败';
-      }
+    const requestMessages = getMessagesForShareAt(index);
+    if (!requestMessages.some(m => m.role === 'user')) return;
+    const request: ChatRequest = {
+      model: $chatSettings.selectedModel,
+      messages: withSystemPrompt(requestMessages),
+      stream: true,
+      max_tokens: $chatSettings.maxTokens,
     };
-    reader.onerror = () => {
-      imageError = '读取图片失败';
-    };
-    reader.readAsDataURL(file);
-
-    target.value = '';
+    await copyToClipboard(
+      buildChatCurl(request, $chatSettings.credentialKey.trim())
+    );
+    sharedIndex = index;
+    if (shareResetTimer) window.clearTimeout(shareResetTimer);
+    shareResetTimer = window.setTimeout(() => {
+      if (sharedIndex === index) sharedIndex = null;
+    }, 1500);
   }
 
-  async function handleSend() {
-    if (
-      (!input.trim() && !imageDataUrl) ||
-      !selectedModel ||
-      !credentialKey.trim() ||
-      isLoading
-    )
+  async function startStreaming(conversationMessages: ChatMessage[]) {
+    if (!auth.apiClient) return;
+    if (!$chatSettings.selectedModel || !$chatSettings.credentialKey.trim())
       return;
 
-    if (imageDataUrl && !isVisionModel(selectedModel)) {
-      imageError = '当前选择的模型不支持图片输入';
-      return;
-    }
-
-    const contentText = input.trim();
-    let content: ChatMessage['content'];
-    if (imageDataUrl) {
-      const parts: ChatContentPart[] = [];
-      if (contentText) parts.push({ type: 'text', text: contentText });
-      parts.push({ type: 'image_url', image_url: { url: imageDataUrl } });
-      content = parts;
-    } else {
-      content = contentText;
-    }
-
-    const userMessage: ChatMessage = { role: 'user', content };
-
-    const newMessages = [...messages, userMessage];
-    messages = newMessages;
-    input = '';
-    imageDataUrl = null;
     isLoading = true;
     isStreaming = true;
     isWaitingFirstToken = true;
 
+    const request: ChatRequest = {
+      model: $chatSettings.selectedModel,
+      messages: withSystemPrompt(conversationMessages),
+      stream: true,
+      max_tokens: $chatSettings.maxTokens,
+    };
+
+    let assistantContent = '';
+    let receivedFirstToken = false;
+    const assistantMessage: ChatMessage = { role: 'assistant', content: '' };
+    messages = [...conversationMessages, assistantMessage];
+
     try {
-      const request: ChatRequest = {
-        model: selectedModel,
-        messages: newMessages,
-        stream: true,
-        max_tokens: maxTokens,
-      };
-
-      let assistantContent = '';
-      let receivedFirstToken = false;
-      const assistantMessage: ChatMessage = {
-        role: 'assistant',
-        content: '',
-      };
-      messages = [...messages, assistantMessage];
-
-      const stopStreaming = await auth.apiClient!.createChatCompletionStream(
+      const stopStreaming = await auth.apiClient.createChatCompletionStream(
         request,
-        credentialKey.trim(),
+        $chatSettings.credentialKey.trim(),
         (chunk: StreamChunk) => {
           const delta = chunk.choices[0]?.delta;
           if (delta?.content) {
@@ -333,7 +275,7 @@
       abortController = stopStreaming;
     } catch (error) {
       messages = [
-        ...messages,
+        ...conversationMessages,
         {
           role: 'assistant',
           content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -343,6 +285,124 @@
       isStreaming = false;
       isWaitingFirstToken = false;
     }
+  }
+
+  async function handleRegenerate() {
+    if (isLoading || isStreaming) return;
+    const requestMessages = getMessagesForGeneration();
+    if (!requestMessages.some(m => m.role === 'user')) return;
+    await startStreaming(requestMessages);
+  }
+
+  async function loadModels() {
+    try {
+      if (!auth.apiClient) return;
+      if (!$chatSettings.credentialKey.trim()) return;
+
+      const response = await auth.apiClient.listModels(
+        $chatSettings.credentialKey.trim()
+      );
+      models = response.data;
+      modelsError = null;
+
+      const available = new Set(response.data.map(m => m.id));
+      const nextModel =
+        ($chatSettings.selectedModel &&
+          available.has($chatSettings.selectedModel) &&
+          $chatSettings.selectedModel) ||
+        (response.data[0]?.id ?? '');
+
+      if (nextModel !== $chatSettings.selectedModel)
+        updateChatSettings({ selectedModel: nextModel });
+    } catch (error) {
+      models = [];
+      updateChatSettings({ selectedModel: '' });
+      modelsError =
+        error instanceof Error ? error.message : 'Failed to load models';
+    }
+  }
+
+  function handlePickImage() {
+    imageError = null;
+    if (!isVisionModel($chatSettings.selectedModel)) {
+      imageError = '当前选择的模型不支持图片输入';
+      return;
+    }
+    imageInput?.click();
+  }
+
+  function handleImageChange(e: Event) {
+    imageError = null;
+    const target = e.target as HTMLInputElement;
+    const file = target.files?.[0];
+    if (!file) return;
+
+    if (!isVisionModel($chatSettings.selectedModel)) {
+      imageError = '当前选择的模型不支持图片输入';
+      target.value = '';
+      return;
+    }
+
+    const maxBytes = 5 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      imageError = '图片过大（最大 5MB）';
+      target.value = '';
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      imageError = '仅支持图片文件';
+      target.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === 'string') {
+        imageDataUrl = result;
+      } else {
+        imageError = '读取图片失败';
+      }
+    };
+    reader.onerror = () => {
+      imageError = '读取图片失败';
+    };
+    reader.readAsDataURL(file);
+
+    target.value = '';
+  }
+
+  async function handleSend() {
+    if (
+      (!input.trim() && !imageDataUrl) ||
+      !$chatSettings.selectedModel ||
+      !$chatSettings.credentialKey.trim() ||
+      isLoading
+    )
+      return;
+
+    if (imageDataUrl && !isVisionModel($chatSettings.selectedModel)) {
+      imageError = '当前选择的模型不支持图片输入';
+      return;
+    }
+
+    const contentText = input.trim();
+    let content: ChatMessage['content'];
+    if (imageDataUrl) {
+      const parts: ChatContentPart[] = [];
+      if (contentText) parts.push({ type: 'text', text: contentText });
+      parts.push({ type: 'image_url', image_url: { url: imageDataUrl } });
+      content = parts;
+    } else {
+      content = contentText;
+    }
+
+    const userMessage: ChatMessage = { role: 'user', content };
+    const newMessages = [...messages, userMessage];
+    input = '';
+    imageDataUrl = null;
+    await startStreaming(newMessages);
   }
 
   function handleStop() {
@@ -381,7 +441,11 @@
       <div class="flex items-center justify-between">
         <div class="flex items-center space-x-4 flex-1">
           <select
-            bind:value={selectedModel}
+            value={$chatSettings.selectedModel}
+            onchange={e =>
+              updateChatSettings({
+                selectedModel: (e.target as HTMLSelectElement).value,
+              })}
             disabled={isLoading || getAllModels().length === 0}
             class="flex-1 max-w-md bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
           >
@@ -431,10 +495,12 @@
                   bind:this={credentialKeyInput}
                   id="credential-key"
                   value={isEditingCredentialKey
-                    ? credentialKey
-                    : maskCredentialKey(credentialKey)}
+                    ? $chatSettings.credentialKey
+                    : maskCredentialKey($chatSettings.credentialKey)}
                   oninput={e =>
-                    (credentialKey = (e.target as HTMLInputElement).value)}
+                    updateChatSettings({
+                      credentialKey: (e.target as HTMLInputElement).value,
+                    })}
                   placeholder="sk-... (used for /v1/models and /v1/chat/completions)"
                   disabled={isLoading}
                   readonly={!isEditingCredentialKey}
@@ -467,18 +533,45 @@
                 for="max-tokens"
                 class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
               >
-                Max Tokens: {maxTokens}
+                Max Tokens: {$chatSettings.maxTokens}
               </label>
               <input
                 id="max-tokens"
                 type="range"
-                bind:value={maxTokens}
+                value={$chatSettings.maxTokens}
+                oninput={e =>
+                  updateChatSettings({
+                    maxTokens: Number.parseInt(
+                      (e.target as HTMLInputElement).value,
+                      10
+                    ),
+                  })}
                 min="100"
                 max="8000"
                 step="100"
                 disabled={isLoading}
                 class="w-full"
               />
+            </div>
+            <div>
+              <label
+                for="system-prompt"
+                class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+              >
+                System Prompt
+              </label>
+              <textarea
+                id="system-prompt"
+                value={$chatSettings.systemPrompt}
+                oninput={e =>
+                  updateChatSettings({
+                    systemPrompt: (e.target as HTMLTextAreaElement).value,
+                  })}
+                placeholder="Optional. Prepended as the first system message."
+                disabled={isLoading}
+                rows={3}
+                class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
+              ></textarea>
             </div>
           </div>
         </div>
@@ -538,10 +631,24 @@
                   </div>
                 {/if}
               </div>
-              {#if msg.role === 'assistant'}
+              {#if msg.role === 'assistant' && (!isStreaming || msgIndex !== messages.length - 1)}
                 <ChatMessageActions
                   copied={copiedIndex === msgIndex}
                   onCopy={() => handleCopy(msg, msgIndex)}
+                  shared={sharedIndex === msgIndex}
+                  onShare={() => handleShareAt(msgIndex)}
+                  shareDisabled={isLoading ||
+                    isStreaming ||
+                    !$chatSettings.credentialKey.trim() ||
+                    !$chatSettings.selectedModel ||
+                    !getMessagesForShareAt(msgIndex).some(
+                      m => m.role === 'user'
+                    )}
+                  showRegenerate={msgIndex === messages.length - 1}
+                  regenerateDisabled={isLoading ||
+                    isStreaming ||
+                    !getMessagesForGeneration().some(m => m.role === 'user')}
+                  onRegenerate={handleRegenerate}
                   disabled={isWaitingFirstToken &&
                     isContentString(msg.content) &&
                     !msg.content &&
@@ -596,8 +703,8 @@
           <button
             type="button"
             class="btn btn-secondary flex items-center justify-center"
-            disabled={!isVisionModel(selectedModel) || isLoading}
-            title={isVisionModel(selectedModel)
+            disabled={!isVisionModel($chatSettings.selectedModel) || isLoading}
+            title={isVisionModel($chatSettings.selectedModel)
               ? 'Attach image'
               : 'Image input is disabled for this model'}
             onclick={handlePickImage}
@@ -616,7 +723,7 @@
             <button
               onclick={handleSend}
               disabled={(!input.trim() && !imageDataUrl) ||
-                !credentialKey.trim() ||
+                !$chatSettings.credentialKey.trim() ||
                 isLoading}
               class="btn btn-primary flex items-center justify-center"
               title="Send Message"
