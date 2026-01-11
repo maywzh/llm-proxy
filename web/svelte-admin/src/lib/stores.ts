@@ -22,7 +22,7 @@ function createAuthStore() {
     apiKey: '',
   };
 
-  const { subscribe, set, update } = writable<AuthState>(defaultAuth);
+  const { subscribe, set } = writable<AuthState>(defaultAuth);
   let currentClient: ApiClient | null = null;
   let currentClientApiKey: string | null = null;
   let currentState: AuthState = defaultAuth;
@@ -73,8 +73,8 @@ function createAuthStore() {
               currentClient = new ApiClient(API_BASE_URL, authState.apiKey);
               currentClientApiKey = authState.apiKey;
             }
-          } catch (e) {
-            console.error('Failed to parse stored auth:', e);
+          } catch {
+            // ignore
           }
         }
       }
@@ -411,7 +411,7 @@ export const actions = {
     }
   },
 
-  openModal(type: ModalState['type'], data?: any) {
+  openModal(type: ModalState['type'], data?: unknown) {
     modal.set({ type, data, isOpen: true });
   },
 

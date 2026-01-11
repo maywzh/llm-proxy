@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useAuth } from '../contexts/AuthContext';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useAuth } from '../hooks/useAuth';
 import {
   Send,
   Loader2,
@@ -116,42 +116,7 @@ const Chat: React.FC = () => {
     }
   }, [credentialKey]);
 
-  useEffect(() => {
-    if (apiClient) {
-      loadModels();
-    }
-  }, [apiClient]);
-
-  useEffect(() => {
-    if (!apiClient) return;
-    if (!credentialKey.trim()) {
-      setModels([]);
-      setSelectedModel('');
-      setModelsError(null);
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      loadModels();
-    }, 400);
-    return () => window.clearTimeout(timer);
-  }, [apiClient, credentialKey]);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  useEffect(() => {
-    if (showSettings && isEditingCredentialKey) {
-      credentialKeyInputRef.current?.focus();
-    }
-  }, [showSettings, isEditingCredentialKey]);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  const loadModels = async () => {
+  const loadModels = useCallback(async () => {
     if (!apiClient) return;
     try {
       if (!credentialKey.trim()) return;
@@ -168,14 +133,44 @@ const Chat: React.FC = () => {
 
       if (nextModel !== selectedModel) setSelectedModel(nextModel);
     } catch (error) {
-      console.error('Failed to load models:', error);
       setModels([]);
       setSelectedModel('');
       setModelsError(
         error instanceof Error ? error.message : 'Failed to load models'
       );
     }
+  }, [apiClient, credentialKey, selectedModel]);
+
+  useEffect(() => {
+    if (!apiClient) return;
+    if (!credentialKey.trim()) {
+      setModels([]);
+      setSelectedModel('');
+      setModelsError(null);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadModels();
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [apiClient, credentialKey, loadModels]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  useEffect(() => {
+    if (showSettings && isEditingCredentialKey) {
+      credentialKeyInputRef.current?.focus();
+    }
+  }, [showSettings, isEditingCredentialKey]);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
+
+  // loadModels moved to useCallback above
 
   const handlePickImage = () => {
     setImageError(null);
@@ -304,7 +299,6 @@ const Chat: React.FC = () => {
           setAbortController(null);
         },
         (error: Error) => {
-          console.error('Stream error:', error);
           setMessages(prev => {
             const updated = [...prev];
             updated[updated.length - 1] = {
@@ -322,7 +316,6 @@ const Chat: React.FC = () => {
 
       setAbortController(() => stopStreaming);
     } catch (error) {
-      console.error('Failed to send message:', error);
       setMessages(prev => [
         ...prev,
         {
@@ -381,7 +374,7 @@ const Chat: React.FC = () => {
     if (typeof msg.content === 'string') {
       return (
         <div
-          className="markdown warp-break-word"
+          className="markdown break-words"
           dangerouslySetInnerHTML={{
             __html: renderMarkdownToHtml(msg.content),
           }}
@@ -396,7 +389,7 @@ const Chat: React.FC = () => {
             return (
               <div
                 key={partIndex}
-                className="markdown warp-break-word"
+                className="markdown break-words"
                 dangerouslySetInnerHTML={{
                   __html: renderMarkdownToHtml(part.text),
                 }}

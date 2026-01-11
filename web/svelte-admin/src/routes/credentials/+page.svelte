@@ -132,7 +132,9 @@
   <!-- Header -->
   <div class="flex justify-between items-center">
     <div>
-      <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Credentials</h1>
+      <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">
+        Credentials
+      </h1>
       <p class="text-gray-600 dark:text-gray-400">
         Manage API credentials for client authentication
       </p>
@@ -286,7 +288,10 @@
               bind:checked={formData.is_enabled}
               class="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
             />
-            <label for="is_enabled" class="ml-2 block text-sm text-gray-900 dark:text-gray-100">
+            <label
+              for="is_enabled"
+              class="ml-2 block text-sm text-gray-900 dark:text-gray-100"
+            >
               Enable this credential
             </label>
           </div>
@@ -349,10 +354,12 @@
               </tr>
             </thead>
             <tbody>
-              {#each filteredCredentials as credential}
+              {#each filteredCredentials as credential (credential.id)}
                 <tr>
                   <td>
-                    <div class="text-sm font-medium text-gray-900 dark:text-gray-100">
+                    <div
+                      class="text-sm font-medium text-gray-900 dark:text-gray-100"
+                    >
                       {credential.name}
                     </div>
                     <div class="text-xs text-gray-500 dark:text-gray-400">
@@ -449,7 +456,9 @@
         tabindex="-1"
       >
         <div class="modal-header">
-          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Delete Credential</h3>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Delete Credential
+          </h3>
           <button onclick={() => (deleteConfirm = null)} class="btn-icon">
             <X class="w-5 h-5" />
           </button>
@@ -501,7 +510,9 @@
         tabindex="-1"
       >
         <div class="modal-header">
-          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Rotate API Key</h3>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Rotate API Key
+          </h3>
           <button onclick={() => (rotateConfirm = null)} class="btn-icon">
             <X class="w-5 h-5" />
           </button>
@@ -570,7 +581,9 @@
           <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">
             Save this key securely. It will not be shown again.
           </p>
-          <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600">
+          <div
+            class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 border border-gray-200 dark:border-gray-600"
+          >
             <code class="text-sm font-mono break-all">
               {newRotatedKey}
             </code>
