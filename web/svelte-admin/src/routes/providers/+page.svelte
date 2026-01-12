@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { providers, loading, errors, actions } from '$lib/stores';
   import { generateApiKey } from '$lib/api';
+  import JsonEditor from '$lib/components/JsonEditor.svelte';
   import type { Provider, ProviderFormData } from '$lib/types';
   import {
     Plus,
@@ -26,7 +27,7 @@
     model_mapping: {},
     is_enabled: true,
   });
-  let modelMappingText = $state('');
+  let modelMappingError = $state<string | null>(null);
 
   // Load providers on mount
   onMount(() => {
@@ -56,7 +57,7 @@
       model_mapping: {},
       is_enabled: true,
     };
-    modelMappingText = '';
+    modelMappingError = null;
     editingProvider = null;
     showCreateForm = false;
   }
@@ -76,22 +77,12 @@
       model_mapping: provider.model_mapping,
       is_enabled: provider.is_enabled,
     };
-    modelMappingText = Object.entries(provider.model_mapping)
-      .map(([key, value]) => `${key}=${value}`)
-      .join('\n');
+    modelMappingError = null;
     showCreateForm = true;
   }
 
   async function handleSubmit() {
-    // Parse model mapping from text
-    const mapping: Record<string, string> = {};
-    modelMappingText.split('\n').forEach(line => {
-      const [key, value] = line.split('=').map(s => s.trim());
-      if (key && value) {
-        mapping[key] = value;
-      }
-    });
-    formData.model_mapping = mapping;
+    if (modelMappingError) return;
 
     if (editingProvider) {
       // Update existing provider
@@ -299,19 +290,16 @@
           </div>
 
           <div>
-            <label for="model_mapping" class="label">
-              Model Mapping (optional)
-            </label>
-            <textarea
+            <JsonEditor
               id="model_mapping"
-              bind:value={modelMappingText}
-              class="input"
-              rows={3}
-              placeholder="gpt-4=gpt-4-turbo&#10;gpt-3.5-turbo=gpt-3.5-turbo-16k"
-            ></textarea>
-            <p class="helper-text">
-              One mapping per line in format: source_model=target_model
-            </p>
+              label="Model Mapping (optional)"
+              value={formData.model_mapping}
+              onChange={next => (formData.model_mapping = next)}
+              onErrorChange={err => (modelMappingError = err)}
+              rows={6}
+              placeholder={`{\n  "gpt-4": "gpt-4-turbo",\n  "gpt-3.5-turbo": "gpt-3.5-turbo-16k"\n}`}
+              helperText={'JSON object in format: {"source_model":"target_model"}'}
+            />
           </div>
 
           <div class="flex items-center">
@@ -338,7 +326,7 @@
             type="button"
             onclick={handleSubmit}
             class="btn btn-primary flex items-center space-x-2"
-            disabled={$loading.providers}
+            disabled={$loading.providers || !!modelMappingError}
           >
             {#if $loading.providers}
               <Loader2 class="w-4 h-4 animate-spin" />
