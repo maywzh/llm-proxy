@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { generateApiKey } from '../api/client';
+import JsonEditor from '../components/JsonEditor';
 import {
   Plus,
   Pencil,
@@ -22,6 +23,9 @@ const Providers: React.FC = () => {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Provider | null>(null);
+  const [modelMappingError, setModelMappingError] = useState<string | null>(
+    null
+  );
   const [formData, setFormData] = useState<ProviderFormData>({
     provider_key: '',
     provider_type: 'openai',
@@ -30,7 +34,6 @@ const Providers: React.FC = () => {
     model_mapping: {},
     is_enabled: true,
   });
-  const [modelMappingText, setModelMappingText] = useState('');
 
   const loadProviders = useCallback(async () => {
     if (!apiClient) return;
@@ -55,14 +58,6 @@ const Providers: React.FC = () => {
     }
   }, [apiClient, loadProviders]);
 
-  // Update model mapping text when form data changes
-  useEffect(() => {
-    const text = Object.entries(formData.model_mapping)
-      .map(([key, value]) => `${key}=${value}`)
-      .join('\n');
-    setModelMappingText(text);
-  }, [formData.model_mapping]);
-
   const resetForm = () => {
     setFormData({
       provider_key: '',
@@ -72,7 +67,7 @@ const Providers: React.FC = () => {
       model_mapping: {},
       is_enabled: true,
     });
-    setModelMappingText('');
+    setModelMappingError(null);
     setEditingProvider(null);
     setShowCreateForm(false);
   };
@@ -84,6 +79,7 @@ const Providers: React.FC = () => {
 
   const handleEdit = (provider: Provider) => {
     setEditingProvider(provider);
+    setModelMappingError(null);
     setFormData({
       provider_key: provider.provider_key,
       provider_type: provider.provider_type,
@@ -98,6 +94,7 @@ const Providers: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!apiClient) return;
+    if (modelMappingError) return;
 
     setLoading(true);
     setError(null);
@@ -168,18 +165,6 @@ const Providers: React.FC = () => {
         err instanceof Error ? err.message : 'Failed to update provider status'
       );
     }
-  };
-
-  const updateModelMapping = (text: string) => {
-    setModelMappingText(text);
-    const mapping: Record<string, string> = {};
-    text.split('\n').forEach(line => {
-      const [key, value] = line.split('=').map(s => s.trim());
-      if (key && value) {
-        mapping[key] = value;
-      }
-    });
-    setFormData(prev => ({ ...prev, model_mapping: mapping }));
   };
 
   const generateRandomKey = () => {
@@ -360,20 +345,18 @@ const Providers: React.FC = () => {
               </div>
 
               <div>
-                <label htmlFor="model_mapping" className="label">
-                  Model Mapping (optional)
-                </label>
-                <textarea
+                <JsonEditor
                   id="model_mapping"
-                  value={modelMappingText}
-                  onChange={e => updateModelMapping(e.target.value)}
-                  className="input"
-                  rows={3}
-                  placeholder="gpt-4=gpt-4-turbo&#10;gpt-3.5-turbo=gpt-3.5-turbo-16k"
+                  label="Model Mapping (optional)"
+                  value={formData.model_mapping}
+                  onChange={next =>
+                    setFormData(prev => ({ ...prev, model_mapping: next }))
+                  }
+                  onErrorChange={setModelMappingError}
+                  rows={6}
+                  placeholder='{\n  "gpt-4": "gpt-4-turbo",\n  "gpt-3.5-turbo": "gpt-3.5-turbo-16k"\n}'
+                  helperText='JSON object in format: {"source_model":"target_model"}'
                 />
-                <p className="helper-text">
-                  One mapping per line in format: source_model=target_model
-                </p>
               </div>
 
               <div className="flex items-center">
@@ -410,7 +393,7 @@ const Providers: React.FC = () => {
                 type="submit"
                 onClick={handleSubmit}
                 className="btn btn-primary flex items-center space-x-2"
-                disabled={loading}
+                disabled={loading || !!modelMappingError}
               >
                 {loading && <Loader2 className="w-4 h-4 animate-spin" />}
                 <span>{editingProvider ? 'Update' : 'Create'} Provider</span>
