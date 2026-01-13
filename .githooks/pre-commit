@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+
+staged_files=()
+while IFS= read -r -d '' file; do
+  staged_files+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACM -z)
+
+react_repo_files=()
+react_abs_files=()
+svelte_repo_files=()
+svelte_abs_files=()
+
+for file in "${staged_files[@]}"; do
+  if [[ "$file" == web/react-admin/src/* ]]; then
+    case "$file" in
+      *.js|*.jsx|*.ts|*.tsx|*.css|*.json|*.md)
+        react_repo_files+=("$file")
+        react_abs_files+=("$repo_root/$file")
+        ;;
+    esac
+  fi
+
+  if [[ "$file" == web/svelte-admin/src/* ]]; then
+    case "$file" in
+      *.js|*.ts|*.svelte|*.css|*.json|*.md)
+        svelte_repo_files+=("$file")
+        svelte_abs_files+=("$repo_root/$file")
+        ;;
+    esac
+  fi
+done
+
+if ((${#react_abs_files[@]})); then
+  pnpm -C web/react-admin exec prettier --write "${react_abs_files[@]}"
+  git add -- "${react_repo_files[@]}"
+  pnpm -C web/react-admin exec eslint "${react_abs_files[@]}"
+fi
+
+if ((${#svelte_abs_files[@]})); then
+  pnpm -C web/svelte-admin exec prettier --write "${svelte_abs_files[@]}"
+  git add -- "${svelte_repo_files[@]}"
+  pnpm -C web/svelte-admin exec eslint "${svelte_abs_files[@]}"
+fi
