@@ -459,324 +459,345 @@
 
 <div class="max-w-7xl mx-auto">
   <div
-    class="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 h-[calc(100vh-180px)] flex flex-col"
+    class="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-[calc(100vh-180px)] flex flex-col"
   >
-    <div class="border-b border-gray-200 dark:border-gray-700 p-4">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center space-x-4 flex-1">
-          <select
-            value={$chatSettings.selectedModel}
-            onchange={e =>
-              updateChatSettings({
-                selectedModel: (e.target as HTMLSelectElement).value,
-              })}
-            disabled={isLoading || getAllModels().length === 0}
-            class="flex-1 max-w-md bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
-          >
-            {#if getAllModels().length === 0}
-              <option value=""
-                >Set credential key in Settings to load models</option
-              >
-            {/if}
-            {#each getAllModels() as model (model.value)}
-              <option value={model.value}>{model.label}</option>
-            {/each}
-          </select>
+    <div class="p-4">
+      <div class="mx-auto w-full max-w-3xl">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-4 flex-1">
+            <select
+              value={$chatSettings.selectedModel}
+              onchange={e =>
+                updateChatSettings({
+                  selectedModel: (e.target as HTMLSelectElement).value,
+                })}
+              disabled={isLoading || getAllModels().length === 0}
+              class="flex-1 max-w-md bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
+            >
+              {#if getAllModels().length === 0}
+                <option value=""
+                  >Set credential key in Settings to load models</option
+                >
+              {/if}
+              {#each getAllModels() as model (model.value)}
+                <option value={model.value}>{model.label}</option>
+              {/each}
+            </select>
+          </div>
+
+          <div class="flex items-center space-x-2">
+            <button
+              onclick={() => (showSettings = !showSettings)}
+              class="btn btn-secondary flex items-center space-x-2"
+              title="Settings (set credential key)"
+            >
+              <Settings class="w-4 h-4" />
+              <span>Settings</span>
+            </button>
+            <button
+              onclick={handleClear}
+              class="btn btn-secondary flex items-center space-x-2"
+              title="Clear Chat"
+            >
+              <Trash2 class="w-4 h-4" />
+              <span>Clear</span>
+            </button>
+          </div>
         </div>
 
-        <div class="flex items-center space-x-2">
-          <button
-            onclick={() => (showSettings = !showSettings)}
-            class="btn btn-secondary flex items-center space-x-2"
-            title="Settings (set credential key)"
-          >
-            <Settings class="w-4 h-4" />
-            <span>Settings</span>
-          </button>
-          <button
-            onclick={handleClear}
-            class="btn btn-secondary flex items-center space-x-2"
-            title="Clear Chat"
-          >
-            <Trash2 class="w-4 h-4" />
-            <span>Clear</span>
-          </button>
-        </div>
-      </div>
-
-      {#if showSettings}
-        <div class="mt-4 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-          <div class="space-y-4">
-            <div>
-              <label
-                for="credential-key"
-                class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-              >
-                Credential Key
-              </label>
-              <div class="flex items-center space-x-2">
+        {#if showSettings}
+          <div class="mt-4 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+            <div class="space-y-4">
+              <div>
+                <label
+                  for="credential-key"
+                  class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                >
+                  Credential Key
+                </label>
+                <div class="flex items-center space-x-2">
+                  <input
+                    bind:this={credentialKeyInput}
+                    id="credential-key"
+                    value={isEditingCredentialKey
+                      ? $chatSettings.credentialKey
+                      : maskCredentialKey($chatSettings.credentialKey)}
+                    oninput={e =>
+                      updateChatSettings({
+                        credentialKey: (e.target as HTMLInputElement).value,
+                      })}
+                    placeholder="sk-... (used for /v1/models and /v1/chat/completions)"
+                    disabled={isLoading}
+                    readonly={!isEditingCredentialKey}
+                    autocomplete="off"
+                    spellcheck="false"
+                    inputmode="text"
+                    class="flex-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
+                  />
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    disabled={isLoading}
+                    title={isEditingCredentialKey
+                      ? 'Hide credential key'
+                      : 'Edit credential key'}
+                    onclick={() =>
+                      (isEditingCredentialKey = !isEditingCredentialKey)}
+                  >
+                    {isEditingCredentialKey ? 'Hide' : 'Edit'}
+                  </button>
+                </div>
+                {#if modelsError}
+                  <p class="mt-2 text-sm text-red-600 dark:text-red-400">
+                    {modelsError}
+                  </p>
+                {/if}
+              </div>
+              <div>
+                <label
+                  for="max-tokens"
+                  class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                >
+                  Max Tokens: {$chatSettings.maxTokens}
+                </label>
                 <input
-                  bind:this={credentialKeyInput}
-                  id="credential-key"
-                  value={isEditingCredentialKey
-                    ? $chatSettings.credentialKey
-                    : maskCredentialKey($chatSettings.credentialKey)}
+                  id="max-tokens"
+                  type="range"
+                  value={$chatSettings.maxTokens}
                   oninput={e =>
                     updateChatSettings({
-                      credentialKey: (e.target as HTMLInputElement).value,
+                      maxTokens: Number.parseInt(
+                        (e.target as HTMLInputElement).value,
+                        10
+                      ),
                     })}
-                  placeholder="sk-... (used for /v1/models and /v1/chat/completions)"
+                  min="100"
+                  max="8000"
+                  step="100"
                   disabled={isLoading}
-                  readonly={!isEditingCredentialKey}
-                  autocomplete="off"
-                  spellcheck="false"
-                  inputmode="text"
-                  class="flex-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
+                  class="w-full"
                 />
-                <button
-                  type="button"
-                  class="btn btn-secondary"
-                  disabled={isLoading}
-                  title={isEditingCredentialKey
-                    ? 'Hide credential key'
-                    : 'Edit credential key'}
-                  onclick={() =>
-                    (isEditingCredentialKey = !isEditingCredentialKey)}
-                >
-                  {isEditingCredentialKey ? 'Hide' : 'Edit'}
-                </button>
               </div>
-              {#if modelsError}
-                <p class="mt-2 text-sm text-red-600 dark:text-red-400">
-                  {modelsError}
-                </p>
-              {/if}
-            </div>
-            <div>
-              <label
-                for="max-tokens"
-                class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-              >
-                Max Tokens: {$chatSettings.maxTokens}
-              </label>
-              <input
-                id="max-tokens"
-                type="range"
-                value={$chatSettings.maxTokens}
-                oninput={e =>
-                  updateChatSettings({
-                    maxTokens: Number.parseInt(
-                      (e.target as HTMLInputElement).value,
-                      10
-                    ),
-                  })}
-                min="100"
-                max="8000"
-                step="100"
-                disabled={isLoading}
-                class="w-full"
-              />
-            </div>
-            <div>
-              <label
-                for="system-prompt"
-                class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-              >
-                System Prompt
-              </label>
-              <textarea
-                id="system-prompt"
-                value={$chatSettings.systemPrompt}
-                oninput={e =>
-                  updateChatSettings({
-                    systemPrompt: (e.target as HTMLTextAreaElement).value,
-                  })}
-                placeholder="Optional. Prepended as the first system message."
-                disabled={isLoading}
-                rows={3}
-                class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
-              ></textarea>
+              <div>
+                <label
+                  for="system-prompt"
+                  class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                >
+                  System Prompt
+                </label>
+                <textarea
+                  id="system-prompt"
+                  value={$chatSettings.systemPrompt}
+                  oninput={e =>
+                    updateChatSettings({
+                      systemPrompt: (e.target as HTMLTextAreaElement).value,
+                    })}
+                  placeholder="Optional. Prepended as the first system message."
+                  disabled={isLoading}
+                  rows={3}
+                  class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
+                ></textarea>
+              </div>
             </div>
           </div>
-        </div>
-      {/if}
+        {/if}
+      </div>
     </div>
 
-    <div class="flex-1 overflow-y-auto p-4 space-y-4">
-      {#if messages.length === 0}
-        <div
-          class="h-full flex flex-col items-center justify-center text-gray-500 dark:text-gray-400"
-        >
-          <Zap class="w-16 h-16 mb-4" />
-          <p class="text-lg">Start a conversation</p>
-          <p class="text-sm">Select a model and type your message below</p>
-        </div>
-      {:else}
-        {#each messages as msg, msgIndex (msg)}
+    <div class="flex-1 overflow-y-auto px-4 pt-4 pb-3">
+      <div class="mx-auto w-full max-w-3xl h-full">
+        {#if messages.length === 0}
           <div
-            class="flex {msg.role === 'user' ? 'justify-end' : 'justify-start'}"
+            class="h-full flex flex-col items-center justify-center text-gray-500 dark:text-gray-400"
           >
-            <div class="group max-w-[80%]">
+            <Zap class="w-16 h-16 mb-4" />
+            <p class="text-lg">Start a conversation</p>
+            <p class="text-sm">Select a model and type your message below</p>
+          </div>
+        {:else}
+          <div class="space-y-4">
+            {#each messages as msg, msgIndex (msg)}
               <div
-                class="rounded-lg px-4 py-3 {msg.role === 'user'
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'}"
+                class="flex {msg.role === 'user'
+                  ? 'justify-end'
+                  : 'justify-start'}"
               >
-                {#if msg.role === 'assistant' && msg.thinking?.trim()}
-                  <details
-                    class="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10"
-                    open={isStreaming && msgIndex === messages.length - 1}
+                <div class="group max-w-[80%]">
+                  <div
+                    class="rounded-lg px-4 py-3 {msg.role === 'user'
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'}"
                   >
-                    <summary
-                      class="cursor-pointer select-none px-3 py-2 text-xs text-gray-600 dark:text-gray-300"
-                    >
-                      Thinking
-                    </summary>
-                    <div
-                      class="px-3 pb-3 markdown break-words text-sm text-gray-700 dark:text-gray-200"
-                    >
-                      <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
-                      {@html renderMarkdownToHtml(msg.thinking)}
-                    </div>
-                  </details>
-                {/if}
-                {#if isContentString(msg.content)}
-                  {#if msg.content}
-                    <div class="markdown break-words">
-                      <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
-                      {@html renderMarkdownToHtml(msg.content)}
-                    </div>
-                  {:else if msg.role === 'assistant' && isWaitingFirstToken}
-                    <span
-                      class="inline-block animate-pulse"
-                      aria-label="typing"
-                    >
-                      ▍
-                    </span>
-                  {/if}
-                {:else}
-                  <div class="space-y-2">
-                    {#each msg.content as part, partIndex (partIndex)}
-                      {#if part.type === 'text'}
+                    {#if msg.role === 'assistant' && msg.thinking?.trim()}
+                      <details
+                        class="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10"
+                        open={isStreaming && msgIndex === messages.length - 1}
+                      >
+                        <summary
+                          class="cursor-pointer select-none px-3 py-2 text-xs text-gray-600 dark:text-gray-300"
+                        >
+                          Thinking
+                        </summary>
+                        <div
+                          class="px-3 pb-3 markdown break-words text-sm text-gray-700 dark:text-gray-200"
+                        >
+                          <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
+                          {@html renderMarkdownToHtml(msg.thinking)}
+                        </div>
+                      </details>
+                    {/if}
+                    {#if isContentString(msg.content)}
+                      {#if msg.content}
                         <div class="markdown break-words">
                           <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
-                          {@html renderMarkdownToHtml(part.text)}
+                          {@html renderMarkdownToHtml(msg.content)}
                         </div>
-                      {:else}
-                        <img
-                          src={part.image_url.url}
-                          alt="uploaded"
-                          class="max-h-64 rounded-lg border border-gray-200 dark:border-gray-600"
-                        />
+                      {:else if msg.role === 'assistant' && isWaitingFirstToken}
+                        <span
+                          class="inline-block animate-pulse"
+                          aria-label="typing"
+                        >
+                          ▍
+                        </span>
                       {/if}
-                    {/each}
+                    {:else}
+                      <div class="space-y-2">
+                        {#each msg.content as part, partIndex (partIndex)}
+                          {#if part.type === 'text'}
+                            <div class="markdown break-words">
+                              <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
+                              {@html renderMarkdownToHtml(part.text)}
+                            </div>
+                          {:else}
+                            <img
+                              src={part.image_url.url}
+                              alt="uploaded"
+                              class="max-h-64 rounded-lg border border-gray-200 dark:border-gray-600"
+                            />
+                          {/if}
+                        {/each}
+                      </div>
+                    {/if}
                   </div>
-                {/if}
+                  {#if msg.role === 'assistant' && (!isStreaming || msgIndex !== messages.length - 1)}
+                    <ChatMessageActions
+                      copied={copiedIndex === msgIndex}
+                      onCopy={() => handleCopy(msg, msgIndex)}
+                      shared={sharedIndex === msgIndex}
+                      onShare={() => handleShareAt(msgIndex)}
+                      shareDisabled={isLoading ||
+                        isStreaming ||
+                        !$chatSettings.credentialKey.trim() ||
+                        !$chatSettings.selectedModel ||
+                        !getMessagesForShareAt(msgIndex).some(
+                          m => m.role === 'user'
+                        )}
+                      showRegenerate={msgIndex === messages.length - 1}
+                      regenerateDisabled={isLoading ||
+                        isStreaming ||
+                        !getMessagesForGeneration().some(
+                          m => m.role === 'user'
+                        )}
+                      onRegenerate={handleRegenerate}
+                      disabled={isWaitingFirstToken &&
+                        isContentString(msg.content) &&
+                        !msg.content &&
+                        msgIndex === messages.length - 1}
+                    />
+                  {/if}
+                </div>
               </div>
-              {#if msg.role === 'assistant' && (!isStreaming || msgIndex !== messages.length - 1)}
-                <ChatMessageActions
-                  copied={copiedIndex === msgIndex}
-                  onCopy={() => handleCopy(msg, msgIndex)}
-                  shared={sharedIndex === msgIndex}
-                  onShare={() => handleShareAt(msgIndex)}
-                  shareDisabled={isLoading ||
-                    isStreaming ||
-                    !$chatSettings.credentialKey.trim() ||
-                    !$chatSettings.selectedModel ||
-                    !getMessagesForShareAt(msgIndex).some(
-                      m => m.role === 'user'
-                    )}
-                  showRegenerate={msgIndex === messages.length - 1}
-                  regenerateDisabled={isLoading ||
-                    isStreaming ||
-                    !getMessagesForGeneration().some(m => m.role === 'user')}
-                  onRegenerate={handleRegenerate}
-                  disabled={isWaitingFirstToken &&
-                    isContentString(msg.content) &&
-                    !msg.content &&
-                    msgIndex === messages.length - 1}
-                />
-              {/if}
-            </div>
+            {/each}
           </div>
-        {/each}
+        {/if}
         <div bind:this={messagesEnd}></div>
-      {/if}
+      </div>
     </div>
 
-    <div class="border-t border-gray-200 dark:border-gray-700 p-4">
-      {#if imageDataUrl}
-        <div class="mb-3 flex items-center space-x-3">
-          <img
-            src={imageDataUrl}
-            alt="preview"
-            class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600"
-          />
-          <button
-            type="button"
-            class="btn btn-secondary"
-            title="Remove image"
-            onclick={() => (imageDataUrl = null)}
-          >
-            <X class="w-4 h-4" />
-          </button>
-        </div>
-      {/if}
-      {#if imageError}
-        <p class="mb-3 text-sm text-red-600 dark:text-red-400">{imageError}</p>
-      {/if}
-      <div class="flex space-x-2">
-        <textarea
-          bind:value={input}
-          onkeydown={handleKeyDown}
-          placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
-          class="flex-1 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-3 resize-none"
-          rows={3}
-          disabled={isLoading}
-        ></textarea>
-        <div class="flex flex-col space-y-2">
-          <input
-            bind:this={imageInput}
-            type="file"
-            accept="image/*"
-            class="hidden"
-            onchange={handleImageChange}
-          />
-          <button
-            type="button"
-            class="btn btn-secondary flex items-center justify-center"
-            disabled={!isVisionModel($chatSettings.selectedModel) || isLoading}
-            title={isVisionModel($chatSettings.selectedModel)
-              ? 'Attach image'
-              : 'Image input is disabled for this model'}
-            onclick={handlePickImage}
-          >
-            <ImagePlus class="w-5 h-5" />
-          </button>
-          {#if isStreaming}
+    <div class="px-4 py-3">
+      <div class="mx-auto w-full max-w-3xl">
+        {#if imageDataUrl}
+          <div class="mb-3 flex items-center space-x-3">
+            <img
+              src={imageDataUrl}
+              alt="preview"
+              class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600"
+            />
             <button
-              onclick={handleStop}
-              class="btn btn-danger flex items-center justify-center"
-              title="Stop Generation"
+              type="button"
+              class="btn btn-secondary"
+              title="Remove image"
+              onclick={() => (imageDataUrl = null)}
             >
-              <StopCircle class="w-5 h-5" />
+              <X class="w-4 h-4" />
             </button>
-          {:else}
-            <button
-              onclick={handleSend}
-              disabled={(!input.trim() && !imageDataUrl) ||
-                !$chatSettings.credentialKey.trim() ||
-                isLoading}
-              class="btn btn-primary flex items-center justify-center"
-              title="Send Message"
-            >
-              {#if isLoading}
-                <Loader2 class="w-5 h-5 animate-spin" />
-              {:else}
-                <Send class="w-5 h-5" />
-              {/if}
-            </button>
-          {/if}
+          </div>
+        {/if}
+        {#if imageError}
+          <p class="mb-3 text-sm text-red-600 dark:text-red-400">
+            {imageError}
+          </p>
+        {/if}
+        <div
+          class="rounded-2xl bg-gray-50 dark:bg-gray-700/30 ring-1 ring-gray-200/80 dark:ring-gray-600 shadow-sm p-3"
+        >
+          <textarea
+            bind:value={input}
+            onkeydown={handleKeyDown}
+            placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
+            class="w-full bg-transparent text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-400 focus:outline-none resize-none"
+            rows={3}
+            disabled={isLoading}
+          ></textarea>
+
+          <div class="mt-2 flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+              <input
+                bind:this={imageInput}
+                type="file"
+                accept="image/*"
+                onchange={handleImageChange}
+                class="hidden"
+              />
+              <button
+                type="button"
+                onclick={handlePickImage}
+                disabled={!isVisionModel($chatSettings.selectedModel) ||
+                  isLoading}
+                class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                title={isVisionModel($chatSettings.selectedModel)
+                  ? 'Attach image'
+                  : 'Image input is disabled for this model'}
+              >
+                <ImagePlus class="w-5 h-5" />
+              </button>
+            </div>
+
+            {#if isStreaming}
+              <button
+                onclick={handleStop}
+                class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Stop Generation"
+              >
+                <StopCircle class="w-5 h-5" />
+              </button>
+            {:else}
+              <button
+                onclick={handleSend}
+                disabled={(!input.trim() && !imageDataUrl) ||
+                  !$chatSettings.credentialKey.trim() ||
+                  isLoading}
+                class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Send Message"
+              >
+                {#if isLoading}
+                  <Loader2 class="w-5 h-5 animate-spin" />
+                {:else}
+                  <Send class="w-5 h-5" />
+                {/if}
+              </button>
+            {/if}
+          </div>
         </div>
       </div>
     </div>
