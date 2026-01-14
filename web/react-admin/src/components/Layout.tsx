@@ -97,8 +97,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         <div className="flex flex-col grow bg-gray-900 overflow-y-auto">
           <div className="flex items-center shrink-0 px-4 py-5 border-b border-gray-800">
             <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
-                <Plug className="w-5 h-5 text-white" />
+              <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center">
+                <img
+                  src="/logo.png"
+                  alt="LLM Proxy"
+                  className="w-full h-full object-cover"
+                  draggable={false}
+                />
               </div>
               <span className="text-xl font-semibold text-white">
                 LLM Proxy
@@ -144,8 +149,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           <aside className="fixed inset-y-0 left-0 flex flex-col w-64 bg-gray-900 z-50">
             <div className="flex items-center justify-between px-4 py-5 border-b border-gray-800">
               <div className="flex items-center space-x-3">
-                <div className="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center">
-                  <Plug className="w-5 h-5 text-white" />
+                <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center">
+                  <img
+                    src="/logo.png"
+                    alt="LLM Proxy"
+                    className="w-full h-full object-cover"
+                    draggable={false}
+                  />
                 </div>
                 <span className="text-xl font-semibold text-white">
                   LLM Proxy

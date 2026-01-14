@@ -101,9 +101,14 @@
         >
           <div class="flex items-center space-x-3">
             <div
-              class="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center"
+              class="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center"
             >
-              <Plug class="w-5 h-5 text-white" />
+              <img
+                src="/logo.png"
+                alt="LLM Proxy"
+                class="w-full h-full object-cover"
+                draggable="false"
+              />
             </div>
             <span class="text-xl font-semibold text-white"> LLM Proxy </span>
           </div>
@@ -153,9 +158,14 @@
           >
             <div class="flex items-center space-x-3">
               <div
-                class="w-8 h-8 bg-primary-600 rounded-lg flex items-center justify-center"
+                class="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center"
               >
-                <Plug class="w-5 h-5 text-white" />
+                <img
+                  src="/logo.png"
+                  alt="LLM Proxy"
+                  class="w-full h-full object-cover"
+                  draggable="false"
+                />
               </div>
               <span class="text-xl font-semibold text-white"> LLM Proxy </span>
             </div>

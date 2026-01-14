@@ -1,7 +1,7 @@
 <script lang="ts">
   import { auth, actions } from '$lib/stores';
   import { ApiClient } from '$lib/api';
-  import { Loader2, AlertCircle, Plug } from 'lucide-svelte';
+  import { Loader2, AlertCircle } from 'lucide-svelte';
 
   const API_BASE_URL =
     import.meta.env.VITE_PUBLIC_API_BASE_URL || 'http://127.0.0.1:18000';
@@ -65,7 +65,12 @@
         <div
           class="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl mb-4"
         >
-          <Plug class="w-8 h-8 text-white" />
+          <img
+            src="/logo.png"
+            alt="LLM Proxy"
+            class="w-10 h-10"
+            draggable="false"
+          />
         </div>
         <h2 class="text-3xl font-bold text-gray-900 dark:text-gray-100">
           LLM Proxy

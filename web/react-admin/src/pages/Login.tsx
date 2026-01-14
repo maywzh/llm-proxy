@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { Loader2, AlertCircle, Plug } from 'lucide-react';
+import { Loader2, AlertCircle } from 'lucide-react';
 
 const Login: React.FC = () => {
   const { login } = useAuth();
@@ -46,7 +46,12 @@ const Login: React.FC = () => {
           {/* Logo and Title */}
           <div className="text-center mb-8">
             <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl mb-4">
-              <Plug className="w-8 h-8 text-white" />
+              <img
+                src="/logo.png"
+                alt="LLM Proxy"
+                className="w-10 h-10"
+                draggable={false}
+              />
             </div>
             <h2 className="text-3xl font-bold text-gray-900 dark:text-gray-100">
               LLM Proxy
