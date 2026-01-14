@@ -540,290 +540,302 @@ const Chat: React.FC = () => {
 
   return (
     <div className="max-w-7xl mx-auto">
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 h-[calc(100vh-180px)] flex flex-col">
+      <div className="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-[calc(100vh-180px)] flex flex-col">
         {/* Header */}
-        <div className="border-b border-gray-200 dark:border-gray-700 p-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4 flex-1">
-              <select
-                value={selectedModel}
-                onChange={e => setSelectedModel(e.target.value)}
-                className="flex-1 max-w-md bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
-                disabled={isLoading || getAllModels().length === 0}
-              >
-                {getAllModels().length === 0 ? (
-                  <option value="">
-                    Set credential key in Settings to load models
-                  </option>
-                ) : null}
-                {getAllModels().map(model => (
-                  <option key={model.value} value={model.value}>
-                    {model.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-center space-x-2">
-              <button
-                onClick={() => setShowSettings(!showSettings)}
-                className="btn btn-secondary flex items-center space-x-2"
-                title="Settings (set credential key)"
-              >
-                <Settings className="w-4 h-4" />
-                <span>Settings</span>
-              </button>
-              <button
-                onClick={handleClear}
-                className="btn btn-secondary flex items-center space-x-2"
-                title="Clear Chat"
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>Clear</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Settings Panel */}
-          {showSettings && (
-            <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-              <div className="space-y-4">
-                <div>
-                  <label
-                    htmlFor="credential-key"
-                    className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-                  >
-                    Credential Key
-                  </label>
-                  <div className="flex items-center space-x-2">
-                    <input
-                      ref={credentialKeyInputRef}
-                      id="credential-key"
-                      value={
-                        isEditingCredentialKey
-                          ? credentialKey
-                          : maskCredentialKey(credentialKey)
-                      }
-                      onChange={e => setCredentialKey(e.target.value)}
-                      placeholder="sk-... (used for /v1/models and /v1/chat/completions)"
-                      className="flex-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
-                      disabled={isLoading}
-                      readOnly={!isEditingCredentialKey}
-                      autoComplete="off"
-                      spellCheck={false}
-                      inputMode="text"
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() =>
-                        setIsEditingCredentialKey(editing => !editing)
-                      }
-                      disabled={isLoading}
-                      title={
-                        isEditingCredentialKey
-                          ? 'Hide credential key'
-                          : 'Edit credential key'
-                      }
-                    >
-                      {isEditingCredentialKey ? 'Hide' : 'Edit'}
-                    </button>
-                  </div>
-                  {modelsError ? (
-                    <p className="mt-2 text-sm text-red-600 dark:text-red-400">
-                      {modelsError}
-                    </p>
+        <div className="p-4">
+          <div className="mx-auto w-full max-w-3xl">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-4 flex-1">
+                <select
+                  value={selectedModel}
+                  onChange={e => setSelectedModel(e.target.value)}
+                  className="flex-1 max-w-md bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
+                  disabled={isLoading || getAllModels().length === 0}
+                >
+                  {getAllModels().length === 0 ? (
+                    <option value="">
+                      Set credential key in Settings to load models
+                    </option>
                   ) : null}
-                </div>
-                <div>
-                  <label
-                    htmlFor="max-tokens"
-                    className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-                  >
-                    Max Tokens: {maxTokens}
-                  </label>
-                  <input
-                    id="max-tokens"
-                    type="range"
-                    min="100"
-                    max="8000"
-                    step="100"
-                    value={maxTokens}
-                    onChange={e => setMaxTokens(parseInt(e.target.value))}
-                    className="w-full"
-                    disabled={isLoading}
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="system-prompt"
-                    className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-                  >
-                    System Prompt
-                  </label>
-                  <textarea
-                    id="system-prompt"
-                    value={systemPrompt}
-                    onChange={e => setSystemPrompt(e.target.value)}
-                    placeholder="Optional. Prepended as the first system message."
-                    className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
-                    disabled={isLoading}
-                    rows={3}
-                  />
-                </div>
+                  {getAllModels().map(model => (
+                    <option key={model.value} value={model.value}>
+                      {model.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setShowSettings(!showSettings)}
+                  className="btn btn-secondary flex items-center space-x-2"
+                  title="Settings (set credential key)"
+                >
+                  <Settings className="w-4 h-4" />
+                  <span>Settings</span>
+                </button>
+                <button
+                  onClick={handleClear}
+                  className="btn btn-secondary flex items-center space-x-2"
+                  title="Clear Chat"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Clear</span>
+                </button>
               </div>
             </div>
-          )}
+
+            {/* Settings Panel */}
+            {showSettings && (
+              <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                <div className="space-y-4">
+                  <div>
+                    <label
+                      htmlFor="credential-key"
+                      className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      Credential Key
+                    </label>
+                    <div className="flex items-center space-x-2">
+                      <input
+                        ref={credentialKeyInputRef}
+                        id="credential-key"
+                        value={
+                          isEditingCredentialKey
+                            ? credentialKey
+                            : maskCredentialKey(credentialKey)
+                        }
+                        onChange={e => setCredentialKey(e.target.value)}
+                        placeholder="sk-... (used for /v1/models and /v1/chat/completions)"
+                        className="flex-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
+                        disabled={isLoading}
+                        readOnly={!isEditingCredentialKey}
+                        autoComplete="off"
+                        spellCheck={false}
+                        inputMode="text"
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() =>
+                          setIsEditingCredentialKey(editing => !editing)
+                        }
+                        disabled={isLoading}
+                        title={
+                          isEditingCredentialKey
+                            ? 'Hide credential key'
+                            : 'Edit credential key'
+                        }
+                      >
+                        {isEditingCredentialKey ? 'Hide' : 'Edit'}
+                      </button>
+                    </div>
+                    {modelsError ? (
+                      <p className="mt-2 text-sm text-red-600 dark:text-red-400">
+                        {modelsError}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="max-tokens"
+                      className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      Max Tokens: {maxTokens}
+                    </label>
+                    <input
+                      id="max-tokens"
+                      type="range"
+                      min="100"
+                      max="8000"
+                      step="100"
+                      value={maxTokens}
+                      onChange={e => setMaxTokens(parseInt(e.target.value))}
+                      className="w-full"
+                      disabled={isLoading}
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="system-prompt"
+                      className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      System Prompt
+                    </label>
+                    <textarea
+                      id="system-prompt"
+                      value={systemPrompt}
+                      onChange={e => setSystemPrompt(e.target.value)}
+                      placeholder="Optional. Prepended as the first system message."
+                      className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
+                      disabled={isLoading}
+                      rows={3}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-gray-500 dark:text-gray-400">
-              <Zap className="w-16 h-16 mb-4" />
-              <p className="text-lg">Start a conversation</p>
-              <p className="text-sm">
-                Select a model and type your message below
-              </p>
-            </div>
-          ) : (
-            messages.map((msg, index) => (
-              <div
-                key={index}
-                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
-                <div className="group max-w-[80%]">
-                  <div
-                    className={`rounded-lg px-4 py-3 ${
-                      msg.role === 'user'
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
-                    }`}
-                  >
-                    {renderThinkingContent(msg, index)}
-                    {renderMessageContent(msg, index)}
-                  </div>
-                  {msg.role === 'assistant' &&
-                  (!isStreaming || index !== messages.length - 1) ? (
-                    <ChatMessageActions
-                      copied={copiedIndex === index}
-                      onCopy={() => handleCopy(msg, index)}
-                      shared={sharedIndex === index}
-                      onShare={() => void handleShareAt(index)}
-                      shareDisabled={
-                        isLoading ||
-                        isStreaming ||
-                        !credentialKey.trim() ||
-                        !selectedModel ||
-                        !getMessagesForShareAt(messages, index).some(
-                          m => m.role === 'user'
-                        )
-                      }
-                      showRegenerate={index === messages.length - 1}
-                      regenerateDisabled={
-                        isLoading ||
-                        isStreaming ||
-                        !getMessagesForGeneration(messages).some(
-                          m => m.role === 'user'
-                        )
-                      }
-                      onRegenerate={() => void handleRegenerate()}
-                      disabled={
-                        isWaitingFirstToken &&
-                        typeof msg.content === 'string' &&
-                        !msg.content &&
-                        index === messages.length - 1
-                      }
-                    />
-                  ) : null}
-                </div>
+        <div className="flex-1 overflow-y-auto px-4 pt-4 pb-3">
+          <div className="mx-auto w-full max-w-3xl h-full">
+            {messages.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-gray-500 dark:text-gray-400">
+                <Zap className="w-16 h-16 mb-4" />
+                <p className="text-lg">Start a conversation</p>
+                <p className="text-sm">
+                  Select a model and type your message below
+                </p>
               </div>
-            ))
-          )}
-          <div ref={messagesEndRef} />
+            ) : (
+              <div className="space-y-4">
+                {messages.map((msg, index) => (
+                  <div
+                    key={index}
+                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div className="group max-w-[80%]">
+                      <div
+                        className={`rounded-lg px-4 py-3 ${
+                          msg.role === 'user'
+                            ? 'bg-primary-600 text-white'
+                            : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
+                        }`}
+                      >
+                        {renderThinkingContent(msg, index)}
+                        {renderMessageContent(msg, index)}
+                      </div>
+                      {msg.role === 'assistant' &&
+                      (!isStreaming || index !== messages.length - 1) ? (
+                        <ChatMessageActions
+                          copied={copiedIndex === index}
+                          onCopy={() => handleCopy(msg, index)}
+                          shared={sharedIndex === index}
+                          onShare={() => void handleShareAt(index)}
+                          shareDisabled={
+                            isLoading ||
+                            isStreaming ||
+                            !credentialKey.trim() ||
+                            !selectedModel ||
+                            !getMessagesForShareAt(messages, index).some(
+                              m => m.role === 'user'
+                            )
+                          }
+                          showRegenerate={index === messages.length - 1}
+                          regenerateDisabled={
+                            isLoading ||
+                            isStreaming ||
+                            !getMessagesForGeneration(messages).some(
+                              m => m.role === 'user'
+                            )
+                          }
+                          onRegenerate={() => void handleRegenerate()}
+                          disabled={
+                            isWaitingFirstToken &&
+                            typeof msg.content === 'string' &&
+                            !msg.content &&
+                            index === messages.length - 1
+                          }
+                        />
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
         </div>
 
         {/* Input Area */}
-        <div className="border-t border-gray-200 dark:border-gray-700 p-4">
-          {imageDataUrl ? (
-            <div className="mb-3 flex items-center space-x-3">
-              <img
-                src={imageDataUrl}
-                alt="preview"
-                className="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600"
-              />
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setImageDataUrl(null)}
-                title="Remove image"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          ) : null}
-          {imageError ? (
-            <p className="mb-3 text-sm text-red-600 dark:text-red-400">
-              {imageError}
-            </p>
-          ) : null}
-          <div className="flex space-x-2">
-            <textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
-              className="flex-1 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-3 resize-none"
-              rows={3}
-              disabled={isLoading}
-            />
-            <div className="flex flex-col space-y-2">
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleImageChange}
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={handlePickImage}
-                disabled={!isVisionModel(selectedModel) || isLoading}
-                className="btn btn-secondary flex items-center justify-center"
-                title={
-                  isVisionModel(selectedModel)
-                    ? 'Attach image'
-                    : 'Image input is disabled for this model'
-                }
-              >
-                <ImagePlus className="w-5 h-5" />
-              </button>
-              {isStreaming ? (
+        <div className="px-4 py-3">
+          <div className="mx-auto w-full max-w-3xl">
+            {imageDataUrl ? (
+              <div className="mb-3 flex items-center space-x-3">
+                <img
+                  src={imageDataUrl}
+                  alt="preview"
+                  className="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600"
+                />
                 <button
-                  onClick={handleStop}
-                  className="btn btn-danger flex items-center justify-center"
-                  title="Stop Generation"
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setImageDataUrl(null)}
+                  title="Remove image"
                 >
-                  <StopCircle className="w-5 h-5" />
+                  <X className="w-4 h-4" />
                 </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  disabled={
-                    (!input.trim() && !imageDataUrl) ||
-                    !credentialKey.trim() ||
-                    isLoading
-                  }
-                  className="btn btn-primary flex items-center justify-center"
-                  title="Send Message"
-                >
-                  {isLoading ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : (
-                    <Send className="w-5 h-5" />
-                  )}
-                </button>
-              )}
+              </div>
+            ) : null}
+            {imageError ? (
+              <p className="mb-3 text-sm text-red-600 dark:text-red-400">
+                {imageError}
+              </p>
+            ) : null}
+            <div className="rounded-2xl bg-gray-50 dark:bg-gray-700/30 ring-1 ring-gray-200/80 dark:ring-gray-600 shadow-sm p-3">
+              <textarea
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
+                className="w-full bg-transparent text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-400 focus:outline-none resize-none"
+                rows={3}
+                disabled={isLoading}
+              />
+
+              <div className="mt-2 flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageChange}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={handlePickImage}
+                    disabled={!isVisionModel(selectedModel) || isLoading}
+                    className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={
+                      isVisionModel(selectedModel)
+                        ? 'Attach image'
+                        : 'Image input is disabled for this model'
+                    }
+                  >
+                    <ImagePlus className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {isStreaming ? (
+                  <button
+                    onClick={handleStop}
+                    className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Stop Generation"
+                  >
+                    <StopCircle className="w-5 h-5" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSend}
+                    disabled={
+                      (!input.trim() && !imageDataUrl) ||
+                      !credentialKey.trim() ||
+                      isLoading
+                    }
+                    className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Send Message"
+                  >
+                    {isLoading ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Send className="w-5 h-5" />
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
