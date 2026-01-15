@@ -18,13 +18,18 @@
     Moon,
     Monitor,
     MessageSquare,
+    ChevronLeft,
+    ChevronRight,
   } from 'lucide-svelte';
 
   let { children }: { children: Snippet } = $props();
 
+  const SIDEBAR_COLLAPSED_STORAGE_KEY = 'llm_proxy_sidebar_collapsed';
+
   let isMobileMenuOpen = $state(false);
   let isReloading = $state(false);
   let showThemeMenu = $state(false);
+  let isSidebarCollapsed = $state(false);
 
   $effect(() => {
     if (showThemeMenu && browser) {
@@ -42,6 +47,19 @@
   onMount(() => {
     auth.init();
     theme.init();
+    if (browser) {
+      isSidebarCollapsed =
+        localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
+    }
+  });
+
+  $effect(() => {
+    if (browser) {
+      localStorage.setItem(
+        SIDEBAR_COLLAPSED_STORAGE_KEY,
+        isSidebarCollapsed ? '1' : '0'
+      );
+    }
   });
 
   $effect(() => {
@@ -84,6 +102,10 @@
     showThemeMenu = false;
   }
 
+  function toggleSidebarCollapsed() {
+    isSidebarCollapsed = !isSidebarCollapsed;
+  }
+
   const navItems = [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/providers', label: 'Providers', icon: Plug },
@@ -94,7 +116,11 @@
 
 <div class="min-h-screen bg-gray-50 dark:bg-gray-900">
   {#if $auth.isAuthenticated}
-    <aside class="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
+    <aside
+      class={`hidden lg:fixed lg:inset-y-0 lg:flex lg:flex-col transition-all duration-200 relative ${
+        isSidebarCollapsed ? 'lg:w-16' : 'lg:w-64'
+      }`}
+    >
       <div class="flex flex-col grow bg-gray-900 overflow-y-auto">
         <div
           class="flex items-center shrink-0 px-4 py-5 border-b border-gray-800"
@@ -110,7 +136,9 @@
                 draggable="false"
               />
             </div>
-            <span class="text-xl font-semibold text-white"> LLM Proxy </span>
+            {#if !isSidebarCollapsed}
+              <span class="text-xl font-semibold text-white"> LLM Proxy </span>
+            {/if}
           </div>
         </div>
 
@@ -120,24 +148,52 @@
             {@const isActive = $page.url.pathname === item.href}
             <a
               href={item.href}
-              class="sidebar-nav-item {isActive ? 'active' : ''}"
+              class={`sidebar-nav-item ${isActive ? 'active' : ''} ${
+                isSidebarCollapsed ? 'justify-center px-0 space-x-0' : ''
+              }`}
+              title={isSidebarCollapsed ? item.label : undefined}
+              aria-label={item.label}
             >
               <Icon class="w-5 h-5" />
-              <span>{item.label}</span>
+              {#if !isSidebarCollapsed}
+                <span>{item.label}</span>
+              {/if}
             </a>
           {/each}
         </nav>
 
-        <div class="shrink-0 border-t border-gray-800 p-4">
+        <div
+          class={`shrink-0 border-t border-gray-800 ${
+            isSidebarCollapsed ? 'p-2' : 'p-4'
+          }`}
+        >
           <button
             onclick={handleLogout}
-            class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 dark:text-gray-400 hover:bg-gray-800 dark:hover:bg-gray-700 hover:text-white transition-colors duration-200 rounded-lg"
+            class={`flex items-center w-full px-4 py-3 text-gray-300 dark:text-gray-400 hover:bg-gray-800 dark:hover:bg-gray-700 hover:text-white transition-colors duration-200 rounded-lg ${
+              isSidebarCollapsed ? 'justify-center px-0 space-x-0' : 'space-x-3'
+            }`}
+            title={isSidebarCollapsed ? 'Logout' : undefined}
+            aria-label="Logout"
           >
             <LogOut class="w-5 h-5" />
-            <span>Logout</span>
+            {#if !isSidebarCollapsed}
+              <span>Logout</span>
+            {/if}
           </button>
         </div>
       </div>
+      <button
+        onclick={toggleSidebarCollapsed}
+        class="absolute top-23 left-full -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-lg flex items-center justify-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-md text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 z-50"
+        title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+      >
+        {#if isSidebarCollapsed}
+          <ChevronRight class="w-4 h-4" />
+        {:else}
+          <ChevronLeft class="w-4 h-4" />
+        {/if}
+      </button>
     </aside>
 
     {#if isMobileMenuOpen}
@@ -206,7 +262,11 @@
       </div>
     {/if}
 
-    <div class="lg:pl-64 flex flex-col flex-1">
+    <div
+      class={`flex flex-col flex-1 transition-all duration-200 ${
+        isSidebarCollapsed ? 'lg:pl-16' : 'lg:pl-64'
+      }`}
+    >
       <header
         class="sticky top-0 z-30 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700"
       >
