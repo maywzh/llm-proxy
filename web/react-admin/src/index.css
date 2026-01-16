@@ -45,6 +45,11 @@
 }
 
 @layer components {
+  select,
+  option {
+    @apply cursor-pointer;
+  }
+
   /* Button Styles */
   button {
     @apply cursor-pointer;
