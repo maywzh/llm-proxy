@@ -84,6 +84,12 @@
   onMount(() => {
     initChatSettings();
     loadModels();
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showSettings) showSettings = false;
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   });
 
   $effect(() => {
@@ -461,149 +467,6 @@
   <div
     class="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-[calc(100vh-180px)] flex flex-col"
   >
-    <div class="p-4">
-      <div class="mx-auto w-full max-w-3xl">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center space-x-4 flex-1">
-            <select
-              value={$chatSettings.selectedModel}
-              onchange={e =>
-                updateChatSettings({
-                  selectedModel: (e.target as HTMLSelectElement).value,
-                })}
-              disabled={isLoading || getAllModels().length === 0}
-              class="flex-1 max-w-md bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
-            >
-              {#if getAllModels().length === 0}
-                <option value=""
-                  >Set credential key in Settings to load models</option
-                >
-              {/if}
-              {#each getAllModels() as model (model.value)}
-                <option value={model.value}>{model.label}</option>
-              {/each}
-            </select>
-          </div>
-
-          <div class="flex items-center space-x-2">
-            <button
-              onclick={() => (showSettings = !showSettings)}
-              class="btn btn-secondary flex items-center space-x-2"
-              title="Settings (set credential key)"
-            >
-              <Settings class="w-4 h-4" />
-              <span>Settings</span>
-            </button>
-            <button
-              onclick={handleClear}
-              class="btn btn-secondary flex items-center space-x-2"
-              title="Clear Chat"
-            >
-              <Trash2 class="w-4 h-4" />
-              <span>Clear</span>
-            </button>
-          </div>
-        </div>
-
-        {#if showSettings}
-          <div class="mt-4 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-            <div class="space-y-4">
-              <div>
-                <label
-                  for="credential-key"
-                  class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-                >
-                  Credential Key
-                </label>
-                <div class="flex items-center space-x-2">
-                  <input
-                    bind:this={credentialKeyInput}
-                    id="credential-key"
-                    value={isEditingCredentialKey
-                      ? $chatSettings.credentialKey
-                      : maskCredentialKey($chatSettings.credentialKey)}
-                    oninput={e =>
-                      updateChatSettings({
-                        credentialKey: (e.target as HTMLInputElement).value,
-                      })}
-                    placeholder="sk-... (used for /v1/models and /v1/chat/completions)"
-                    disabled={isLoading}
-                    readonly={!isEditingCredentialKey}
-                    autocomplete="off"
-                    spellcheck="false"
-                    inputmode="text"
-                    class="flex-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
-                  />
-                  <button
-                    type="button"
-                    class="btn btn-secondary"
-                    disabled={isLoading}
-                    title={isEditingCredentialKey
-                      ? 'Hide credential key'
-                      : 'Edit credential key'}
-                    onclick={() =>
-                      (isEditingCredentialKey = !isEditingCredentialKey)}
-                  >
-                    {isEditingCredentialKey ? 'Hide' : 'Edit'}
-                  </button>
-                </div>
-                {#if modelsError}
-                  <p class="mt-2 text-sm text-red-600 dark:text-red-400">
-                    {modelsError}
-                  </p>
-                {/if}
-              </div>
-              <div>
-                <label
-                  for="max-tokens"
-                  class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-                >
-                  Max Tokens: {$chatSettings.maxTokens}
-                </label>
-                <input
-                  id="max-tokens"
-                  type="range"
-                  value={$chatSettings.maxTokens}
-                  oninput={e =>
-                    updateChatSettings({
-                      maxTokens: Number.parseInt(
-                        (e.target as HTMLInputElement).value,
-                        10
-                      ),
-                    })}
-                  min="100"
-                  max="8000"
-                  step="100"
-                  disabled={isLoading}
-                  class="w-full"
-                />
-              </div>
-              <div>
-                <label
-                  for="system-prompt"
-                  class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-                >
-                  System Prompt
-                </label>
-                <textarea
-                  id="system-prompt"
-                  value={$chatSettings.systemPrompt}
-                  oninput={e =>
-                    updateChatSettings({
-                      systemPrompt: (e.target as HTMLTextAreaElement).value,
-                    })}
-                  placeholder="Optional. Prepended as the first system message."
-                  disabled={isLoading}
-                  rows={3}
-                  class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
-                ></textarea>
-              </div>
-            </div>
-          </div>
-        {/if}
-      </div>
-    </div>
-
     <div class="flex-1 overflow-y-auto px-4 pt-4 pb-3">
       <div class="mx-auto w-full max-w-3xl h-full">
         {#if messages.length === 0}
@@ -714,6 +577,159 @@
       </div>
     </div>
 
+    {#if showSettings}
+      <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <button
+          type="button"
+          class="absolute inset-0 bg-black/40"
+          aria-label="Close settings"
+          onclick={() => (showSettings = false)}
+        ></button>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Settings"
+          class="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 shadow-xl ring-1 ring-gray-200 dark:ring-gray-700"
+        >
+          <div
+            class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700"
+          >
+            <div class="text-sm font-semibold text-gray-900 dark:text-white">
+              Settings
+            </div>
+            <button
+              type="button"
+              class="btn-icon"
+              title="Close"
+              aria-label="Close"
+              onclick={() => (showSettings = false)}
+            >
+              <X class="w-4 h-4" />
+            </button>
+          </div>
+
+          <div class="p-4 space-y-4">
+            <div>
+              <label
+                for="credential-key"
+                class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+              >
+                Credential Key
+              </label>
+              <div class="flex items-center space-x-2">
+                <input
+                  bind:this={credentialKeyInput}
+                  id="credential-key"
+                  value={isEditingCredentialKey
+                    ? $chatSettings.credentialKey
+                    : maskCredentialKey($chatSettings.credentialKey)}
+                  oninput={e =>
+                    updateChatSettings({
+                      credentialKey: (e.target as HTMLInputElement).value,
+                    })}
+                  placeholder="sk-... (used for /v1/models and /v1/chat/completions)"
+                  disabled={isLoading}
+                  readonly={!isEditingCredentialKey}
+                  autocomplete="off"
+                  spellcheck="false"
+                  inputmode="text"
+                  class="flex-1 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
+                />
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  disabled={isLoading}
+                  title={isEditingCredentialKey
+                    ? 'Hide credential key'
+                    : 'Edit credential key'}
+                  onclick={() =>
+                    (isEditingCredentialKey = !isEditingCredentialKey)}
+                >
+                  {isEditingCredentialKey ? 'Hide' : 'Edit'}
+                </button>
+              </div>
+              {#if modelsError}
+                <p class="mt-2 text-sm text-red-600 dark:text-red-400">
+                  {modelsError}
+                </p>
+              {/if}
+            </div>
+
+            <div>
+              <label
+                for="max-tokens"
+                class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+              >
+                Max Tokens: {$chatSettings.maxTokens}
+              </label>
+              <input
+                id="max-tokens"
+                type="range"
+                value={$chatSettings.maxTokens}
+                oninput={e =>
+                  updateChatSettings({
+                    maxTokens: Number.parseInt(
+                      (e.target as HTMLInputElement).value,
+                      10
+                    ),
+                  })}
+                min="100"
+                max="8000"
+                step="100"
+                disabled={isLoading}
+                class="w-full"
+              />
+            </div>
+
+            <div>
+              <label
+                for="system-prompt"
+                class="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+              >
+                System Prompt
+              </label>
+              <textarea
+                id="system-prompt"
+                value={$chatSettings.systemPrompt}
+                oninput={e =>
+                  updateChatSettings({
+                    systemPrompt: (e.target as HTMLTextAreaElement).value,
+                  })}
+                placeholder="Optional. Prepended as the first system message."
+                disabled={isLoading}
+                rows={3}
+                class="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
+              ></textarea>
+            </div>
+          </div>
+
+          <div
+            class="flex items-center justify-between gap-2 px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30"
+          >
+            <button
+              type="button"
+              class="btn btn-secondary flex items-center gap-2"
+              title="Clear chat"
+              onclick={handleClear}
+              disabled={isLoading || isStreaming}
+            >
+              <Trash2 class="w-4 h-4" />
+              <span>Clear</span>
+            </button>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="btn btn-primary"
+                onclick={() => (showSettings = false)}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    {/if}
+
     <div class="px-4 py-3">
       <div class="mx-auto w-full max-w-3xl">
         {#if imageDataUrl}
@@ -750,7 +766,7 @@
             disabled={isLoading}
           ></textarea>
 
-          <div class="mt-2 flex items-center justify-between">
+          <div class="mt-2 flex items-center justify-between gap-2">
             <div class="flex items-center space-x-2">
               <input
                 bind:this={imageInput}
@@ -773,30 +789,61 @@
               </button>
             </div>
 
-            {#if isStreaming}
-              <button
-                onclick={handleStop}
-                class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Stop Generation"
+            <div class="flex items-center gap-2">
+              <select
+                value={$chatSettings.selectedModel}
+                onchange={e =>
+                  updateChatSettings({
+                    selectedModel: (e.target as HTMLSelectElement).value,
+                  })}
+                disabled={isLoading || getAllModels().length === 0}
+                class="h-10 w-[10rem] sm:w-[14rem] bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 text-gray-900 dark:text-white rounded-full focus:ring-2 focus:ring-primary-500 focus:outline-none px-3 text-sm"
+                title="Model"
               >
-                <StopCircle class="w-5 h-5" />
-              </button>
-            {:else}
-              <button
-                onclick={handleSend}
-                disabled={(!input.trim() && !imageDataUrl) ||
-                  !$chatSettings.credentialKey.trim() ||
-                  isLoading}
-                class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Send Message"
-              >
-                {#if isLoading}
-                  <Loader2 class="w-5 h-5 animate-spin" />
-                {:else}
-                  <Send class="w-5 h-5" />
+                {#if getAllModels().length === 0}
+                  <option value="">Set credential key in Settings</option>
                 {/if}
+                {#each getAllModels() as model (model.value)}
+                  <option value={model.value}>{model.label}</option>
+                {/each}
+              </select>
+
+              <button
+                type="button"
+                onclick={() => (showSettings = true)}
+                class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                title="Settings (set credential key)"
+                aria-label="Settings"
+              >
+                <Settings class="w-5 h-5" />
               </button>
-            {/if}
+
+              {#if isStreaming}
+                <button
+                  onclick={handleStop}
+                  class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Stop Generation"
+                >
+                  <StopCircle class="w-5 h-5" />
+                </button>
+              {:else}
+                <button
+                  onclick={handleSend}
+                  disabled={(!input.trim() && !imageDataUrl) ||
+                    !$chatSettings.credentialKey.trim() ||
+                    !$chatSettings.selectedModel ||
+                    isLoading}
+                  class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Send Message"
+                >
+                  {#if isLoading}
+                    <Loader2 class="w-5 h-5 animate-spin" />
+                  {:else}
+                    <Send class="w-5 h-5" />
+                  {/if}
+                </button>
+              {/if}
+            </div>
           </div>
         </div>
       </div>

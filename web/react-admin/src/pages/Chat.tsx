@@ -160,6 +160,15 @@ const Chat: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (!showSettings) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowSettings(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showSettings]);
+
   const loadModels = useCallback(async () => {
     if (!apiClient) return;
     try {
@@ -541,143 +550,6 @@ const Chat: React.FC = () => {
   return (
     <div className="max-w-7xl mx-auto">
       <div className="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-[calc(100vh-180px)] flex flex-col">
-        {/* Header */}
-        <div className="p-4">
-          <div className="mx-auto w-full max-w-3xl">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-4 flex-1">
-                <select
-                  value={selectedModel}
-                  onChange={e => setSelectedModel(e.target.value)}
-                  className="flex-1 max-w-md bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
-                  disabled={isLoading || getAllModels().length === 0}
-                >
-                  {getAllModels().length === 0 ? (
-                    <option value="">
-                      Set credential key in Settings to load models
-                    </option>
-                  ) : null}
-                  {getAllModels().map(model => (
-                    <option key={model.value} value={model.value}>
-                      {model.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={() => setShowSettings(!showSettings)}
-                  className="btn btn-secondary flex items-center space-x-2"
-                  title="Settings (set credential key)"
-                >
-                  <Settings className="w-4 h-4" />
-                  <span>Settings</span>
-                </button>
-                <button
-                  onClick={handleClear}
-                  className="btn btn-secondary flex items-center space-x-2"
-                  title="Clear Chat"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>Clear</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Settings Panel */}
-            {showSettings && (
-              <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                <div className="space-y-4">
-                  <div>
-                    <label
-                      htmlFor="credential-key"
-                      className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-                    >
-                      Credential Key
-                    </label>
-                    <div className="flex items-center space-x-2">
-                      <input
-                        ref={credentialKeyInputRef}
-                        id="credential-key"
-                        value={
-                          isEditingCredentialKey
-                            ? credentialKey
-                            : maskCredentialKey(credentialKey)
-                        }
-                        onChange={e => setCredentialKey(e.target.value)}
-                        placeholder="sk-... (used for /v1/models and /v1/chat/completions)"
-                        className="flex-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
-                        disabled={isLoading}
-                        readOnly={!isEditingCredentialKey}
-                        autoComplete="off"
-                        spellCheck={false}
-                        inputMode="text"
-                      />
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={() =>
-                          setIsEditingCredentialKey(editing => !editing)
-                        }
-                        disabled={isLoading}
-                        title={
-                          isEditingCredentialKey
-                            ? 'Hide credential key'
-                            : 'Edit credential key'
-                        }
-                      >
-                        {isEditingCredentialKey ? 'Hide' : 'Edit'}
-                      </button>
-                    </div>
-                    {modelsError ? (
-                      <p className="mt-2 text-sm text-red-600 dark:text-red-400">
-                        {modelsError}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="max-tokens"
-                      className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-                    >
-                      Max Tokens: {maxTokens}
-                    </label>
-                    <input
-                      id="max-tokens"
-                      type="range"
-                      min="100"
-                      max="8000"
-                      step="100"
-                      value={maxTokens}
-                      onChange={e => setMaxTokens(parseInt(e.target.value))}
-                      className="w-full"
-                      disabled={isLoading}
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="system-prompt"
-                      className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
-                    >
-                      System Prompt
-                    </label>
-                    <textarea
-                      id="system-prompt"
-                      value={systemPrompt}
-                      onChange={e => setSystemPrompt(e.target.value)}
-                      placeholder="Optional. Prepended as the first system message."
-                      className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
-                      disabled={isLoading}
-                      rows={3}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto px-4 pt-4 pb-3">
           <div className="mx-auto w-full max-w-3xl h-full">
@@ -749,6 +621,146 @@ const Chat: React.FC = () => {
           </div>
         </div>
 
+        {showSettings ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <button
+              type="button"
+              className="absolute inset-0 bg-black/40"
+              aria-label="Close settings"
+              onClick={() => setShowSettings(false)}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Settings"
+              className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-gray-800 shadow-xl ring-1 ring-gray-200 dark:ring-gray-700"
+            >
+              <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                <div className="text-sm font-semibold text-gray-900 dark:text-white">
+                  Settings
+                </div>
+                <button
+                  type="button"
+                  className="btn-icon"
+                  title="Close"
+                  aria-label="Close"
+                  onClick={() => setShowSettings(false)}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-4 space-y-4">
+                <div>
+                  <label
+                    htmlFor="credential-key"
+                    className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                  >
+                    Credential Key
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      ref={credentialKeyInputRef}
+                      id="credential-key"
+                      value={
+                        isEditingCredentialKey
+                          ? credentialKey
+                          : maskCredentialKey(credentialKey)
+                      }
+                      onChange={e => setCredentialKey(e.target.value)}
+                      placeholder="sk-... (used for /v1/models and /v1/chat/completions)"
+                      className="flex-1 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5"
+                      disabled={isLoading}
+                      readOnly={!isEditingCredentialKey}
+                      autoComplete="off"
+                      spellCheck={false}
+                      inputMode="text"
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() =>
+                        setIsEditingCredentialKey(editing => !editing)
+                      }
+                      disabled={isLoading}
+                      title={
+                        isEditingCredentialKey
+                          ? 'Hide credential key'
+                          : 'Edit credential key'
+                      }
+                    >
+                      {isEditingCredentialKey ? 'Hide' : 'Edit'}
+                    </button>
+                  </div>
+                  {modelsError ? (
+                    <p className="mt-2 text-sm text-red-600 dark:text-red-400">
+                      {modelsError}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="max-tokens"
+                    className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                  >
+                    Max Tokens: {maxTokens}
+                  </label>
+                  <input
+                    id="max-tokens"
+                    type="range"
+                    min="100"
+                    max="8000"
+                    step="100"
+                    value={maxTokens}
+                    onChange={e => setMaxTokens(parseInt(e.target.value))}
+                    className="w-full"
+                    disabled={isLoading}
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="system-prompt"
+                    className="block mb-2 text-sm font-medium text-gray-900 dark:text-white"
+                  >
+                    System Prompt
+                  </label>
+                  <textarea
+                    id="system-prompt"
+                    value={systemPrompt}
+                    onChange={e => setSystemPrompt(e.target.value)}
+                    placeholder="Optional. Prepended as the first system message."
+                    className="w-full bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 text-gray-900 dark:text-white rounded-lg focus:ring-primary-500 focus:border-primary-500 block p-2.5 resize-none"
+                    disabled={isLoading}
+                    rows={3}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/30">
+                <button
+                  type="button"
+                  className="btn btn-secondary flex items-center gap-2"
+                  title="Clear chat"
+                  onClick={handleClear}
+                  disabled={isLoading || isStreaming}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Clear</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => setShowSettings(false)}
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {/* Input Area */}
         <div className="px-4 py-3">
           <div className="mx-auto w-full max-w-3xl">
@@ -785,7 +797,7 @@ const Chat: React.FC = () => {
                 disabled={isLoading}
               />
 
-              <div className="mt-2 flex items-center justify-between">
+              <div className="mt-2 flex items-center justify-between gap-2">
                 <div className="flex items-center space-x-2">
                   <input
                     ref={imageInputRef}
@@ -809,32 +821,62 @@ const Chat: React.FC = () => {
                   </button>
                 </div>
 
-                {isStreaming ? (
-                  <button
-                    onClick={handleStop}
-                    className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Stop Generation"
+                <div className="flex items-center gap-2">
+                  <select
+                    value={selectedModel}
+                    onChange={e => setSelectedModel(e.target.value)}
+                    disabled={isLoading || getAllModels().length === 0}
+                    className="h-10 w-[10rem] sm:w-[14rem] bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 text-gray-900 dark:text-white rounded-full focus:ring-2 focus:ring-primary-500 focus:outline-none px-3 text-sm"
+                    title="Model"
                   >
-                    <StopCircle className="w-5 h-5" />
-                  </button>
-                ) : (
+                    {getAllModels().length === 0 ? (
+                      <option value="">Set credential key in Settings</option>
+                    ) : null}
+                    {getAllModels().map(model => (
+                      <option key={model.value} value={model.value}>
+                        {model.label}
+                      </option>
+                    ))}
+                  </select>
+
                   <button
-                    onClick={handleSend}
-                    disabled={
-                      (!input.trim() && !imageDataUrl) ||
-                      !credentialKey.trim() ||
-                      isLoading
-                    }
-                    className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Send Message"
+                    type="button"
+                    onClick={() => setShowSettings(true)}
+                    className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    title="Settings (set credential key)"
+                    aria-label="Settings"
                   >
-                    {isLoading ? (
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                    ) : (
-                      <Send className="w-5 h-5" />
-                    )}
+                    <Settings className="w-5 h-5" />
                   </button>
-                )}
+
+                  {isStreaming ? (
+                    <button
+                      onClick={handleStop}
+                      className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Stop Generation"
+                    >
+                      <StopCircle className="w-5 h-5" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleSend}
+                      disabled={
+                        (!input.trim() && !imageDataUrl) ||
+                        !credentialKey.trim() ||
+                        !selectedModel ||
+                        isLoading
+                      }
+                      className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Send Message"
+                    >
+                      {isLoading ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Send className="w-5 h-5" />
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
