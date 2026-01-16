@@ -53,6 +53,8 @@ impl ProviderService {
     ///     ttft_timeout_secs: None,
     ///     credentials: vec![],
     ///     provider_suffix: None,
+    ///     log_request_bodies: true,
+    ///     log_retention_days: 30,
     /// };
     /// let service = ProviderService::new(config);
     /// ```
@@ -217,6 +219,8 @@ mod tests {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            log_request_bodies: true,
+            log_retention_days: 30,
         }
     }
 
@@ -235,6 +239,8 @@ mod tests {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            log_request_bodies: true,
+            log_retention_days: 30,
         }
     }
 

@@ -4,8 +4,10 @@
 //! core business logic, such as provider selection and management.
 
 pub mod health_check_service;
+pub mod log_service;
 pub mod provider_service;
 
 // Re-export commonly used types
 pub use health_check_service::{check_providers_health, HealthCheckService};
+pub use log_service::{extract_client_ip, extract_user_agent, LogCollector, LogEntry, LogService};
 pub use provider_service::ProviderService;

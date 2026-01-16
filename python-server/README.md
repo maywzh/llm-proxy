@@ -40,6 +40,7 @@ High-performance LLM API proxy service built with FastAPI, supporting weighted l
 - ✅ **Rate Limiting** - Optional per-key rate limiting
 - ✅ **Dynamic Configuration** - PostgreSQL-based hot-reload configuration
 - ✅ **Async Processing** - Full async architecture with FastAPI + httpx
+- ✅ **Request Logging** - Database-backed request/response logging with retention
 
 ## 🔧 Tech Stack
 

@@ -1,5 +1,9 @@
 """Completions API endpoints"""
 
+import asyncio
+import time
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 import json
 
@@ -10,8 +14,14 @@ from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
 
 from app.api.dependencies import verify_auth, get_provider_svc
+from app.models.config import CredentialConfig
+from app.services.log_service import get_log_service, LogEntry
 from app.services.provider_service import ProviderService
-from app.utils.streaming import create_streaming_response, rewrite_model_in_response
+from app.utils.streaming import (
+    create_streaming_response_with_logging,
+    rewrite_model_in_response,
+    StreamingMetadata,
+)
 from app.core.config import get_config, get_env_config
 from app.core.exceptions import TTFTTimeoutError
 from app.core.http_client import get_http_client
@@ -25,6 +35,75 @@ from app.core.logging import (
 
 router = APIRouter()
 logger = get_logger()
+
+
+def _get_client_ip(request: Request) -> Optional[str]:
+    """Extract client IP from request, checking X-Forwarded-For header first."""
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        # X-Forwarded-For can contain multiple IPs, take the first one
+        return forwarded_for.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return None
+
+
+def _get_user_agent(request: Request) -> Optional[str]:
+    """Extract user agent from request headers."""
+    return request.headers.get("user-agent")
+
+
+async def _log_request_async(
+    credential: Optional[CredentialConfig],
+    provider_id: Optional[int],
+    provider_name: str,
+    endpoint: str,
+    model: Optional[str],
+    is_streaming: bool,
+    status_code: int,
+    duration_ms: int,
+    request_body: dict,
+    response_body: Optional[dict],
+    client_ip: Optional[str],
+    user_agent: Optional[str],
+    ttft_ms: Optional[int] = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    total_tokens: int = 0,
+    error_message: Optional[str] = None,
+) -> None:
+    """Log request asynchronously without blocking the response."""
+    log_service = get_log_service()
+    if log_service is None:
+        return
+
+    try:
+        entry = LogEntry(
+            request_id=str(uuid.uuid4()),
+            timestamp=datetime.now(timezone.utc),
+            credential_id=credential.id if credential else None,
+            credential_name=credential.name if credential else "anonymous",
+            provider_id=provider_id,
+            provider_name=provider_name,
+            endpoint=endpoint,
+            method="POST",
+            model=model,
+            is_streaming=is_streaming,
+            status_code=status_code,
+            duration_ms=duration_ms,
+            ttft_ms=ttft_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            request_body=request_body,
+            response_body=response_body,
+            error_message=error_message,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        await log_service.log_request(entry)
+    except Exception as e:
+        logger.warning(f"Failed to log request: {e}")
 
 
 def _strip_provider_suffix(model: str) -> str:
@@ -90,9 +169,16 @@ async def _parse_stream_error(response: httpx.Response) -> dict:
 
 
 async def proxy_completion_request(
-    request: Request, endpoint: str, provider_svc: ProviderService
+    request: Request,
+    endpoint: str,
+    provider_svc: ProviderService,
+    credential: Optional[CredentialConfig] = None,
 ):
     """Common logic for proxying completion requests"""
+    start_time = time.time()
+    client_ip = _get_client_ip(request)
+    user_agent = _get_user_agent(request)
+
     try:
         data = await request.json()
     except ClientDisconnect:
@@ -102,6 +188,8 @@ async def proxy_completion_request(
         logger.warning(f"Invalid JSON in request body: {str(e)}")
         raise HTTPException(status_code=422, detail=f"Invalid JSON: {str(e)}")
 
+    # Store original request body for logging (before model mapping)
+    original_request_body = data.copy()
     original_model = data.get("model")
 
     # Strip provider suffix if present (e.g., "Proxy/gpt-4" -> "gpt-4")
@@ -157,6 +245,27 @@ async def proxy_completion_request(
                         f"from provider {provider.name} during streaming"
                     )
                     await _close_stream_resources(stream_ctx)
+
+                    # Log the error response
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    asyncio.create_task(
+                        _log_request_async(
+                            credential=credential,
+                            provider_id=getattr(provider, "id", None),
+                            provider_name=provider.name,
+                            endpoint=f"/v1/{endpoint}",
+                            model=effective_model,
+                            is_streaming=True,
+                            status_code=response.status_code,
+                            duration_ms=duration_ms,
+                            request_body=original_request_body,
+                            response_body=error_body,
+                            client_ip=client_ip,
+                            user_agent=user_agent,
+                            error_message=error_body.get("error", {}).get("message"),
+                        )
+                    )
+
                     error_response = JSONResponse(
                         content=error_body, status_code=response.status_code
                     )
@@ -165,12 +274,42 @@ async def proxy_completion_request(
                     )
 
                 config = get_config()
-                streaming_response = create_streaming_response(
+
+                # Create callback for logging when streaming completes
+                async def on_streaming_complete(metadata: StreamingMetadata) -> None:
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    # Assemble response body from chunks
+                    response_body = None
+                    if metadata.response_chunks:
+                        response_body = {"_streaming_chunks": metadata.response_chunks}
+
+                    await _log_request_async(
+                        credential=credential,
+                        provider_id=getattr(provider, "id", None),
+                        provider_name=provider.name,
+                        endpoint=f"/v1/{endpoint}",
+                        model=effective_model,
+                        is_streaming=True,
+                        status_code=metadata.status_code,
+                        duration_ms=duration_ms,
+                        request_body=original_request_body,
+                        response_body=response_body,
+                        client_ip=client_ip,
+                        user_agent=user_agent,
+                        ttft_ms=metadata.ttft_ms,
+                        prompt_tokens=metadata.prompt_tokens,
+                        completion_tokens=metadata.completion_tokens,
+                        total_tokens=metadata.total_tokens,
+                        error_message=metadata.error_message,
+                    )
+
+                streaming_response, _ = create_streaming_response_with_logging(
                     response,
                     effective_model,
                     provider.name,
                     data,
                     config.ttft_timeout_secs,
+                    on_complete=on_streaming_complete,
                 )
                 streaming_response.background = BackgroundTask(
                     _close_stream_resources, stream_ctx
@@ -198,6 +337,27 @@ async def proxy_completion_request(
                     f"Backend API returned error status {response.status_code} "
                     f"from provider {provider.name}"
                 )
+
+                # Log the error response
+                duration_ms = int((time.time() - start_time) * 1000)
+                asyncio.create_task(
+                    _log_request_async(
+                        credential=credential,
+                        provider_id=getattr(provider, "id", None),
+                        provider_name=provider.name,
+                        endpoint=f"/v1/{endpoint}",
+                        model=effective_model,
+                        is_streaming=False,
+                        status_code=response.status_code,
+                        duration_ms=duration_ms,
+                        request_body=original_request_body,
+                        response_body=error_body,
+                        client_ip=client_ip,
+                        user_agent=user_agent,
+                        error_message=error_body.get("error", {}).get("message"),
+                    )
+                )
+
                 # Faithfully return the backend's status code and error body
                 error_response = JSONResponse(
                     content=error_body, status_code=response.status_code
@@ -209,42 +369,71 @@ async def proxy_completion_request(
             response_data = response.json()
 
             # Extract and record token usage
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
             if "usage" in response_data:
                 usage = response_data["usage"]
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
+
                 # Use effective_model (without provider suffix) for metrics
                 model_name = effective_model or "unknown"
                 api_key_name = get_api_key_name()
 
-                if "prompt_tokens" in usage:
+                if prompt_tokens:
                     TOKEN_USAGE.labels(
                         model=model_name,
                         provider=provider.name,
                         token_type="prompt",
                         api_key_name=api_key_name,
-                    ).inc(usage["prompt_tokens"])
+                    ).inc(prompt_tokens)
 
-                if "completion_tokens" in usage:
+                if completion_tokens:
                     TOKEN_USAGE.labels(
                         model=model_name,
                         provider=provider.name,
                         token_type="completion",
                         api_key_name=api_key_name,
-                    ).inc(usage["completion_tokens"])
+                    ).inc(completion_tokens)
 
-                if "total_tokens" in usage:
+                if total_tokens:
                     TOKEN_USAGE.labels(
                         model=model_name,
                         provider=provider.name,
                         token_type="total",
                         api_key_name=api_key_name,
-                    ).inc(usage["total_tokens"])
+                    ).inc(total_tokens)
 
                     logger.debug(
                         f"Token usage - model={model_name} provider={provider.name} key={api_key_name} "
-                        f"prompt={usage.get('prompt_tokens', 0)} "
-                        f"completion={usage.get('completion_tokens', 0)} "
-                        f"total={usage.get('total_tokens', 0)}"
+                        f"prompt={prompt_tokens} "
+                        f"completion={completion_tokens} "
+                        f"total={total_tokens}"
                     )
+
+            # Log the successful response
+            duration_ms = int((time.time() - start_time) * 1000)
+            asyncio.create_task(
+                _log_request_async(
+                    credential=credential,
+                    provider_id=getattr(provider, "id", None),
+                    provider_name=provider.name,
+                    endpoint=f"/v1/{endpoint}",
+                    model=effective_model,
+                    is_streaming=False,
+                    status_code=response.status_code,
+                    duration_ms=duration_ms,
+                    request_body=original_request_body,
+                    response_body=response_data,
+                    client_ip=client_ip,
+                    user_agent=user_agent,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                )
+            )
 
             # Use effective_model in response so client sees model without provider suffix
             response_data = rewrite_model_in_response(response_data, effective_model)
@@ -257,6 +446,25 @@ async def proxy_completion_request(
 
     except TTFTTimeoutError as e:
         logger.error(f"TTFT timeout for provider {provider.name}: {str(e)}")
+        # Log the timeout error
+        duration_ms = int((time.time() - start_time) * 1000)
+        asyncio.create_task(
+            _log_request_async(
+                credential=credential,
+                provider_id=getattr(provider, "id", None),
+                provider_name=provider.name,
+                endpoint=f"/v1/{endpoint}",
+                model=effective_model,
+                is_streaming=data.get("stream", False),
+                status_code=504,
+                duration_ms=duration_ms,
+                request_body=original_request_body,
+                response_body=None,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                error_message=f"TTFT timeout: first token not received within {e.timeout_secs} seconds",
+            )
+        )
         raise HTTPException(
             status_code=504,
             detail={
@@ -272,25 +480,120 @@ async def proxy_completion_request(
             f"Remote protocol error for provider {provider.name}: {str(e)} - "
             f"Provider closed connection unexpectedly during request"
         )
+        # Log the error
+        duration_ms = int((time.time() - start_time) * 1000)
+        asyncio.create_task(
+            _log_request_async(
+                credential=credential,
+                provider_id=getattr(provider, "id", None),
+                provider_name=provider.name,
+                endpoint=f"/v1/{endpoint}",
+                model=effective_model,
+                is_streaming=data.get("stream", False),
+                status_code=502,
+                duration_ms=duration_ms,
+                request_body=original_request_body,
+                response_body=None,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                error_message=f"Provider {provider.name} connection closed unexpectedly",
+            )
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Provider {provider.name} connection closed unexpectedly",
         )
     except httpx.TimeoutException as e:
         logger.error(f"Timeout error for provider {provider.name}: {str(e)}")
+        # Log the timeout error
+        duration_ms = int((time.time() - start_time) * 1000)
+        asyncio.create_task(
+            _log_request_async(
+                credential=credential,
+                provider_id=getattr(provider, "id", None),
+                provider_name=provider.name,
+                endpoint=f"/v1/{endpoint}",
+                model=effective_model,
+                is_streaming=data.get("stream", False),
+                status_code=504,
+                duration_ms=duration_ms,
+                request_body=original_request_body,
+                response_body=None,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                error_message="Gateway timeout",
+            )
+        )
         raise HTTPException(status_code=504, detail="Gateway timeout")
     except httpx.HTTPStatusError as e:
         logger.error(
             f"HTTP error for provider {provider.name}: {e.response.status_code} - {str(e)}"
         )
+        # Log the HTTP error
+        duration_ms = int((time.time() - start_time) * 1000)
+        asyncio.create_task(
+            _log_request_async(
+                credential=credential,
+                provider_id=getattr(provider, "id", None),
+                provider_name=provider.name,
+                endpoint=f"/v1/{endpoint}",
+                model=effective_model,
+                is_streaming=data.get("stream", False),
+                status_code=e.response.status_code,
+                duration_ms=duration_ms,
+                request_body=original_request_body,
+                response_body=None,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                error_message=str(e),
+            )
+        )
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except httpx.RequestError as e:
         logger.error(f"Network request error for provider {provider.name}: {str(e)}")
+        # Log the network error
+        duration_ms = int((time.time() - start_time) * 1000)
+        asyncio.create_task(
+            _log_request_async(
+                credential=credential,
+                provider_id=getattr(provider, "id", None),
+                provider_name=provider.name,
+                endpoint=f"/v1/{endpoint}",
+                model=effective_model,
+                is_streaming=data.get("stream", False),
+                status_code=502,
+                duration_ms=duration_ms,
+                request_body=original_request_body,
+                response_body=None,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                error_message=f"Provider {provider.name} network error",
+            )
+        )
         raise HTTPException(
             status_code=502, detail=f"Provider {provider.name} network error"
         )
     except Exception as e:
         logger.exception(f"Unexpected error for provider {provider.name}")
+        # Log the unexpected error
+        duration_ms = int((time.time() - start_time) * 1000)
+        asyncio.create_task(
+            _log_request_async(
+                credential=credential,
+                provider_id=getattr(provider, "id", None),
+                provider_name=provider.name,
+                endpoint=f"/v1/{endpoint}",
+                model=effective_model,
+                is_streaming=data.get("stream", False),
+                status_code=500,
+                duration_ms=duration_ms,
+                request_body=original_request_body,
+                response_body=None,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                error_message="Internal server error",
+            )
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         # Clear provider context after request
@@ -300,18 +603,22 @@ async def proxy_completion_request(
 @router.post("/chat/completions")
 async def chat_completions(
     request: Request,
-    _: None = Depends(verify_auth),
+    credential: Optional[CredentialConfig] = Depends(verify_auth),
     provider_svc: ProviderService = Depends(get_provider_svc),
 ):
     """Proxy chat completions requests to providers"""
-    return await proxy_completion_request(request, "chat/completions", provider_svc)
+    return await proxy_completion_request(
+        request, "chat/completions", provider_svc, credential
+    )
 
 
 @router.post("/completions")
 async def completions(
     request: Request,
-    _: None = Depends(verify_auth),
+    credential: Optional[CredentialConfig] = Depends(verify_auth),
     provider_svc: ProviderService = Depends(get_provider_svc),
 ):
     """Proxy completions requests to providers"""
-    return await proxy_completion_request(request, "completions", provider_svc)
+    return await proxy_completion_request(
+        request, "completions", provider_svc, credential
+    )

@@ -17,6 +17,7 @@ use llm_proxy_rust::{
         DynamicConfig, MetricsMiddleware, RateLimiter, RuntimeConfig,
     },
     services::ProviderService,
+    LogService,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -125,6 +126,17 @@ async fn async_main() -> Result<()> {
     // Create HTTP client
     let http_client = create_http_client(&base_config);
 
+    // Initialize log service
+    let log_service = Arc::new(LogService::new(
+        db.clone(),
+        base_config.log_request_bodies,
+    ));
+    tracing::info!(
+        "Log service initialized (log_request_bodies: {}, retention_days: {})",
+        base_config.log_request_bodies,
+        base_config.log_retention_days
+    );
+
     // Create admin state
     let admin_state = Arc::new(AdminState {
         dynamic_config: dynamic_config.clone(),
@@ -133,7 +145,7 @@ async fn async_main() -> Result<()> {
     });
 
     // Build router
-    let app = build_router(dynamic_config, admin_state, base_config, http_client);
+    let app = build_router(dynamic_config, admin_state, base_config, http_client, log_service);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Starting LLM API Proxy on {}", addr);
@@ -153,6 +165,7 @@ fn build_router(
     admin_state: Arc<AdminState>,
     base_config: AppConfig,
     http_client: reqwest::Client,
+    log_service: Arc<LogService>,
 ) -> Router {
     // Admin routes with logging middleware
     let admin_routes = admin_router(admin_state)
@@ -196,6 +209,7 @@ fn build_router(
         rate_limiter,
         http_client,
         Some(dynamic_config),
+        Some(log_service),
     ));
 
     // Build API routes with AppState
@@ -262,6 +276,8 @@ fn convert_runtime_to_app_config(
         ttft_timeout_secs: base.ttft_timeout_secs,
         credentials,
         provider_suffix: base.provider_suffix.clone(),
+        log_request_bodies: base.log_request_bodies,
+        log_retention_days: base.log_retention_days,
     }
 }
 
@@ -290,7 +306,7 @@ async fn health_handler() -> impl IntoResponse {
 fn detect_cpu_limit() -> Option<usize> {
     // Try cgroup v2 first
     if let Ok(max) = std::fs::read_to_string("/sys/fs/cgroup/cpu.max") {
-        let parts: Vec<&str> = max.trim().split_whitespace().collect();
+        let parts: Vec<&str> = max.split_whitespace().collect();
         if parts.len() == 2 {
             if let (Ok(quota), Ok(period)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
                 if quota > 0 {

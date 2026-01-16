@@ -5,7 +5,7 @@
 
 use crate::api::models::*;
 use crate::api::streaming::{
-    calculate_message_tokens, create_sse_stream, rewrite_model_in_response,
+    calculate_message_tokens, create_sse_stream, rewrite_model_in_response, StreamingLogContext,
 };
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
@@ -13,7 +13,7 @@ use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTE
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
 use crate::core::{AppError, RateLimiter, Result};
-use crate::services::ProviderService;
+use crate::services::{extract_client_ip, extract_user_agent, LogEntry, LogService, ProviderService};
 use crate::with_request_context;
 use axum::{
     extract::State,
@@ -21,10 +21,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use chrono::Utc;
 use prometheus::{Encoder, TextEncoder};
 use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
+use uuid::Uuid;
 
 /// Cached ProviderService with version tracking for efficient hot reload.
 /// Only rebuilds when the config version changes.
@@ -67,6 +70,8 @@ pub struct AppState {
     pub rate_limiter: Arc<RateLimiter>,
     pub http_client: reqwest::Client,
     pub dynamic_config: Option<Arc<crate::core::DynamicConfig>>,
+    /// Log service for async request logging
+    pub log_service: Option<Arc<LogService>>,
     /// Cached ProviderService with version tracking for O(1) access
     cached_service: Arc<arc_swap::ArcSwap<CachedProviderService>>,
 }
@@ -79,6 +84,7 @@ impl AppState {
         rate_limiter: Arc<RateLimiter>,
         http_client: reqwest::Client,
         dynamic_config: Option<Arc<crate::core::DynamicConfig>>,
+        log_service: Option<Arc<LogService>>,
     ) -> Self {
         let (initial_version, initial_credentials) = match &dynamic_config {
             Some(dc) => {
@@ -99,6 +105,7 @@ impl AppState {
             rate_limiter,
             http_client,
             dynamic_config,
+            log_service,
             cached_service: Arc::new(arc_swap::ArcSwap::from_pointee(cached)),
         }
     }
@@ -116,6 +123,8 @@ impl AppState {
             ttft_timeout_secs: self.config.ttft_timeout_secs,
             credentials: credentials.clone(),
             provider_suffix: self.config.provider_suffix.clone(),
+            log_request_bodies: self.config.log_request_bodies,
+            log_retention_days: self.config.log_retention_days,
         };
 
         CachedProviderService {
@@ -169,19 +178,10 @@ impl AppState {
 /// Returns the full CredentialConfig for the authenticated credential, or None if no auth required.
 fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<CredentialConfig>> {
     // Extract the provided key from Authorization header
-    let provided_key = if let Some(auth_header) = headers.get("authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str.starts_with("Bearer ") {
-                Some(&auth_str[7..])
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let provided_key = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "));
 
     // Get credentials from DynamicConfig if available
     let credentials = state.get_credentials();
@@ -219,6 +219,18 @@ fn get_key_name(key_config: &Option<CredentialConfig>) -> String {
         .as_ref()
         .map(|k| k.name.clone())
         .unwrap_or_else(|| "anonymous".to_string())
+}
+
+/// Spawn async logging task for a request
+fn spawn_log_request(
+    log_service: Option<Arc<LogService>>,
+    entry: LogEntry,
+) {
+    if let Some(service) = log_service {
+        tokio::spawn(async move {
+            service.log_request(entry).await;
+        });
+    }
 }
 
 /// Strip the provider suffix from model name if configured.
@@ -269,8 +281,20 @@ pub async fn chat_completions(
     Json(mut payload): Json<serde_json::Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
+    let start_time = Instant::now();
     let key_config = verify_auth(&headers, &state)?;
     let api_key_name = get_key_name(&key_config);
+    
+    // Extract client info for logging
+    let client_ip = extract_client_ip(&headers);
+    let user_agent = extract_user_agent(&headers);
+    
+    // Store original request body for logging (before model mapping)
+    let original_request_body = if state.config.log_request_bodies {
+        Some(payload.clone())
+    } else {
+        None
+    };
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
         if !payload.is_object() {
@@ -457,12 +481,23 @@ pub async fn chat_completions(
                             let mut final_response = if is_stream {
                                 // For streaming, response is already checked for errors above
                                 // Pass input tokens for fallback calculation and TTFT timeout
+                                // Create log context for streaming
+                                let log_context = StreamingLogContext {
+                                    log_service: state.log_service.clone(),
+                                    request_body: original_request_body.clone(),
+                                    client_ip: client_ip.clone(),
+                                    user_agent: user_agent.clone(),
+                                    credential_id: None, // TODO: Add credential ID tracking
+                                    provider_id: None, // TODO: Add provider ID tracking
+                                    log_request_bodies: state.config.log_request_bodies,
+                                };
                                 match create_sse_stream(
                                     response,
                                     model_label.clone(),
                                     provider.name.clone(),
                                     prompt_tokens_for_fallback,
                                     state.config.ttft_timeout_secs,
+                                    log_context,
                                 )
                                 .await
                                 {
@@ -497,12 +532,49 @@ pub async fn chat_completions(
                                     }
                                 };
 
-                                // Record token usage (api_key_name read from context inside record_token_usage)
-                                if let Some(usage_obj) = response_data.get("usage") {
-                                    if let Ok(usage) = serde_json::from_value::<Usage>(usage_obj.clone()) {
-                                        record_token_usage(&usage, &model_label, &provider.name);
-                                    }
-                                }
+                                // Extract token usage for metrics and logging
+                                let (prompt_tokens, completion_tokens, total_tokens) =
+                                    if let Some(usage_obj) = response_data.get("usage") {
+                                        if let Ok(usage) = serde_json::from_value::<Usage>(usage_obj.clone()) {
+                                            record_token_usage(&usage, &model_label, &provider.name);
+                                            (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)
+                                        } else {
+                                            (0, 0, 0)
+                                        }
+                                    } else {
+                                        (0, 0, 0)
+                                    };
+
+                                // Log the successful non-streaming response
+                                let duration_ms = start_time.elapsed().as_millis() as i32;
+                                let log_entry = LogEntry {
+                                    request_id: Uuid::new_v4(),
+                                    timestamp: Utc::now(),
+                                    credential_id: key_config.as_ref().and(None), // TODO: Add credential ID tracking
+                                    credential_name: api_key_name.clone(),
+                                    provider_id: None, // TODO: Add provider ID tracking
+                                    provider_name: provider.name.clone(),
+                                    endpoint: "/v1/chat/completions".to_string(),
+                                    method: "POST".to_string(),
+                                    model: Some(model_label.clone()),
+                                    is_streaming: false,
+                                    status_code: 200,
+                                    duration_ms,
+                                    ttft_ms: None,
+                                    prompt_tokens: prompt_tokens as i32,
+                                    completion_tokens: completion_tokens as i32,
+                                    total_tokens: total_tokens as i32,
+                                    request_body: original_request_body.clone(),
+                                    response_body: if state.config.log_request_bodies {
+                                        Some(response_data.clone())
+                                    } else {
+                                        None
+                                    },
+                                    error_message: None,
+                                    client_ip: client_ip.clone(),
+                                    user_agent: user_agent.clone(),
+                                };
+                                spawn_log_request(state.log_service.clone(), log_entry);
 
                                 let rewritten = rewrite_model_in_response(response_data, &model_label);
                                 Json(rewritten).into_response()

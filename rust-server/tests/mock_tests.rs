@@ -54,6 +54,8 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
         ttft_timeout_secs: None,
         credentials: vec![],
         provider_suffix: None,
+        log_request_bodies: true,
+        log_retention_days: 30,
     };
 
     let provider_service = ProviderService::new(config.clone());
@@ -73,6 +75,7 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
         provider_service,
         rate_limiter,
         http_client,
+        None,
         None,
     ));
 

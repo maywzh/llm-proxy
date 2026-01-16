@@ -37,6 +37,11 @@ class EnvConfig:
         # Global provider suffix that can be optionally prefixed to model names
         # e.g., if PROVIDER_SUFFIX="Proxy", then "Proxy/gpt-4" and "gpt-4" are equivalent
         self.provider_suffix: Optional[str] = os.environ.get("PROVIDER_SUFFIX")
+        # Log configuration
+        self.log_request_bodies: bool = _str_to_bool(
+            os.environ.get("LOG_REQUEST_BODIES", "true")
+        )
+        self.log_retention_days: int = int(os.environ.get("LOG_RETENTION_DAYS", "30"))
 
     @classmethod
     def from_env(cls) -> "EnvConfig":

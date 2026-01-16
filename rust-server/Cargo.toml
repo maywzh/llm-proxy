@@ -47,7 +47,7 @@ rand = "0.8"
 regex = "1.10"
 
 # UUID generation for request tracking
-uuid = { version = "1.11", features = ["v4", "fast-rng"] }
+uuid = { version = "1.11", features = ["v4", "fast-rng", "serde"] }
 
 # Rate limiting
 dashmap = "6.1"
@@ -61,7 +61,7 @@ tiktoken-rs = "0.5"
 lazy_static = "1.4"
 
 # Database (PostgreSQL)
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json", "chrono", "uuid"] }
 
 # Hot reload with ArcSwap
 arc-swap = "1.7"

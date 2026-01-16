@@ -113,6 +113,8 @@ fn test_app_state_with_rate_limiter() {
         ttft_timeout_secs: None,
         credentials,
         provider_suffix: None,
+        log_request_bodies: true,
+        log_retention_days: 30,
     };
 
     let provider_service = ProviderService::new(config.clone());
@@ -141,6 +143,7 @@ fn test_app_state_with_rate_limiter() {
         provider_service,
         rate_limiter.clone(),
         http_client,
+        None,
         None,
     );
 
@@ -177,6 +180,8 @@ fn test_disabled_key_not_rate_limited() {
             allowed_models: vec![],
         }],
         provider_suffix: None,
+        log_request_bodies: true,
+        log_retention_days: 30,
     };
 
     let rate_limiter = RateLimiter::new();
@@ -219,6 +224,8 @@ fn test_key_without_rate_limit_config() {
             allowed_models: vec![],
         }],
         provider_suffix: None,
+        log_request_bodies: true,
+        log_retention_days: 30,
     };
 
     let rate_limiter = RateLimiter::new();
@@ -254,6 +261,8 @@ fn test_mixed_rate_limits() {
         request_timeout_secs: 300,
         ttft_timeout_secs: None,
         provider_suffix: None,
+        log_request_bodies: true,
+        log_retention_days: 30,
         credentials: vec![
             CredentialConfig {
                 credential_key: "limited-key-1".to_string(),

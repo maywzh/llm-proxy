@@ -7,9 +7,11 @@ use crate::api::models::Usage;
 use crate::core::error::AppError;
 use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
+use crate::services::{LogEntry, LogService};
 use axum::body::Body;
 use axum::response::Response as AxumResponse;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
 use reqwest::Response;
 use serde_json::{json, Value};
@@ -17,6 +19,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 // Global cache for BPE encoders to avoid repeated initialization
 lazy_static::lazy_static! {
@@ -48,6 +51,32 @@ fn get_cached_bpe(model: &str) -> Option<Arc<tiktoken_rs::CoreBPE>> {
     Some(bpe_arc)
 }
 
+/// Logging context for streaming requests
+#[derive(Clone)]
+pub struct StreamingLogContext {
+    pub log_service: Option<Arc<LogService>>,
+    pub request_body: Option<Value>,
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub credential_id: Option<i32>,
+    pub provider_id: Option<i32>,
+    pub log_request_bodies: bool,
+}
+
+impl Default for StreamingLogContext {
+    fn default() -> Self {
+        Self {
+            log_service: None,
+            request_body: None,
+            client_ip: None,
+            user_agent: None,
+            credential_id: None,
+            provider_id: None,
+            log_request_bodies: true,
+        }
+    }
+}
+
 /// Stream state for token counting - NO synchronization needed!
 /// Each stream has its own state, processed sequentially
 struct StreamState {
@@ -64,9 +93,16 @@ struct StreamState {
     ttft_timeout_secs: Option<u64>,
     /// Whether the first chunk has been received
     first_chunk_received: bool,
+    /// Logging context for database logging
+    log_context: StreamingLogContext,
+    /// Provider usage from stream (if found)
+    provider_usage: Option<Usage>,
+    /// Error message if stream failed
+    error_message: Option<String>,
 }
 
 impl StreamState {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
         input_tokens: usize,
@@ -74,6 +110,7 @@ impl StreamState {
         provider_name: String,
         api_key_name: String,
         ttft_timeout_secs: Option<u64>,
+        log_context: StreamingLogContext,
     ) -> Self {
         Self {
             stream: Box::pin(stream),
@@ -87,6 +124,9 @@ impl StreamState {
             api_key_name,
             ttft_timeout_secs,
             first_chunk_received: false,
+            log_context,
+            provider_usage: None,
+            error_message: None,
         }
     }
 }
@@ -163,12 +203,14 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
 /// * `provider_name` - Name of the provider for metrics
 /// * `input_tokens` - Optional input token count for fallback calculation
 /// * `ttft_timeout_secs` - Optional TTFT timeout in seconds
+/// * `log_context` - Optional logging context for database logging
 pub async fn create_sse_stream(
     response: Response,
     original_model: String,
     provider_name: String,
     input_tokens: Option<usize>,
     ttft_timeout_secs: Option<u64>,
+    log_context: StreamingLogContext,
 ) -> Result<AxumResponse, AppError> {
     let stream = response.bytes_stream();
     
@@ -184,6 +226,7 @@ pub async fn create_sse_stream(
         provider_name,
         api_key_name,
         ttft_timeout_secs,
+        log_context,
     );
 
     // Create the byte stream using unfold - TTFT timeout handled inside
@@ -367,6 +410,18 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
 
 /// Finalize stream and record metrics
 fn finalize_stream(state: &StreamState) {
+    let duration_ms = state.start_time.elapsed().as_millis() as i32;
+    let ttft_ms = state.provider_first_token_time.map(|t| {
+        (t - state.start_time).as_millis() as i32
+    });
+    
+    // Determine token counts
+    let (prompt_tokens, completion_tokens, total_tokens) = if let Some(ref usage) = state.provider_usage {
+        (usage.prompt_tokens as i32, usage.completion_tokens as i32, usage.total_tokens as i32)
+    } else {
+        (state.input_tokens as i32, state.output_tokens as i32, (state.input_tokens + state.output_tokens) as i32)
+    };
+    
     if !state.usage_found && state.output_tokens > 0 {
         record_fallback_token_usage(
             state.input_tokens,
@@ -402,6 +457,50 @@ fn finalize_stream(state: &StreamState) {
                 }
             }
         }
+    }
+    
+    // Log to database if log service is available
+    if let Some(ref log_service) = state.log_context.log_service {
+        let log_entry = LogEntry {
+            request_id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            credential_id: state.log_context.credential_id,
+            credential_name: state.api_key_name.clone(),
+            provider_id: state.log_context.provider_id,
+            provider_name: state.provider_name.clone(),
+            endpoint: "/v1/chat/completions".to_string(),
+            method: "POST".to_string(),
+            model: Some(state.original_model.clone()),
+            is_streaming: true,
+            status_code: if state.error_message.is_some() { 500 } else { 200 },
+            duration_ms,
+            ttft_ms,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            request_body: if state.log_context.log_request_bodies {
+                state.log_context.request_body.clone()
+            } else {
+                None
+            },
+            response_body: None, // Streaming responses are not logged
+            error_message: state.error_message.clone(),
+            client_ip: state.log_context.client_ip.clone(),
+            user_agent: state.log_context.user_agent.clone(),
+        };
+        
+        let service = Arc::clone(log_service);
+        tokio::spawn(async move {
+            service.log_request(log_entry).await;
+        });
+        
+        tracing::debug!(
+            "Streaming request logged - model={} provider={} duration_ms={} ttft_ms={:?}",
+            state.original_model,
+            state.provider_name,
+            duration_ms,
+            ttft_ms
+        );
     }
 }
 
@@ -581,6 +680,7 @@ mod tests {
             "test-provider".to_string(),
             "test-key".to_string(),
             Some(30), // ttft_timeout_secs
+            StreamingLogContext::default(),
         );
         
         assert_eq!(state.input_tokens, 100);

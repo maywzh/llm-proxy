@@ -39,6 +39,14 @@ pub struct AppConfig {
     /// If set (e.g., "Proxy"), then "Proxy/gpt-4" is equivalent to "gpt-4"
     #[serde(default)]
     pub provider_suffix: Option<String>,
+
+    /// Whether to log request/response bodies (default: true)
+    #[serde(default = "default_log_request_bodies")]
+    pub log_request_bodies: bool,
+
+    /// Number of days to retain logs (default: 30)
+    #[serde(default = "default_log_retention_days")]
+    pub log_retention_days: i32,
 }
 
 /// Configuration for a credential with optional rate limiting.
@@ -148,6 +156,30 @@ fn default_request_timeout() -> u64 {
     300
 }
 
+fn default_log_request_bodies() -> bool {
+    true
+}
+
+fn default_log_retention_days() -> i32 {
+    30
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            providers: vec![],
+            server: ServerConfig::default(),
+            verify_ssl: default_verify_ssl(),
+            request_timeout_secs: default_request_timeout(),
+            ttft_timeout_secs: None,
+            credentials: vec![],
+            provider_suffix: None,
+            log_request_bodies: default_log_request_bodies(),
+            log_retention_days: default_log_retention_days(),
+        }
+    }
+}
+
 impl AppConfig {
     /// Load server configuration from environment variables.
     /// Providers and master keys are loaded from the database.
@@ -172,6 +204,13 @@ impl AppConfig {
             .ok()
             .and_then(|t| t.parse().ok());
         let provider_suffix = std::env::var("PROVIDER_SUFFIX").ok();
+        let log_request_bodies = std::env::var("LOG_REQUEST_BODIES")
+            .map(|v| str_to_bool(&v))
+            .unwrap_or_else(|_| default_log_request_bodies());
+        let log_retention_days = std::env::var("LOG_RETENTION_DAYS")
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .unwrap_or_else(default_log_retention_days);
 
         Ok(Self {
             providers: vec![],
@@ -181,6 +220,8 @@ impl AppConfig {
             ttft_timeout_secs,
             credentials: vec![],
             provider_suffix,
+            log_request_bodies,
+            log_retention_days,
         })
     }
 }

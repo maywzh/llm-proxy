@@ -3,7 +3,8 @@
 import asyncio
 import json
 import time
-from typing import AsyncIterator, Optional, Dict, Any
+from dataclasses import dataclass, field
+from typing import AsyncIterator, Optional, Dict, Any, Callable, Awaitable
 
 import httpx
 import tiktoken
@@ -18,6 +19,19 @@ from app.core.logging import (
     get_logger,
     get_api_key_name,
 )
+
+
+@dataclass
+class StreamingMetadata:
+    """Metadata collected during streaming for logging purposes."""
+
+    response_chunks: list = field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    ttft_ms: Optional[int] = None
+    status_code: int = 200
+    error_message: Optional[str] = None
 
 
 def count_tokens(text: str, model: str) -> int:
@@ -99,6 +113,8 @@ async def stream_response(
     provider_name: str,
     request_data: Optional[Dict[str, Any]] = None,
     ttft_timeout_secs: Optional[int] = None,
+    metadata: Optional[StreamingMetadata] = None,
+    on_complete: Optional[Callable[[StreamingMetadata], Awaitable[None]]] = None,
 ) -> AsyncIterator[bytes]:
     """Stream response from provider with model rewriting and token tracking
 
@@ -108,6 +124,8 @@ async def stream_response(
         provider_name: Provider name for metrics
         request_data: Original request data for fallback token counting
         ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
+        metadata: Optional StreamingMetadata object to populate during streaming
+        on_complete: Optional async callback to invoke when streaming completes
     """
     logger = get_logger()
     api_key_name = get_api_key_name()
@@ -162,6 +180,10 @@ async def stream_response(
             # Track token usage from streaming chunks
             chunk_str = chunk.decode("utf-8", errors="ignore")
 
+            # Capture chunk for logging if metadata is provided
+            if metadata is not None:
+                metadata.response_chunks.append(chunk_str)
+
             # Record provider TTFT on first token from provider
             if provider_first_token_time is None:
                 provider_first_token_time = now
@@ -172,6 +194,10 @@ async def stream_response(
                     provider=provider_name,
                 ).observe(provider_ttft)
                 logger.debug(f"Provider TTFT: {provider_ttft:.3f}s")
+
+                # Record TTFT in metadata for logging
+                if metadata is not None:
+                    metadata.ttft_ms = int(provider_ttft * 1000)
 
             # Try to extract usage from provider (preferred method)
             # Only process complete lines to avoid parsing incomplete JSON
@@ -217,6 +243,19 @@ async def stream_response(
                                         ).inc(usage["total_tokens"])
 
                                     usage_found = True
+
+                                    # Record usage in metadata for logging
+                                    if metadata is not None:
+                                        metadata.prompt_tokens = usage.get(
+                                            "prompt_tokens", 0
+                                        )
+                                        metadata.completion_tokens = usage.get(
+                                            "completion_tokens", 0
+                                        )
+                                        metadata.total_tokens = usage.get(
+                                            "total_tokens", 0
+                                        )
+
                                     logger.debug(
                                         f"Token usage from provider - "
                                         f"model={model_name} provider={provider_name} key={api_key_name} "
@@ -296,6 +335,12 @@ async def stream_response(
                 api_key_name=api_key_name,
             ).inc(total_tokens)
 
+            # Record fallback usage in metadata for logging
+            if metadata is not None:
+                metadata.prompt_tokens = input_tokens
+                metadata.completion_tokens = output_tokens
+                metadata.total_tokens = total_tokens
+
             logger.info(
                 f"Token usage calculated (fallback) - "
                 f"model={model_name} provider={provider_name} key={api_key_name} "
@@ -317,6 +362,9 @@ async def stream_response(
                     ).observe(provider_tps)
                     logger.debug(f"Provider TPS: {provider_tps:.2f} tokens/s")
     except TTFTTimeoutError:
+        if metadata is not None:
+            metadata.status_code = 504
+            metadata.error_message = "TTFT timeout"
         raise
     except httpx.RemoteProtocolError as e:
         # Handle connection closed by remote server during streaming
@@ -324,8 +372,13 @@ async def stream_response(
             f"Remote protocol error during streaming from provider {provider_name}: {str(e)} - "
             f"Provider closed connection unexpectedly"
         )
-        # Send error event to client using SSE format
+        # Record error in metadata
         error_message = f"Provider {provider_name} closed connection unexpectedly"
+        if metadata is not None:
+            metadata.status_code = 502
+            metadata.error_message = error_message
+
+        # Send error event to client using SSE format
         error_event = json.dumps(
             {
                 "error": {
@@ -342,6 +395,11 @@ async def stream_response(
         logger.exception(
             f"Unexpected error during streaming from provider {provider_name}"
         )
+        # Record error in metadata
+        if metadata is not None:
+            metadata.status_code = 500
+            metadata.error_message = error_detail
+
         # Send error event to client using SSE format
         error_event = json.dumps(
             {
@@ -356,6 +414,13 @@ async def stream_response(
     finally:
         # Clear provider context after streaming completes
         clear_provider_context()
+
+        # Invoke on_complete callback if provided
+        if on_complete is not None and metadata is not None:
+            try:
+                await on_complete(metadata)
+            except Exception as e:
+                logger.warning(f"Error in streaming on_complete callback: {e}")
 
 
 def create_streaming_response(
@@ -380,6 +445,47 @@ def create_streaming_response(
         ),
         media_type="text/event-stream",
     )
+
+
+def create_streaming_response_with_logging(
+    response: httpx.Response,
+    original_model: Optional[str],
+    provider_name: str,
+    request_data: Optional[Dict[str, Any]] = None,
+    ttft_timeout_secs: Optional[int] = None,
+    on_complete: Optional[Callable[[StreamingMetadata], Awaitable[None]]] = None,
+) -> tuple[StreamingResponse, StreamingMetadata]:
+    """Create streaming response with logging support.
+
+    This function creates a StreamingResponse that captures metadata during streaming
+    and invokes a callback when streaming completes.
+
+    Args:
+        response: HTTP response from provider
+        original_model: Original model name from request
+        provider_name: Provider name for metrics
+        request_data: Original request data for fallback token counting
+        ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
+        on_complete: Optional async callback to invoke when streaming completes
+
+    Returns:
+        A tuple of (StreamingResponse, StreamingMetadata) where metadata will be
+        populated during streaming.
+    """
+    metadata = StreamingMetadata()
+    streaming_response = StreamingResponse(
+        stream_response(
+            response,
+            original_model,
+            provider_name,
+            request_data,
+            ttft_timeout_secs,
+            metadata=metadata,
+            on_complete=on_complete,
+        ),
+        media_type="text/event-stream",
+    )
+    return streaming_response, metadata
 
 
 def rewrite_model_in_response(

@@ -266,7 +266,7 @@ impl Database {
         .bind(&update.provider_type)
         .bind(&update.api_base)
         .bind(&update.api_key)
-        .bind(update.model_mapping.as_ref().map(|m| sqlx::types::Json(m)))
+        .bind(update.model_mapping.as_ref().map(sqlx::types::Json))
         .bind(update.weight)
         .bind(update.is_enabled)
         .fetch_optional(&self.pool)
@@ -381,7 +381,7 @@ impl Database {
         .bind(id)
         .bind(credential_key)
         .bind(&update.name)
-        .bind(update.allowed_models.as_ref().map(|m| sqlx::types::Json(m)))
+        .bind(update.allowed_models.as_ref().map(sqlx::types::Json))
         .bind(update.rate_limit)
         .bind(update.is_enabled)
         .fetch_optional(&self.pool)
@@ -652,6 +652,492 @@ impl DynamicConfig {
     /// Get database reference
     pub fn database(&self) -> &Arc<Database> {
         &self.db
+    }
+}
+
+/// Insert log entries in batch
+pub async fn insert_log_entries(
+    db: &Database,
+    entries: &[crate::services::log_service::LogEntry],
+) -> Result<usize, sqlx::Error> {
+    if entries.is_empty() {
+        return Ok(0);
+    }
+
+    // Build batch insert query
+    let mut query_builder = String::from(
+        r#"INSERT INTO request_logs (
+            id, created_at, credential_id, credential_name, provider_id, provider_name,
+            endpoint, method, model, is_streaming, status_code, duration_ms, ttft_ms,
+            prompt_tokens, completion_tokens, total_tokens, request_body, response_body,
+            error_message, client_ip, user_agent
+        ) VALUES "#,
+    );
+
+    let mut param_idx = 1;
+
+    for (i, _) in entries.iter().enumerate() {
+        if i > 0 {
+            query_builder.push_str(", ");
+        }
+        let placeholders: Vec<String> = (0..21)
+            .map(|j| format!("${}", param_idx + j))
+            .collect();
+        query_builder.push_str(&format!("({})", placeholders.join(", ")));
+        param_idx += 21;
+    }
+
+    // Execute with all parameters bound
+    let mut query = sqlx::query(&query_builder);
+
+    for entry in entries {
+        let request_body_json = entry
+            .request_body
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
+        let response_body_json = entry
+            .response_body
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
+
+        query = query
+            .bind(entry.request_id)
+            .bind(entry.timestamp)
+            .bind(entry.credential_id)
+            .bind(&entry.credential_name)
+            .bind(entry.provider_id)
+            .bind(&entry.provider_name)
+            .bind(&entry.endpoint)
+            .bind(&entry.method)
+            .bind(&entry.model)
+            .bind(entry.is_streaming)
+            .bind(entry.status_code)
+            .bind(entry.duration_ms)
+            .bind(entry.ttft_ms)
+            .bind(entry.prompt_tokens)
+            .bind(entry.completion_tokens)
+            .bind(entry.total_tokens)
+            .bind(request_body_json.as_ref().map(|s| sqlx::types::Json(serde_json::from_str::<serde_json::Value>(s).unwrap_or_default())))
+            .bind(response_body_json.as_ref().map(|s| sqlx::types::Json(serde_json::from_str::<serde_json::Value>(s).unwrap_or_default())))
+            .bind(&entry.error_message)
+            .bind(&entry.client_ip)
+            .bind(&entry.user_agent);
+    }
+
+    let result = query.execute(db.pool()).await?;
+    Ok(result.rows_affected() as usize)
+}
+
+/// Cleanup old log entries based on retention days
+pub async fn cleanup_old_logs(db: &Database, retention_days: i32) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        r#"DELETE FROM request_logs WHERE created_at < NOW() - INTERVAL '1 day' * $1"#,
+    )
+    .bind(retention_days)
+    .execute(db.pool())
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
+/// Log entry entity from database
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub id: String,
+    pub created_at: DateTime<Utc>,
+    pub credential_id: Option<i32>,
+    pub credential_name: Option<String>,
+    pub provider_id: Option<i32>,
+    pub provider_name: Option<String>,
+    pub endpoint: String,
+    pub method: String,
+    pub model: Option<String>,
+    pub is_streaming: bool,
+    pub status_code: Option<i32>,
+    pub duration_ms: Option<i32>,
+    pub ttft_ms: Option<i32>,
+    pub prompt_tokens: Option<i32>,
+    pub completion_tokens: Option<i32>,
+    pub total_tokens: Option<i32>,
+    pub request_body: Option<sqlx::types::Json<serde_json::Value>>,
+    pub response_body: Option<sqlx::types::Json<serde_json::Value>>,
+    pub error_message: Option<String>,
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+/// Parameters for log queries
+#[derive(Debug, Clone, Default)]
+pub struct LogQueryParams {
+    pub page: i64,
+    pub page_size: i64,
+    pub credential_id: Option<i32>,
+    pub provider_id: Option<i32>,
+    pub model: Option<String>,
+    pub start_date: Option<DateTime<Utc>>,
+    pub end_date: Option<DateTime<Utc>>,
+    pub status_code: Option<i32>,
+    pub has_error: Option<bool>,
+}
+
+/// Result of log list query
+#[derive(Debug, Clone)]
+pub struct LogListResult {
+    pub logs: Vec<LogEntry>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+}
+
+/// Log statistics
+#[derive(Debug, Clone, Serialize)]
+pub struct LogStats {
+    pub total_requests: i64,
+    pub error_count: i64,
+    pub error_rate: f64,
+    pub avg_duration_ms: f64,
+    pub total_tokens: i64,
+    pub by_model: HashMap<String, ModelStats>,
+    pub by_provider: HashMap<String, ProviderStats>,
+}
+
+/// Statistics per model
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelStats {
+    pub count: i64,
+    pub tokens: i64,
+    pub avg_duration_ms: f64,
+}
+
+/// Statistics per provider
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderStats {
+    pub count: i64,
+    pub tokens: i64,
+    pub avg_duration_ms: f64,
+}
+
+impl Database {
+    /// Get logs with filtering and pagination
+    pub async fn get_logs(&self, params: &LogQueryParams) -> Result<LogListResult, sqlx::Error> {
+        let page = if params.page < 1 { 1 } else { params.page };
+        let page_size = if params.page_size < 1 {
+            20
+        } else if params.page_size > 100 {
+            100
+        } else {
+            params.page_size
+        };
+        let offset = (page - 1) * page_size;
+
+        // Build dynamic query for logs
+        let mut query = String::from(
+            r#"SELECT id, created_at, credential_id, credential_name, provider_id, provider_name,
+               endpoint, method, model, is_streaming, status_code, duration_ms, ttft_ms,
+               prompt_tokens, completion_tokens, total_tokens, request_body, response_body,
+               error_message, client_ip, user_agent
+               FROM request_logs WHERE 1=1"#,
+        );
+
+        let mut count_query = String::from("SELECT COUNT(*) FROM request_logs WHERE 1=1");
+
+        // Build WHERE conditions
+        let mut conditions = Vec::new();
+        let mut param_idx = 1;
+
+        if params.credential_id.is_some() {
+            conditions.push(format!(" AND credential_id = ${}", param_idx));
+            param_idx += 1;
+        }
+        if params.provider_id.is_some() {
+            conditions.push(format!(" AND provider_id = ${}", param_idx));
+            param_idx += 1;
+        }
+        if params.model.is_some() {
+            conditions.push(format!(" AND model = ${}", param_idx));
+            param_idx += 1;
+        }
+        if params.start_date.is_some() {
+            conditions.push(format!(" AND created_at >= ${}", param_idx));
+            param_idx += 1;
+        }
+        if params.end_date.is_some() {
+            conditions.push(format!(" AND created_at <= ${}", param_idx));
+            param_idx += 1;
+        }
+        if params.status_code.is_some() {
+            conditions.push(format!(" AND status_code = ${}", param_idx));
+            param_idx += 1;
+        }
+        if let Some(has_error) = params.has_error {
+            if has_error {
+                conditions.push(" AND error_message IS NOT NULL".to_string());
+            } else {
+                conditions.push(" AND error_message IS NULL".to_string());
+            }
+        }
+
+        for condition in &conditions {
+            query.push_str(condition);
+            count_query.push_str(condition);
+        }
+
+        query.push_str(&format!(
+            " ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
+            param_idx,
+            param_idx + 1
+        ));
+
+        // Execute count query
+        let mut count_q = sqlx::query_scalar::<_, i64>(&count_query);
+        if let Some(cred_id) = params.credential_id {
+            count_q = count_q.bind(cred_id);
+        }
+        if let Some(prov_id) = params.provider_id {
+            count_q = count_q.bind(prov_id);
+        }
+        if let Some(ref model) = params.model {
+            count_q = count_q.bind(model);
+        }
+        if let Some(start) = params.start_date {
+            count_q = count_q.bind(start);
+        }
+        if let Some(end) = params.end_date {
+            count_q = count_q.bind(end);
+        }
+        if let Some(status) = params.status_code {
+            count_q = count_q.bind(status);
+        }
+
+        let total = count_q.fetch_one(&self.pool).await?;
+
+        // Execute main query
+        let mut main_q = sqlx::query_as::<_, LogEntry>(&query);
+        if let Some(cred_id) = params.credential_id {
+            main_q = main_q.bind(cred_id);
+        }
+        if let Some(prov_id) = params.provider_id {
+            main_q = main_q.bind(prov_id);
+        }
+        if let Some(ref model) = params.model {
+            main_q = main_q.bind(model);
+        }
+        if let Some(start) = params.start_date {
+            main_q = main_q.bind(start);
+        }
+        if let Some(end) = params.end_date {
+            main_q = main_q.bind(end);
+        }
+        if let Some(status) = params.status_code {
+            main_q = main_q.bind(status);
+        }
+        main_q = main_q.bind(page_size).bind(offset);
+
+        let logs = main_q.fetch_all(&self.pool).await?;
+
+        Ok(LogListResult {
+            logs,
+            total,
+            page,
+            page_size,
+        })
+    }
+
+    /// Get a single log entry by ID
+    pub async fn get_log_by_id(&self, log_id: &str) -> Result<Option<LogEntry>, sqlx::Error> {
+        let log = sqlx::query_as::<_, LogEntry>(
+            r#"SELECT id, created_at, credential_id, credential_name, provider_id, provider_name,
+               endpoint, method, model, is_streaming, status_code, duration_ms, ttft_ms,
+               prompt_tokens, completion_tokens, total_tokens, request_body, response_body,
+               error_message, client_ip, user_agent
+               FROM request_logs WHERE id = $1"#,
+        )
+        .bind(log_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(log)
+    }
+
+    /// Delete logs older than specified date
+    pub async fn delete_logs_before(&self, before_date: DateTime<Utc>) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM request_logs WHERE created_at < $1")
+            .bind(before_date)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// Get log statistics
+    pub async fn get_log_stats(
+        &self,
+        start_date: Option<DateTime<Utc>>,
+        end_date: Option<DateTime<Utc>>,
+    ) -> Result<LogStats, sqlx::Error> {
+        // Build date filter
+        let mut date_filter = String::new();
+        let mut param_idx = 1;
+
+        if start_date.is_some() {
+            date_filter.push_str(&format!(" AND created_at >= ${}", param_idx));
+            param_idx += 1;
+        }
+        if end_date.is_some() {
+            date_filter.push_str(&format!(" AND created_at <= ${}", param_idx));
+        }
+
+        // Get total requests
+        let total_query = format!(
+            "SELECT COUNT(*) FROM request_logs WHERE 1=1{}",
+            date_filter
+        );
+        let mut total_q = sqlx::query_scalar::<_, i64>(&total_query);
+        if let Some(start) = start_date {
+            total_q = total_q.bind(start);
+        }
+        if let Some(end) = end_date {
+            total_q = total_q.bind(end);
+        }
+        let total_requests = total_q.fetch_one(&self.pool).await?;
+
+        // Get error count
+        let error_query = format!(
+            "SELECT COUNT(*) FROM request_logs WHERE error_message IS NOT NULL{}",
+            date_filter
+        );
+        let mut error_q = sqlx::query_scalar::<_, i64>(&error_query);
+        if let Some(start) = start_date {
+            error_q = error_q.bind(start);
+        }
+        if let Some(end) = end_date {
+            error_q = error_q.bind(end);
+        }
+        let error_count = error_q.fetch_one(&self.pool).await?;
+
+        // Get average duration
+        let avg_query = format!(
+            "SELECT COALESCE(AVG(duration_ms), 0) FROM request_logs WHERE 1=1{}",
+            date_filter
+        );
+        let mut avg_q = sqlx::query_scalar::<_, f64>(&avg_query);
+        if let Some(start) = start_date {
+            avg_q = avg_q.bind(start);
+        }
+        if let Some(end) = end_date {
+            avg_q = avg_q.bind(end);
+        }
+        let avg_duration_ms = avg_q.fetch_one(&self.pool).await?;
+
+        // Get total tokens
+        let tokens_query = format!(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM request_logs WHERE 1=1{}",
+            date_filter
+        );
+        let mut tokens_q = sqlx::query_scalar::<_, i64>(&tokens_query);
+        if let Some(start) = start_date {
+            tokens_q = tokens_q.bind(start);
+        }
+        if let Some(end) = end_date {
+            tokens_q = tokens_q.bind(end);
+        }
+        let total_tokens = tokens_q.fetch_one(&self.pool).await?;
+
+        let error_rate = if total_requests > 0 {
+            error_count as f64 / total_requests as f64
+        } else {
+            0.0
+        };
+
+        // Get stats by model
+        let model_query = format!(
+            r#"SELECT model, COUNT(*) as count, COALESCE(SUM(total_tokens), 0) as tokens,
+               COALESCE(AVG(duration_ms), 0) as avg_duration
+               FROM request_logs WHERE model IS NOT NULL{}
+               GROUP BY model"#,
+            date_filter
+        );
+
+        #[derive(FromRow)]
+        struct ModelRow {
+            model: String,
+            count: i64,
+            tokens: i64,
+            avg_duration: f64,
+        }
+
+        let mut model_q = sqlx::query_as::<_, ModelRow>(&model_query);
+        if let Some(start) = start_date {
+            model_q = model_q.bind(start);
+        }
+        if let Some(end) = end_date {
+            model_q = model_q.bind(end);
+        }
+        let model_rows = model_q.fetch_all(&self.pool).await?;
+
+        let by_model: HashMap<String, ModelStats> = model_rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.model,
+                    ModelStats {
+                        count: row.count,
+                        tokens: row.tokens,
+                        avg_duration_ms: row.avg_duration,
+                    },
+                )
+            })
+            .collect();
+
+        // Get stats by provider
+        let provider_query = format!(
+            r#"SELECT provider_name, COUNT(*) as count, COALESCE(SUM(total_tokens), 0) as tokens,
+               COALESCE(AVG(duration_ms), 0) as avg_duration
+               FROM request_logs WHERE provider_name IS NOT NULL{}
+               GROUP BY provider_name"#,
+            date_filter
+        );
+
+        #[derive(FromRow)]
+        struct ProviderRow {
+            provider_name: String,
+            count: i64,
+            tokens: i64,
+            avg_duration: f64,
+        }
+
+        let mut provider_q = sqlx::query_as::<_, ProviderRow>(&provider_query);
+        if let Some(start) = start_date {
+            provider_q = provider_q.bind(start);
+        }
+        if let Some(end) = end_date {
+            provider_q = provider_q.bind(end);
+        }
+        let provider_rows = provider_q.fetch_all(&self.pool).await?;
+
+        let by_provider: HashMap<String, ProviderStats> = provider_rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.provider_name,
+                    ProviderStats {
+                        count: row.count,
+                        tokens: row.tokens,
+                        avg_duration_ms: row.avg_duration,
+                    },
+                )
+            })
+            .collect();
+
+        Ok(LogStats {
+            total_requests,
+            error_count,
+            error_rate,
+            avg_duration_ms,
+            total_tokens,
+            by_model,
+            by_provider,
+        })
     }
 }
 

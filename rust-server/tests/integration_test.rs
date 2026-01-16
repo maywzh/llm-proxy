@@ -49,6 +49,7 @@ fn create_test_app(config: AppConfig) -> Router {
         rate_limiter,
         http_client,
         None,
+        None,
     ));
 
     Router::new()
@@ -108,6 +109,8 @@ fn create_test_config_no_auth() -> AppConfig {
         ttft_timeout_secs: None,
         credentials: vec![],
         provider_suffix: None,
+        log_request_bodies: true,
+        log_retention_days: 30,
     }
 }
 

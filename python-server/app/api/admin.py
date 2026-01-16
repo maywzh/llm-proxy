@@ -1,6 +1,7 @@
 """Admin API for dynamic configuration management"""
 
 import os
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, status
@@ -26,6 +27,12 @@ from app.core.database import (
     delete_credential,
     hash_key,
     create_key_preview,
+    get_logs,
+    get_log_by_id,
+    delete_logs_before,
+    get_log_stats,
+    LogQueryParams,
+    RequestLogModel,
 )
 
 
@@ -352,6 +359,157 @@ class AuthValidateResponse(BaseModel):
 
     valid: bool = Field(..., description="Whether the admin key is valid")
     message: str = Field(..., description="Validation message")
+
+
+# ============================================================================
+# Log API Types
+# ============================================================================
+
+
+class LogResponse(BaseModel):
+    """Log entry response model"""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "example": {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "created_at": "2024-01-01T00:00:00Z",
+                "credential_id": 1,
+                "credential_name": "Production Key",
+                "provider_id": 1,
+                "provider_name": "openai-primary",
+                "endpoint": "/v1/chat/completions",
+                "method": "POST",
+                "model": "gpt-4",
+                "is_streaming": False,
+                "status_code": 200,
+                "duration_ms": 1500,
+                "ttft_ms": None,
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "error_message": None,
+                "client_ip": "192.168.1.1",
+                "user_agent": "OpenAI-SDK/1.0",
+            }
+        },
+    )
+
+    id: str = Field(..., description="Log entry UUID")
+    created_at: datetime = Field(..., description="Timestamp when the request was made")
+    credential_id: Optional[int] = Field(None, description="Credential ID used")
+    credential_name: Optional[str] = Field(None, description="Credential name")
+    provider_id: Optional[int] = Field(None, description="Provider ID used")
+    provider_name: Optional[str] = Field(None, description="Provider name")
+    endpoint: str = Field(..., description="API endpoint called")
+    method: str = Field(..., description="HTTP method")
+    model: Optional[str] = Field(None, description="Model used")
+    is_streaming: bool = Field(..., description="Whether streaming was used")
+    status_code: Optional[int] = Field(None, description="HTTP status code")
+    duration_ms: Optional[int] = Field(
+        None, description="Request duration in milliseconds"
+    )
+    ttft_ms: Optional[int] = Field(
+        None, description="Time to first token in milliseconds"
+    )
+    prompt_tokens: int = Field(0, description="Number of prompt tokens")
+    completion_tokens: int = Field(0, description="Number of completion tokens")
+    total_tokens: int = Field(0, description="Total tokens used")
+    error_message: Optional[str] = Field(None, description="Error message if any")
+    client_ip: Optional[str] = Field(None, description="Client IP address")
+    user_agent: Optional[str] = Field(None, description="Client user agent")
+
+
+class LogDetailResponse(LogResponse):
+    """Log entry detail response with request/response bodies"""
+
+    request_body: Optional[dict] = Field(
+        None, description="Request body (may be truncated)"
+    )
+    response_body: Optional[dict] = Field(
+        None, description="Response body (may be truncated)"
+    )
+
+
+class LogListResponse(BaseModel):
+    """Log list response with pagination"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "logs": [],
+                "total": 1000,
+                "page": 1,
+                "page_size": 20,
+            }
+        }
+    )
+
+    logs: list[LogResponse] = Field(..., description="List of log entries")
+    total: int = Field(..., description="Total number of matching logs")
+    page: int = Field(..., description="Current page number")
+    page_size: int = Field(..., description="Number of items per page")
+
+
+class LogStatsResponse(BaseModel):
+    """Log statistics response"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "total_requests": 10000,
+                "error_count": 50,
+                "error_rate": 0.005,
+                "avg_duration_ms": 1500.0,
+                "total_tokens": 500000,
+                "by_model": {
+                    "gpt-4": {
+                        "count": 5000,
+                        "tokens": 300000,
+                        "avg_duration_ms": 2000.0,
+                    }
+                },
+                "by_provider": {
+                    "openai-primary": {
+                        "count": 10000,
+                        "tokens": 500000,
+                        "avg_duration_ms": 1500.0,
+                    }
+                },
+            }
+        }
+    )
+
+    total_requests: int = Field(..., description="Total number of requests")
+    error_count: int = Field(..., description="Number of requests with errors")
+    error_rate: float = Field(..., description="Error rate (0.0 to 1.0)")
+    avg_duration_ms: float = Field(
+        ..., description="Average request duration in milliseconds"
+    )
+    total_tokens: int = Field(..., description="Total tokens used")
+    by_model: dict = Field(..., description="Statistics grouped by model")
+    by_provider: dict = Field(..., description="Statistics grouped by provider")
+
+
+class LogDeleteRequest(BaseModel):
+    """Log deletion request"""
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"before_date": "2024-01-01T00:00:00Z"}}
+    )
+
+    before_date: datetime = Field(
+        ..., description="Delete logs created before this date"
+    )
+
+
+class LogDeleteResponse(BaseModel):
+    """Log deletion response"""
+
+    model_config = ConfigDict(json_schema_extra={"example": {"deleted_count": 1000}})
+
+    deleted_count: int = Field(..., description="Number of deleted log entries")
 
 
 @router.post(
@@ -920,3 +1078,224 @@ async def api_reload_config(
         providers_count=len(versioned.providers),
         credentials_count=len(versioned.credentials),
     )
+
+
+# ============================================================================
+# Log Endpoints
+# ============================================================================
+
+
+def _log_to_response(log: RequestLogModel) -> LogResponse:
+    """Convert RequestLogModel to LogResponse"""
+    return LogResponse(
+        id=log.id,
+        created_at=log.created_at,
+        credential_id=log.credential_id,
+        credential_name=log.credential_name,
+        provider_id=log.provider_id,
+        provider_name=log.provider_name,
+        endpoint=log.endpoint,
+        method=log.method,
+        model=log.model,
+        is_streaming=log.is_streaming,
+        status_code=log.status_code,
+        duration_ms=log.duration_ms,
+        ttft_ms=log.ttft_ms,
+        prompt_tokens=log.prompt_tokens,
+        completion_tokens=log.completion_tokens,
+        total_tokens=log.total_tokens,
+        error_message=log.error_message,
+        client_ip=log.client_ip,
+        user_agent=log.user_agent,
+    )
+
+
+def _log_to_detail_response(log: RequestLogModel) -> LogDetailResponse:
+    """Convert RequestLogModel to LogDetailResponse"""
+    return LogDetailResponse(
+        id=log.id,
+        created_at=log.created_at,
+        credential_id=log.credential_id,
+        credential_name=log.credential_name,
+        provider_id=log.provider_id,
+        provider_name=log.provider_name,
+        endpoint=log.endpoint,
+        method=log.method,
+        model=log.model,
+        is_streaming=log.is_streaming,
+        status_code=log.status_code,
+        duration_ms=log.duration_ms,
+        ttft_ms=log.ttft_ms,
+        prompt_tokens=log.prompt_tokens,
+        completion_tokens=log.completion_tokens,
+        total_tokens=log.total_tokens,
+        error_message=log.error_message,
+        client_ip=log.client_ip,
+        user_agent=log.user_agent,
+        request_body=log.request_body,
+        response_body=log.response_body,
+    )
+
+
+@router.get(
+    "/logs",
+    response_model=LogListResponse,
+    summary="List request logs",
+    description="Get a paginated list of request logs with optional filtering",
+    tags=["logs"],
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database not configured",
+        },
+    },
+)
+async def api_list_logs(
+    page: int = 1,
+    page_size: int = 20,
+    credential_id: Optional[int] = None,
+    provider_id: Optional[int] = None,
+    model: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    status_code: Optional[int] = None,
+    has_error: Optional[bool] = None,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> LogListResponse:
+    """List request logs with pagination and filtering"""
+    # Validate pagination
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 100:
+        page_size = 100
+
+    params = LogQueryParams(
+        page=page,
+        page_size=page_size,
+        credential_id=credential_id,
+        provider_id=provider_id,
+        model=model,
+        start_date=start_date,
+        end_date=end_date,
+        status_code=status_code,
+        has_error=has_error,
+    )
+
+    result = await get_logs(db, params)
+
+    return LogListResponse(
+        logs=[_log_to_response(log) for log in result.logs],
+        total=result.total,
+        page=result.page,
+        page_size=result.page_size,
+    )
+
+
+@router.get(
+    "/logs/stats",
+    response_model=LogStatsResponse,
+    summary="Get log statistics",
+    description="Get aggregated statistics from request logs",
+    tags=["logs"],
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database not configured",
+        },
+    },
+)
+async def api_get_log_stats(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> LogStatsResponse:
+    """Get log statistics"""
+    stats = await get_log_stats(db, start_date, end_date)
+
+    return LogStatsResponse(
+        total_requests=stats.total_requests,
+        error_count=stats.error_count,
+        error_rate=stats.error_rate,
+        avg_duration_ms=stats.avg_duration_ms,
+        total_tokens=stats.total_tokens,
+        by_model=stats.by_model,
+        by_provider=stats.by_provider,
+    )
+
+
+@router.get(
+    "/logs/{log_id}",
+    response_model=LogDetailResponse,
+    summary="Get a log entry by ID",
+    description="Retrieve a specific log entry by its UUID, including request/response bodies",
+    tags=["logs"],
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Log entry does not exist",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database not configured",
+        },
+    },
+)
+async def api_get_log(
+    log_id: str,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> LogDetailResponse:
+    """Get a log entry by ID"""
+    log = await get_log_by_id(db, log_id)
+    if not log:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Log entry with ID {log_id} not found",
+        )
+
+    return _log_to_detail_response(log)
+
+
+@router.delete(
+    "/logs",
+    response_model=LogDeleteResponse,
+    summary="Delete old logs",
+    description="Delete log entries older than the specified date",
+    tags=["logs"],
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database not configured",
+        },
+    },
+)
+async def api_delete_logs(
+    request: LogDeleteRequest,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> LogDeleteResponse:
+    """Delete logs older than specified date"""
+    deleted_count = await delete_logs_before(db, request.before_date)
+    logger.info(f"Deleted {deleted_count} log entries before {request.before_date}")
+
+    return LogDeleteResponse(deleted_count=deleted_count)

@@ -37,6 +37,7 @@ High-performance LLM API proxy implementation built with Rust + Axum + Tokio, de
 - ✅ **Hot Reload** - Runtime configuration updates without restart
 - ✅ **Admin API** - RESTful configuration management interface
 - ✅ **Rate Limiting** - Optional master key rate limiting
+- ✅ **Request Logging** - Database-backed request/response logging with retention
 
 ## 🔧 Tech Stack
 
@@ -711,6 +712,76 @@ master_keys:
 - **Production Keys**: Set reasonable rate limits to prevent abuse
 - **Development/Testing Keys**: Omit rate_limit for easier development
 - **Special Purpose Keys**: Configure flexibly based on actual needs
+
+## 📝 Request Logging
+
+The system provides comprehensive request logging to PostgreSQL for audit and analytics purposes.
+
+### Features
+
+- **Automatic Logging**: All API requests are automatically logged to the database
+- **Configurable Body Logging**: Option to include request/response bodies
+- **Automatic Retention**: Old logs are automatically cleaned up based on retention policy
+- **Rich Metadata**: Logs include credential info, provider info, model, tokens, latency, and more
+
+### Configuration
+
+| Environment Variable | Description | Default |
+|---------------------|-------------|---------|
+| `log_request_bodies` | Whether to log request/response bodies | `true` |
+| `log_retention_days` | Log retention period in days | `30` |
+
+### Admin API Endpoints
+
+```bash
+# List logs with pagination and filtering
+curl "http://localhost:18000/admin/v1/logs?page=1&page_size=20" \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# Get a specific log entry
+curl http://localhost:18000/admin/v1/logs/{log_id} \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# Get log statistics
+curl http://localhost:18000/admin/v1/logs/stats \
+  -H "Authorization: Bearer $ADMIN_KEY"
+
+# Delete logs older than a specific date
+curl -X DELETE "http://localhost:18000/admin/v1/logs?before=2026-01-01T00:00:00Z" \
+  -H "Authorization: Bearer $ADMIN_KEY"
+```
+
+### Query Parameters for Log Listing
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `page` | int | Page number (default: 1) |
+| `page_size` | int | Items per page (default: 20, max: 100) |
+| `credential_id` | int | Filter by credential ID |
+| `provider_id` | int | Filter by provider ID |
+| `model` | string | Filter by model name |
+| `start_date` | datetime | Filter by start date |
+| `end_date` | datetime | Filter by end date |
+| `status_code` | int | Filter by status code |
+| `has_error` | bool | Filter by error presence |
+
+### Log Entry Fields
+
+Each log entry contains:
+- `id`: Unique log identifier (UUID)
+- `created_at`: Timestamp of the request
+- `credential_id`, `credential_name`: Client authentication info
+- `provider_id`, `provider_name`: Selected provider info
+- `endpoint`, `method`: Request endpoint and HTTP method
+- `model`: Requested model name
+- `is_streaming`: Whether streaming was enabled
+- `status_code`: HTTP response status
+- `duration_ms`: Total request duration in milliseconds
+- `ttft_ms`: Time to first token (streaming only)
+- `prompt_tokens`, `completion_tokens`, `total_tokens`: Token usage
+- `request_body`, `response_body`: Request/response payloads (if enabled)
+- `error_message`: Error details (if any)
+- `client_ip`, `user_agent`: Client information
 
 ## Performance Comparison
 

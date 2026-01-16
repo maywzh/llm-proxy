@@ -20,6 +20,7 @@ from app.core.metrics import APP_INFO
 from app.core.logging import setup_logging, get_logger
 from app.core.security import init_rate_limiter
 from app.core.database import init_database, close_database, get_dynamic_config
+from app.services.log_service import LogService
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -60,6 +61,10 @@ async def lifespan(app: FastAPI):
         f"Loaded {len(versioned_config.providers)} providers and {len(versioned_config.credentials)} credentials"
     )
 
+    # Initialize log service
+    await LogService.initialize(db)
+    logger.info("Log service initialized")
+
     if not versioned_config.providers:
         logger.warning("No providers configured. Add providers via Admin API.")
     if not versioned_config.credentials:
@@ -70,6 +75,12 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down LLM API Proxy")
+
+    # Shutdown log service before closing database
+    log_service = LogService.get_instance()
+    if log_service:
+        await log_service.stop()
+
     await close_http_client()
     await close_database()
     logger.info("Cleanup completed")

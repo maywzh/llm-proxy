@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 import re
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -103,6 +104,38 @@ class ConfigVersionModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class RequestLogModel(Base):
+    """Request log database model for audit and analytics"""
+
+    __tablename__ = "request_logs"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    credential_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    credential_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    provider_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    provider_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    endpoint: Mapped[str] = mapped_column(String(100), nullable=False)
+    method: Mapped[str] = mapped_column(String(10), nullable=False)
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    is_streaming: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ttft_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    request_body: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    response_body: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    client_ip: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 def hash_key(key: str) -> str:
@@ -679,3 +712,285 @@ async def delete_credential(db: Database, credential_id: int) -> bool:
         stmt = delete(CredentialModel).where(CredentialModel.id == credential_id)
         result = await session.execute(stmt)
         return result.rowcount > 0
+
+
+async def insert_log_entries(db: Database, log_data: list[dict]) -> None:
+    """Batch insert log entries into the database.
+
+    Args:
+        db: Database instance
+        log_data: List of dictionaries containing log entry data
+    """
+    if not log_data:
+        return
+
+    async with db.session() as session:
+        log_models = [RequestLogModel(**data) for data in log_data]
+        session.add_all(log_models)
+        await session.flush()
+
+
+async def cleanup_old_logs(db: Database, retention_days: int = 30) -> int:
+    """Delete log entries older than retention period.
+
+    Args:
+        db: Database instance
+        retention_days: Number of days to retain logs
+
+    Returns:
+        Number of deleted entries
+    """
+    from datetime import timedelta
+
+    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    async with db.session() as session:
+        stmt = delete(RequestLogModel).where(RequestLogModel.created_at < cutoff)
+        result = await session.execute(stmt)
+        return result.rowcount
+
+
+@dataclass
+class LogQueryParams:
+    """Parameters for log queries"""
+
+    page: int = 1
+    page_size: int = 20
+    credential_id: Optional[int] = None
+    provider_id: Optional[int] = None
+    model: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    status_code: Optional[int] = None
+    has_error: Optional[bool] = None
+
+
+@dataclass
+class LogListResult:
+    """Result of log list query"""
+
+    logs: list[RequestLogModel]
+    total: int
+    page: int
+    page_size: int
+
+
+@dataclass
+class LogStats:
+    """Log statistics"""
+
+    total_requests: int
+    error_count: int
+    error_rate: float
+    avg_duration_ms: float
+    total_tokens: int
+    by_model: dict
+    by_provider: dict
+
+
+async def get_logs(db: Database, params: LogQueryParams) -> LogListResult:
+    """Get logs with filtering and pagination.
+
+    Args:
+        db: Database instance
+        params: Query parameters for filtering and pagination
+
+    Returns:
+        LogListResult with logs, total count, and pagination info
+    """
+    async with db.session() as session:
+        # Build base query
+        stmt = select(RequestLogModel)
+        count_stmt = select(func.count(RequestLogModel.id))
+
+        # Apply filters
+        conditions = []
+        if params.credential_id is not None:
+            conditions.append(RequestLogModel.credential_id == params.credential_id)
+        if params.provider_id is not None:
+            conditions.append(RequestLogModel.provider_id == params.provider_id)
+        if params.model is not None:
+            conditions.append(RequestLogModel.model == params.model)
+        if params.start_date is not None:
+            conditions.append(RequestLogModel.created_at >= params.start_date)
+        if params.end_date is not None:
+            conditions.append(RequestLogModel.created_at <= params.end_date)
+        if params.status_code is not None:
+            conditions.append(RequestLogModel.status_code == params.status_code)
+        if params.has_error is not None:
+            if params.has_error:
+                conditions.append(RequestLogModel.error_message.isnot(None))
+            else:
+                conditions.append(RequestLogModel.error_message.is_(None))
+
+        # Apply conditions to both queries
+        for condition in conditions:
+            stmt = stmt.where(condition)
+            count_stmt = count_stmt.where(condition)
+
+        # Get total count
+        count_result = await session.execute(count_stmt)
+        total = count_result.scalar() or 0
+
+        # Apply ordering and pagination
+        stmt = stmt.order_by(RequestLogModel.created_at.desc())
+        offset = (params.page - 1) * params.page_size
+        stmt = stmt.offset(offset).limit(params.page_size)
+
+        # Execute query
+        result = await session.execute(stmt)
+        logs = list(result.scalars().all())
+
+        return LogListResult(
+            logs=logs,
+            total=total,
+            page=params.page,
+            page_size=params.page_size,
+        )
+
+
+async def get_log_by_id(db: Database, log_id: str) -> Optional[RequestLogModel]:
+    """Get a single log entry by ID.
+
+    Args:
+        db: Database instance
+        log_id: UUID of the log entry
+
+    Returns:
+        RequestLogModel if found, None otherwise
+    """
+    async with db.session() as session:
+        stmt = select(RequestLogModel).where(RequestLogModel.id == log_id)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
+async def delete_logs_before(db: Database, before_date: datetime) -> int:
+    """Delete logs older than specified date.
+
+    Args:
+        db: Database instance
+        before_date: Delete logs created before this date
+
+    Returns:
+        Number of deleted entries
+    """
+    async with db.session() as session:
+        stmt = delete(RequestLogModel).where(RequestLogModel.created_at < before_date)
+        result = await session.execute(stmt)
+        return result.rowcount
+
+
+async def get_log_stats(
+    db: Database,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+) -> LogStats:
+    """Get log statistics.
+
+    Args:
+        db: Database instance
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+
+    Returns:
+        LogStats with aggregated statistics
+    """
+    async with db.session() as session:
+        # Build base conditions
+        conditions = []
+        if start_date is not None:
+            conditions.append(RequestLogModel.created_at >= start_date)
+        if end_date is not None:
+            conditions.append(RequestLogModel.created_at <= end_date)
+
+        # Get total requests and error count
+        total_stmt = select(func.count(RequestLogModel.id))
+        error_stmt = select(func.count(RequestLogModel.id)).where(
+            RequestLogModel.error_message.isnot(None)
+        )
+        avg_duration_stmt = select(func.avg(RequestLogModel.duration_ms))
+        total_tokens_stmt = select(
+            func.coalesce(func.sum(RequestLogModel.total_tokens), 0)
+        )
+
+        for condition in conditions:
+            total_stmt = total_stmt.where(condition)
+            error_stmt = error_stmt.where(condition)
+            avg_duration_stmt = avg_duration_stmt.where(condition)
+            total_tokens_stmt = total_tokens_stmt.where(condition)
+
+        total_result = await session.execute(total_stmt)
+        total_requests = total_result.scalar() or 0
+
+        error_result = await session.execute(error_stmt)
+        error_count = error_result.scalar() or 0
+
+        avg_duration_result = await session.execute(avg_duration_stmt)
+        avg_duration_ms = avg_duration_result.scalar() or 0.0
+
+        total_tokens_result = await session.execute(total_tokens_stmt)
+        total_tokens = total_tokens_result.scalar() or 0
+
+        error_rate = error_count / total_requests if total_requests > 0 else 0.0
+
+        # Get stats by model
+        model_stmt = (
+            select(
+                RequestLogModel.model,
+                func.count(RequestLogModel.id).label("count"),
+                func.coalesce(func.sum(RequestLogModel.total_tokens), 0).label(
+                    "tokens"
+                ),
+                func.avg(RequestLogModel.duration_ms).label("avg_duration"),
+            )
+            .where(RequestLogModel.model.isnot(None))
+            .group_by(RequestLogModel.model)
+        )
+        for condition in conditions:
+            model_stmt = model_stmt.where(condition)
+
+        model_result = await session.execute(model_stmt)
+        by_model = {
+            row.model: {
+                "count": row.count,
+                "tokens": int(row.tokens),
+                "avg_duration_ms": float(row.avg_duration) if row.avg_duration else 0.0,
+            }
+            for row in model_result
+        }
+
+        # Get stats by provider
+        provider_stmt = (
+            select(
+                RequestLogModel.provider_name,
+                func.count(RequestLogModel.id).label("count"),
+                func.coalesce(func.sum(RequestLogModel.total_tokens), 0).label(
+                    "tokens"
+                ),
+                func.avg(RequestLogModel.duration_ms).label("avg_duration"),
+            )
+            .where(RequestLogModel.provider_name.isnot(None))
+            .group_by(RequestLogModel.provider_name)
+        )
+        for condition in conditions:
+            provider_stmt = provider_stmt.where(condition)
+
+        provider_result = await session.execute(provider_stmt)
+        by_provider = {
+            row.provider_name: {
+                "count": row.count,
+                "tokens": int(row.tokens),
+                "avg_duration_ms": float(row.avg_duration) if row.avg_duration else 0.0,
+            }
+            for row in provider_result
+        }
+
+        return LogStats(
+            total_requests=total_requests,
+            error_count=error_count,
+            error_rate=error_rate,
+            avg_duration_ms=float(avg_duration_ms) if avg_duration_ms else 0.0,
+            total_tokens=int(total_tokens),
+            by_model=by_model,
+            by_provider=by_provider,
+        )

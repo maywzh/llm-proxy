@@ -40,4 +40,4 @@ pub use core::{
     admin_logging_middleware, AppConfig, AppError, Database, DatabaseConfig, DynamicConfig,
     Result, RuntimeConfig,
 };
-pub use services::ProviderService;
+pub use services::{LogService, ProviderService};

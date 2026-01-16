@@ -238,6 +238,38 @@ Full CRUD operations for providers and credentials:
 | `/admin/v1/config/version` | GET | Get config version |
 | `/admin/v1/config/reload` | POST | Reload configuration |
 | `/admin/v1/auth/validate` | POST | Validate admin key |
+| `/admin/v1/logs` | GET | List logs with pagination and filtering |
+| `/admin/v1/logs/{id}` | GET | Get single log entry by ID |
+| `/admin/v1/logs` | DELETE | Delete logs older than specified date |
+| `/admin/v1/logs/stats` | GET | Get log statistics |
+
+### Request Logging
+
+- **Database-Backed Logging**: All API requests are logged to PostgreSQL
+  - Python: [`LogService`](python-server/app/services/log_service.py)
+  - Rust: [`LogService`](rust-server/src/services/log_service.rs)
+
+- **Configurable Body Logging**: Option to log request/response bodies
+  - Controlled via `LOG_REQUEST_BODIES` environment variable
+  - Default: enabled
+
+- **Automatic Retention**: Old logs are automatically cleaned up
+  - Controlled via `LOG_RETENTION_DAYS` environment variable
+  - Default: 30 days
+
+- **Query Parameters for GET /admin/v1/logs**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `page` | int | Page number (default: 1) |
+| `page_size` | int | Items per page (default: 20, max: 100) |
+| `credential_id` | int | Filter by credential ID |
+| `provider_id` | int | Filter by provider ID |
+| `model` | string | Filter by model name |
+| `start_date` | datetime | Filter by start date |
+| `end_date` | datetime | Filter by end date |
+| `status_code` | int | Filter by status code |
+| `has_error` | bool | Filter by error presence |
 
 ### Monitoring & Observability
 
@@ -293,6 +325,31 @@ CREATE TABLE config_version (
     version BIGINT NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Request logs table (audit log for all API requests)
+CREATE TABLE request_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    credential_id INTEGER REFERENCES credentials(id),
+    credential_name VARCHAR(255),
+    provider_id INTEGER REFERENCES providers(id),
+    provider_name VARCHAR(255),
+    endpoint VARCHAR(100) NOT NULL,
+    method VARCHAR(10) NOT NULL,
+    model VARCHAR(100),
+    is_streaming BOOLEAN DEFAULT false,
+    status_code INTEGER,
+    duration_ms INTEGER,
+    ttft_ms INTEGER,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER,
+    request_body JSONB,
+    response_body JSONB,
+    error_message TEXT,
+    client_ip VARCHAR(45),
+    user_agent TEXT
+);
 ```
 
 ### Entity Relationship
@@ -345,6 +402,8 @@ erDiagram
 | `REQUEST_TIMEOUT_SECS` | Request timeout | No (default: 300) |
 | `TTFT_TIMEOUT_SECS` | Time to first token timeout | No |
 | `PROVIDER_SUFFIX` | Optional prefix for model names. When set, model names like `{PROVIDER_SUFFIX}/{model}` are treated as `{model}` | No |
+| `LOG_REQUEST_BODIES` | Whether to log request/response bodies | No (default: true) |
+| `LOG_RETENTION_DAYS` | Log retention period in days | No (default: 30) |
 
 ### Docker
 

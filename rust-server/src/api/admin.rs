@@ -4,12 +4,13 @@
 //! All endpoints require ADMIN_KEY authentication.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::{OpenApi, ToSchema};
@@ -17,6 +18,7 @@ use utoipa::{OpenApi, ToSchema};
 use crate::core::database::{
     create_key_preview, CreateCredential, CreateProvider, DynamicConfig,
     CredentialEntity, ProviderEntity, UpdateCredential, UpdateProvider,
+    LogEntry as DbLogEntry, LogQueryParams,
 };
 
 /// OpenAPI documentation for Admin API (admin endpoints only)
@@ -36,6 +38,10 @@ use crate::core::database::{
         delete_credential,
         get_config_version,
         reload_config,
+        list_logs,
+        get_log,
+        delete_logs,
+        get_log_stats,
         crate::api::health::check_health,
         crate::api::health::get_provider_health,
         crate::api::health::check_provider_health_concurrent,
@@ -53,6 +59,14 @@ use crate::core::database::{
             UpdateCredentialRequest,
             ConfigVersionResponse,
             AdminErrorResponse,
+            LogResponse,
+            LogDetailResponse,
+            LogListResponse,
+            LogStatsResponse,
+            ModelStatsResponse,
+            ProviderStatsResponse,
+            LogDeleteRequest,
+            LogDeleteResponse,
             crate::api::health::HealthStatus,
             crate::api::health::ModelHealthStatus,
             crate::api::health::ProviderHealthStatus,
@@ -69,6 +83,7 @@ use crate::core::database::{
         (name = "providers", description = "Provider management endpoints"),
         (name = "credentials", description = "Credential management endpoints"),
         (name = "config", description = "Configuration management endpoints"),
+        (name = "logs", description = "Log query and management endpoints"),
         (name = "health", description = "Health check endpoints")
     ),
     info(
@@ -546,6 +561,256 @@ pub struct AuthValidateResponse {
     pub valid: bool,
     /// Validation message
     pub message: String,
+}
+
+// ============================================================================
+// Log API Types
+// ============================================================================
+
+/// Log entry response
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(example = json!({
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "created_at": "2024-01-01T00:00:00Z",
+    "credential_id": 1,
+    "credential_name": "Production Key",
+    "provider_id": 1,
+    "provider_name": "openai-primary",
+    "endpoint": "/v1/chat/completions",
+    "method": "POST",
+    "model": "gpt-4",
+    "is_streaming": false,
+    "status_code": 200,
+    "duration_ms": 1500,
+    "ttft_ms": null,
+    "prompt_tokens": 100,
+    "completion_tokens": 50,
+    "total_tokens": 150,
+    "error_message": null,
+    "client_ip": "192.168.1.1",
+    "user_agent": "OpenAI-SDK/1.0"
+}))]
+pub struct LogResponse {
+    /// Log entry UUID
+    pub id: String,
+    /// Timestamp when the request was made
+    pub created_at: String,
+    /// Credential ID used
+    pub credential_id: Option<i32>,
+    /// Credential name
+    pub credential_name: Option<String>,
+    /// Provider ID used
+    pub provider_id: Option<i32>,
+    /// Provider name
+    pub provider_name: Option<String>,
+    /// API endpoint called
+    pub endpoint: String,
+    /// HTTP method
+    pub method: String,
+    /// Model used
+    pub model: Option<String>,
+    /// Whether streaming was used
+    pub is_streaming: bool,
+    /// HTTP status code
+    pub status_code: Option<i32>,
+    /// Request duration in milliseconds
+    pub duration_ms: Option<i32>,
+    /// Time to first token in milliseconds
+    pub ttft_ms: Option<i32>,
+    /// Number of prompt tokens
+    pub prompt_tokens: i32,
+    /// Number of completion tokens
+    pub completion_tokens: i32,
+    /// Total tokens used
+    pub total_tokens: i32,
+    /// Error message if any
+    pub error_message: Option<String>,
+    /// Client IP address
+    pub client_ip: Option<String>,
+    /// Client user agent
+    pub user_agent: Option<String>,
+}
+
+/// Log entry detail response with request/response bodies
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LogDetailResponse {
+    /// Log entry UUID
+    pub id: String,
+    /// Timestamp when the request was made
+    pub created_at: String,
+    /// Credential ID used
+    pub credential_id: Option<i32>,
+    /// Credential name
+    pub credential_name: Option<String>,
+    /// Provider ID used
+    pub provider_id: Option<i32>,
+    /// Provider name
+    pub provider_name: Option<String>,
+    /// API endpoint called
+    pub endpoint: String,
+    /// HTTP method
+    pub method: String,
+    /// Model used
+    pub model: Option<String>,
+    /// Whether streaming was used
+    pub is_streaming: bool,
+    /// HTTP status code
+    pub status_code: Option<i32>,
+    /// Request duration in milliseconds
+    pub duration_ms: Option<i32>,
+    /// Time to first token in milliseconds
+    pub ttft_ms: Option<i32>,
+    /// Number of prompt tokens
+    pub prompt_tokens: i32,
+    /// Number of completion tokens
+    pub completion_tokens: i32,
+    /// Total tokens used
+    pub total_tokens: i32,
+    /// Error message if any
+    pub error_message: Option<String>,
+    /// Client IP address
+    pub client_ip: Option<String>,
+    /// Client user agent
+    pub user_agent: Option<String>,
+    /// Request body (may be truncated)
+    pub request_body: Option<serde_json::Value>,
+    /// Response body (may be truncated)
+    pub response_body: Option<serde_json::Value>,
+}
+
+/// Log list response with pagination
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(example = json!({
+    "logs": [],
+    "total": 1000,
+    "page": 1,
+    "page_size": 20
+}))]
+pub struct LogListResponse {
+    /// List of log entries
+    pub logs: Vec<LogResponse>,
+    /// Total number of matching logs
+    pub total: i64,
+    /// Current page number
+    pub page: i64,
+    /// Number of items per page
+    pub page_size: i64,
+}
+
+/// Log statistics response
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(example = json!({
+    "total_requests": 10000,
+    "error_count": 50,
+    "error_rate": 0.005,
+    "avg_duration_ms": 1500.0,
+    "total_tokens": 500000,
+    "by_model": {
+        "gpt-4": {"count": 5000, "tokens": 300000, "avg_duration_ms": 2000.0}
+    },
+    "by_provider": {
+        "openai-primary": {"count": 10000, "tokens": 500000, "avg_duration_ms": 1500.0}
+    }
+}))]
+pub struct LogStatsResponse {
+    /// Total number of requests
+    pub total_requests: i64,
+    /// Number of requests with errors
+    pub error_count: i64,
+    /// Error rate (0.0 to 1.0)
+    pub error_rate: f64,
+    /// Average request duration in milliseconds
+    pub avg_duration_ms: f64,
+    /// Total tokens used
+    pub total_tokens: i64,
+    /// Statistics grouped by model
+    pub by_model: std::collections::HashMap<String, ModelStatsResponse>,
+    /// Statistics grouped by provider
+    pub by_provider: std::collections::HashMap<String, ProviderStatsResponse>,
+}
+
+/// Model statistics response
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ModelStatsResponse {
+    /// Number of requests
+    pub count: i64,
+    /// Total tokens used
+    pub tokens: i64,
+    /// Average duration in milliseconds
+    pub avg_duration_ms: f64,
+}
+
+/// Provider statistics response
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProviderStatsResponse {
+    /// Number of requests
+    pub count: i64,
+    /// Total tokens used
+    pub tokens: i64,
+    /// Average duration in milliseconds
+    pub avg_duration_ms: f64,
+}
+
+/// Log query parameters
+#[derive(Debug, Deserialize)]
+pub struct LogQueryParamsRequest {
+    /// Page number (default: 1)
+    #[serde(default = "default_page")]
+    pub page: i64,
+    /// Page size (default: 20, max: 100)
+    #[serde(default = "default_page_size")]
+    pub page_size: i64,
+    /// Filter by credential ID
+    pub credential_id: Option<i32>,
+    /// Filter by provider ID
+    pub provider_id: Option<i32>,
+    /// Filter by model
+    pub model: Option<String>,
+    /// Filter by start date
+    pub start_date: Option<DateTime<Utc>>,
+    /// Filter by end date
+    pub end_date: Option<DateTime<Utc>>,
+    /// Filter by status code
+    pub status_code: Option<i32>,
+    /// Filter by error presence
+    pub has_error: Option<bool>,
+}
+
+/// Log stats query parameters
+#[derive(Debug, Deserialize)]
+pub struct LogStatsQueryParams {
+    /// Filter by start date
+    pub start_date: Option<DateTime<Utc>>,
+    /// Filter by end date
+    pub end_date: Option<DateTime<Utc>>,
+}
+
+/// Log deletion request
+#[derive(Debug, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "before_date": "2024-01-01T00:00:00Z"
+}))]
+pub struct LogDeleteRequest {
+    /// Delete logs created before this date
+    pub before_date: DateTime<Utc>,
+}
+
+/// Log deletion response
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(example = json!({
+    "deleted_count": 1000
+}))]
+pub struct LogDeleteResponse {
+    /// Number of deleted log entries
+    pub deleted_count: u64,
+}
+
+fn default_page() -> i64 {
+    1
+}
+
+fn default_page_size() -> i64 {
+    20
 }
 
 fn default_true() -> bool {
@@ -1098,6 +1363,242 @@ pub async fn reload_config(
 }
 
 // ============================================================================
+// Log Handlers
+// ============================================================================
+
+/// Convert database log entry to response
+fn log_to_response(log: &DbLogEntry) -> LogResponse {
+    LogResponse {
+        id: log.id.clone(),
+        created_at: log.created_at.to_rfc3339(),
+        credential_id: log.credential_id,
+        credential_name: log.credential_name.clone(),
+        provider_id: log.provider_id,
+        provider_name: log.provider_name.clone(),
+        endpoint: log.endpoint.clone(),
+        method: log.method.clone(),
+        model: log.model.clone(),
+        is_streaming: log.is_streaming,
+        status_code: log.status_code,
+        duration_ms: log.duration_ms,
+        ttft_ms: log.ttft_ms,
+        prompt_tokens: log.prompt_tokens.unwrap_or(0),
+        completion_tokens: log.completion_tokens.unwrap_or(0),
+        total_tokens: log.total_tokens.unwrap_or(0),
+        error_message: log.error_message.clone(),
+        client_ip: log.client_ip.clone(),
+        user_agent: log.user_agent.clone(),
+    }
+}
+
+/// Convert database log entry to detail response
+fn log_to_detail_response(log: &DbLogEntry) -> LogDetailResponse {
+    LogDetailResponse {
+        id: log.id.clone(),
+        created_at: log.created_at.to_rfc3339(),
+        credential_id: log.credential_id,
+        credential_name: log.credential_name.clone(),
+        provider_id: log.provider_id,
+        provider_name: log.provider_name.clone(),
+        endpoint: log.endpoint.clone(),
+        method: log.method.clone(),
+        model: log.model.clone(),
+        is_streaming: log.is_streaming,
+        status_code: log.status_code,
+        duration_ms: log.duration_ms,
+        ttft_ms: log.ttft_ms,
+        prompt_tokens: log.prompt_tokens.unwrap_or(0),
+        completion_tokens: log.completion_tokens.unwrap_or(0),
+        total_tokens: log.total_tokens.unwrap_or(0),
+        error_message: log.error_message.clone(),
+        client_ip: log.client_ip.clone(),
+        user_agent: log.user_agent.clone(),
+        request_body: log.request_body.as_ref().map(|j| j.0.clone()),
+        response_body: log.response_body.as_ref().map(|j| j.0.clone()),
+    }
+}
+
+/// List request logs
+///
+/// Returns a paginated list of request logs with optional filtering.
+#[utoipa::path(
+    get,
+    path = "/admin/v1/logs",
+    tag = "logs",
+    params(
+        ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
+        ("page_size" = Option<i64>, Query, description = "Page size (default: 20, max: 100)"),
+        ("credential_id" = Option<i32>, Query, description = "Filter by credential ID"),
+        ("provider_id" = Option<i32>, Query, description = "Filter by provider ID"),
+        ("model" = Option<String>, Query, description = "Filter by model"),
+        ("start_date" = Option<String>, Query, description = "Filter by start date (RFC 3339)"),
+        ("end_date" = Option<String>, Query, description = "Filter by end date (RFC 3339)"),
+        ("status_code" = Option<i32>, Query, description = "Filter by status code"),
+        ("has_error" = Option<bool>, Query, description = "Filter by error presence")
+    ),
+    responses(
+        (status = 200, description = "List of logs", body = LogListResponse),
+        (status = 401, description = "Unauthorized", body = AdminErrorResponse)
+    )
+)]
+pub async fn list_logs(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(params): Query<LogQueryParamsRequest>,
+) -> Result<Json<LogListResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let db = state.dynamic_config.database();
+    let query_params = LogQueryParams {
+        page: params.page,
+        page_size: params.page_size,
+        credential_id: params.credential_id,
+        provider_id: params.provider_id,
+        model: params.model,
+        start_date: params.start_date,
+        end_date: params.end_date,
+        status_code: params.status_code,
+        has_error: params.has_error,
+    };
+
+    let result = db.get_logs(&query_params).await?;
+
+    Ok(Json(LogListResponse {
+        logs: result.logs.iter().map(log_to_response).collect(),
+        total: result.total,
+        page: result.page,
+        page_size: result.page_size,
+    }))
+}
+
+/// Get log statistics
+///
+/// Returns aggregated statistics from request logs.
+#[utoipa::path(
+    get,
+    path = "/admin/v1/logs/stats",
+    tag = "logs",
+    params(
+        ("start_date" = Option<String>, Query, description = "Filter by start date (RFC 3339)"),
+        ("end_date" = Option<String>, Query, description = "Filter by end date (RFC 3339)")
+    ),
+    responses(
+        (status = 200, description = "Log statistics", body = LogStatsResponse),
+        (status = 401, description = "Unauthorized", body = AdminErrorResponse)
+    )
+)]
+pub async fn get_log_stats(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(params): Query<LogStatsQueryParams>,
+) -> Result<Json<LogStatsResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let db = state.dynamic_config.database();
+    let stats = db.get_log_stats(params.start_date, params.end_date).await?;
+
+    Ok(Json(LogStatsResponse {
+        total_requests: stats.total_requests,
+        error_count: stats.error_count,
+        error_rate: stats.error_rate,
+        avg_duration_ms: stats.avg_duration_ms,
+        total_tokens: stats.total_tokens,
+        by_model: stats
+            .by_model
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    ModelStatsResponse {
+                        count: v.count,
+                        tokens: v.tokens,
+                        avg_duration_ms: v.avg_duration_ms,
+                    },
+                )
+            })
+            .collect(),
+        by_provider: stats
+            .by_provider
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    ProviderStatsResponse {
+                        count: v.count,
+                        tokens: v.tokens,
+                        avg_duration_ms: v.avg_duration_ms,
+                    },
+                )
+            })
+            .collect(),
+    }))
+}
+
+/// Get a single log entry
+///
+/// Returns the details for a specific log entry by ID, including request/response bodies.
+#[utoipa::path(
+    get,
+    path = "/admin/v1/logs/{id}",
+    tag = "logs",
+    params(
+        ("id" = String, Path, description = "Log entry UUID")
+    ),
+    responses(
+        (status = 200, description = "Log entry details", body = LogDetailResponse),
+        (status = 401, description = "Unauthorized", body = AdminErrorResponse),
+        (status = 404, description = "Log entry not found", body = AdminErrorResponse)
+    )
+)]
+pub async fn get_log(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<LogDetailResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let db = state.dynamic_config.database();
+    let log = db
+        .get_log_by_id(&id)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("Log entry with ID {} not found", id)))?;
+
+    Ok(Json(log_to_detail_response(&log)))
+}
+
+/// Delete old logs
+///
+/// Deletes log entries older than the specified date.
+#[utoipa::path(
+    delete,
+    path = "/admin/v1/logs",
+    tag = "logs",
+    request_body = LogDeleteRequest,
+    responses(
+        (status = 200, description = "Logs deleted", body = LogDeleteResponse),
+        (status = 401, description = "Unauthorized", body = AdminErrorResponse)
+    )
+)]
+pub async fn delete_logs(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(req): Json<LogDeleteRequest>,
+) -> Result<Json<LogDeleteResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let db = state.dynamic_config.database();
+    let deleted_count = db.delete_logs_before(req.before_date).await?;
+
+    tracing::info!(
+        deleted_count = deleted_count,
+        before_date = %req.before_date,
+        "Deleted old log entries"
+    );
+
+    Ok(Json(LogDeleteResponse { deleted_count }))
+}
+
+// ============================================================================
 // Router
 // ============================================================================
 
@@ -1129,6 +1630,10 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
         // Config routes
         .route("/config/version", get(get_config_version))
         .route("/config/reload", post(reload_config))
+        // Log routes
+        .route("/logs", get(list_logs).delete(delete_logs))
+        .route("/logs/stats", get(get_log_stats))
+        .route("/logs/:id", get(get_log))
         // Health check routes
         .nest("/health", health_router())
         .with_state(state)
