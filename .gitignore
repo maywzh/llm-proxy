@@ -60,3 +60,4 @@ Desktop.ini
 .directory
 plans/
 **/.env*
+.spec-workflow
