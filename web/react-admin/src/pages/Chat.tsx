@@ -540,7 +540,7 @@ const Chat: React.FC = () => {
   };
 
   return (
-    <div className="max-w-7xl mx-auto">
+    <div className="w-full">
       <div className="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-[calc(100vh-180px)] flex flex-col">
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto px-4 pt-4 pb-3">
