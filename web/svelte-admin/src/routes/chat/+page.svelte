@@ -455,7 +455,7 @@
   }
 </script>
 
-<div class="max-w-7xl mx-auto">
+<div class="mx-auto">
   <div
     class="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-[calc(100vh-180px)] flex flex-col"
   >
