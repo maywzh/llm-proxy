@@ -7,17 +7,9 @@
     updateChatSettings,
   } from '$lib/chat-settings';
   import { renderMarkdownToHtml } from '$lib/markdown';
+  import ChatComposer from '$lib/components/ChatComposer.svelte';
   import ChatMessageActions from '$lib/components/ChatMessageActions.svelte';
-  import {
-    Send,
-    Loader2,
-    Trash2,
-    Settings,
-    Zap,
-    StopCircle,
-    ImagePlus,
-    X,
-  } from 'lucide-svelte';
+  import { Trash2, Zap, X } from 'lucide-svelte';
   import type {
     ChatMessage,
     ChatRequest,
@@ -730,123 +722,32 @@
       </div>
     {/if}
 
-    <div class="px-4 py-3">
-      <div class="mx-auto w-full max-w-3xl">
-        {#if imageDataUrl}
-          <div class="mb-3 flex items-center space-x-3">
-            <img
-              src={imageDataUrl}
-              alt="preview"
-              class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600"
-            />
-            <button
-              type="button"
-              class="btn btn-secondary"
-              title="Remove image"
-              onclick={() => (imageDataUrl = null)}
-            >
-              <X class="w-4 h-4" />
-            </button>
-          </div>
-        {/if}
-        {#if imageError}
-          <p class="mb-3 text-sm text-red-600 dark:text-red-400">
-            {imageError}
-          </p>
-        {/if}
-        <div
-          class="rounded-2xl bg-gray-50 dark:bg-gray-700/30 ring-1 ring-gray-200/80 dark:ring-gray-600 shadow-sm p-3"
-        >
-          <textarea
-            bind:value={input}
-            onkeydown={handleKeyDown}
-            placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
-            class="w-full bg-transparent text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-400 focus:outline-none resize-none"
-            rows={3}
-            disabled={isLoading}
-          ></textarea>
-
-          <div class="mt-2 flex items-center justify-between gap-2">
-            <div class="flex items-center space-x-2">
-              <input
-                bind:this={imageInput}
-                type="file"
-                accept="image/*"
-                onchange={handleImageChange}
-                class="hidden"
-              />
-              <button
-                type="button"
-                onclick={handlePickImage}
-                disabled={!isVisionModel($chatSettings.selectedModel) ||
-                  isLoading}
-                class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                title={isVisionModel($chatSettings.selectedModel)
-                  ? 'Attach image'
-                  : 'Image input is disabled for this model'}
-              >
-                <ImagePlus class="w-5 h-5" />
-              </button>
-            </div>
-
-            <div class="flex items-center gap-2">
-              <select
-                value={$chatSettings.selectedModel}
-                onchange={e =>
-                  updateChatSettings({
-                    selectedModel: (e.target as HTMLSelectElement).value,
-                  })}
-                disabled={isLoading || getAllModels().length === 0}
-                class="h-10 w-[10rem] sm:w-[14rem] bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 text-gray-900 dark:text-white rounded-full focus:ring-2 focus:ring-primary-500 focus:outline-none px-3 text-sm"
-                title="Model"
-              >
-                {#if getAllModels().length === 0}
-                  <option value="">Set credential key in Settings</option>
-                {/if}
-                {#each getAllModels() as model (model.value)}
-                  <option value={model.value}>{model.label}</option>
-                {/each}
-              </select>
-
-              <button
-                type="button"
-                onclick={() => (showSettings = true)}
-                class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                title="Settings (set credential key)"
-                aria-label="Settings"
-              >
-                <Settings class="w-5 h-5" />
-              </button>
-
-              {#if isStreaming}
-                <button
-                  onclick={handleStop}
-                  class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Stop Generation"
-                >
-                  <StopCircle class="w-5 h-5" />
-                </button>
-              {:else}
-                <button
-                  onclick={handleSend}
-                  disabled={(!input.trim() && !imageDataUrl) ||
-                    !$chatSettings.credentialKey.trim() ||
-                    !$chatSettings.selectedModel ||
-                    isLoading}
-                  class="h-10 w-10 inline-flex items-center justify-center rounded-full bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Send Message"
-                >
-                  {#if isLoading}
-                    <Loader2 class="w-5 h-5 animate-spin" />
-                  {:else}
-                    <Send class="w-5 h-5" />
-                  {/if}
-                </button>
-              {/if}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <ChatComposer
+      bind:input
+      bind:imageInput
+      onKeyDown={handleKeyDown}
+      {isLoading}
+      {isStreaming}
+      onSend={handleSend}
+      sendDisabled={(!input.trim() && !imageDataUrl) ||
+        !$chatSettings.credentialKey.trim() ||
+        !$chatSettings.selectedModel ||
+        isLoading}
+      onStop={handleStop}
+      {imageDataUrl}
+      {imageError}
+      onRemoveImage={() => (imageDataUrl = null)}
+      onImageChange={handleImageChange}
+      onPickImage={handlePickImage}
+      attachImageDisabled={!isVisionModel($chatSettings.selectedModel) ||
+        isLoading}
+      attachImageTitle={isVisionModel($chatSettings.selectedModel)
+        ? 'Attach image'
+        : 'Image input is disabled for this model'}
+      selectedModel={$chatSettings.selectedModel}
+      onSelectModel={value => updateChatSettings({ selectedModel: value })}
+      modelOptions={getAllModels()}
+      onOpenSettings={() => (showSettings = true)}
+    />
   </div>
 </div>
