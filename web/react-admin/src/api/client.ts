@@ -21,6 +21,9 @@ import type {
   ChatResponse,
   StreamChunk,
   ModelsResponse,
+  HealthCheckRequest,
+  HealthCheckResponse,
+  ProviderHealthStatus,
 } from '../types';
 
 export class ApiClient {
@@ -203,6 +206,33 @@ export class ApiClient {
     return this.request<ConfigReloadResponse>('/admin/v1/config/reload', {
       method: 'POST',
     });
+  }
+
+  // Health Check API
+  async checkProvidersHealth(
+    request?: HealthCheckRequest
+  ): Promise<HealthCheckResponse> {
+    return this.request<HealthCheckResponse>('/admin/v1/health/check', {
+      method: 'POST',
+      body: JSON.stringify(request || {}),
+    });
+  }
+
+  async getProviderHealth(
+    providerId: number,
+    models?: string[],
+    timeoutSecs?: number
+  ): Promise<ProviderHealthStatus> {
+    const params = new URLSearchParams();
+    if (models && models.length > 0) {
+      params.append('models', models.join(','));
+    }
+    if (timeoutSecs !== undefined) {
+      params.append('timeout_secs', timeoutSecs.toString());
+    }
+    const queryString = params.toString();
+    const endpoint = `/admin/v1/health/providers/${providerId}${queryString ? `?${queryString}` : ''}`;
+    return this.request<ProviderHealthStatus>(endpoint);
   }
 
   // Chat API
