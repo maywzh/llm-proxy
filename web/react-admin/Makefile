@@ -4,25 +4,25 @@ IMAGE_NAME ?= react-admin
 IMAGE_TAG ?= latest
 
 install:
-	pnpm install
+	bun install
 
 dev:
-	pnpm dev
+	bun run dev
 
 build:
-	pnpm build
+	bun run build
 
 preview:
-	pnpm preview
+	bun run preview
 
 lint:
-	pnpm lint
+	bun run lint
 
 lint-fix:
-	pnpm lint:fix
+	bun run lint:fix
 
 format:
-	pnpm format
+	bun run format
 
 docker-build:
 	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .

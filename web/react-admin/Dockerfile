@@ -1,11 +1,23 @@
-FROM cndevops-base-docker-local.arf.tesla.cn/base/node:24-alpine AS builder
+# Stage 1: Install bun
+# Reference: https://github.tesla.cn/ITApp/base-images
+FROM cndevops-base-docker-local.arf.tesla.cn/base/node:22 AS bun-installer
+
+# Install bun as root user
+USER root
+RUN npm install -g bun --registry=https://mirrors.tesla.cn/npm/
+
+# Stage 2: Builder stage - Build the application
+FROM cndevops-base-docker-local.arf.tesla.cn/base/node:22 AS builder
+
+# Copy bun from the bun-installer stage
+USER root
+COPY --from=bun-installer /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=bun-installer /usr/local/lib/node_modules/bun /usr/local/lib/node_modules/bun
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
-
-COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --frozen-lockfile
+COPY package.json bun.lockb* ./
+RUN bun install --frozen-lockfile
 
 COPY . .
 
@@ -18,10 +30,10 @@ ENV VITE_PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=${VITE_PUBLIC_GRAFANA_PUBLIC_DASHBO
 ARG VITE_CHAT_VISION_MODEL_ALLOWLIST=
 ENV VITE_CHAT_VISION_MODEL_ALLOWLIST=${VITE_CHAT_VISION_MODEL_ALLOWLIST}
 
+RUN bun run build
 
-RUN pnpm build
-
-FROM cndevops-base-docker-local.arf.tesla.cn/base/node:24-alpine AS runner
+# Stage 3: Runtime stage - Use Node.js with serve for static file serving
+FROM cndevops-base-docker-local.arf.tesla.cn/base/node:22-alpine AS runner
 
 WORKDIR /app
 
