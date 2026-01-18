@@ -20,6 +20,7 @@
     MessageSquare,
     ChevronLeft,
     ChevronRight,
+    Activity,
   } from 'lucide-svelte';
 
   let { children }: { children: Snippet } = $props();
@@ -110,6 +111,7 @@
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/providers', label: 'Providers', icon: Plug },
     { href: '/credentials', label: 'Credentials', icon: Key },
+    { href: '/health', label: 'Health Check', icon: Activity },
     { href: '/chat', label: 'Chat', icon: MessageSquare },
   ];
 </script>

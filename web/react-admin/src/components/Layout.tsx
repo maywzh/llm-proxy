@@ -16,6 +16,7 @@ import {
   MessageSquare,
   ChevronLeft,
   ChevronRight,
+  Activity,
 } from 'lucide-react';
 import type { ConfigVersionResponse } from '../types';
 
@@ -41,6 +42,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/providers', label: 'Providers', icon: Plug },
     { href: '/credentials', label: 'Credentials', icon: Key },
+    { href: '/health', label: 'Health Check', icon: Activity },
     { href: '/chat', label: 'Chat', icon: MessageSquare },
   ];
 

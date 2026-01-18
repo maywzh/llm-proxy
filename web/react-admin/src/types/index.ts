@@ -228,3 +228,36 @@ export interface ModelsResponse {
   object: string;
   data: Model[];
 }
+
+// Health Check Types
+export type HealthStatus = 'healthy' | 'unhealthy' | 'disabled' | 'unknown';
+
+export interface ModelHealthStatus {
+  model: string;
+  status: HealthStatus;
+  response_time_ms: number | null;
+  error: string | null;
+}
+
+export interface ProviderHealthStatus {
+  provider_id: number;
+  provider_key: string;
+  status: HealthStatus;
+  models: ModelHealthStatus[];
+  avg_response_time_ms: number | null;
+  checked_at: string;
+}
+
+export interface HealthCheckRequest {
+  provider_ids?: number[];
+  models?: string[];
+  timeout_secs?: number;
+  max_concurrent?: number;
+}
+
+export interface HealthCheckResponse {
+  providers: ProviderHealthStatus[];
+  total_providers: number;
+  healthy_providers: number;
+  unhealthy_providers: number;
+}

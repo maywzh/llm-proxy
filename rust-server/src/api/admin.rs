@@ -36,6 +36,8 @@ use crate::core::database::{
         delete_credential,
         get_config_version,
         reload_config,
+        crate::api::health::check_health,
+        crate::api::health::get_provider_health,
     ),
     components(
         schemas(
@@ -50,13 +52,19 @@ use crate::core::database::{
             UpdateCredentialRequest,
             ConfigVersionResponse,
             AdminErrorResponse,
+            crate::api::health::HealthStatus,
+            crate::api::health::ModelHealthStatus,
+            crate::api::health::ProviderHealthStatus,
+            crate::api::health::HealthCheckRequest,
+            crate::api::health::HealthCheckResponse,
         )
     ),
     tags(
         (name = "auth", description = "Authentication endpoints"),
         (name = "providers", description = "Provider management endpoints"),
         (name = "credentials", description = "Credential management endpoints"),
-        (name = "config", description = "Configuration management endpoints")
+        (name = "config", description = "Configuration management endpoints"),
+        (name = "health", description = "Health check endpoints")
     ),
     info(
         title = "LLM Proxy Admin API",
@@ -179,7 +187,7 @@ pub struct AdminState {
 }
 
 /// Verify admin authentication
-fn verify_admin_auth(headers: &HeaderMap, admin_key: &str) -> Result<(), AdminError> {
+pub fn verify_admin_auth(headers: &HeaderMap, admin_key: &str) -> Result<(), AdminError> {
     let auth_header = headers
         .get("authorization")
         .and_then(|h| h.to_str().ok())
@@ -1089,6 +1097,8 @@ pub async fn reload_config(
 
 /// Create Admin API router
 pub fn admin_router(state: Arc<AdminState>) -> Router {
+    use crate::api::health::health_router;
+    
     Router::new()
         // Auth routes
         .route("/auth/validate", post(validate_admin_key))
@@ -1111,5 +1121,7 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
         // Config routes
         .route("/config/version", get(get_config_version))
         .route("/config/reload", post(reload_config))
+        // Health check routes
+        .nest("/health", health_router())
         .with_state(state)
 }
