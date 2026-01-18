@@ -61,3 +61,4 @@ Desktop.ini
 plans/
 **/.env*
 .spec-workflow
+k8s/
