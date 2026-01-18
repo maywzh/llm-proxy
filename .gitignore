@@ -63,3 +63,4 @@ plans/
 .spec-workflow
 k8s/
 config.*.yaml
+config.yaml
