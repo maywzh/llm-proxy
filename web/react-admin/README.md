@@ -6,14 +6,14 @@ A React-based admin interface for managing LLM Proxy configurations.
 
 ### Prerequisites
 - Node.js 18+
-- pnpm (recommended)
+- bun (recommended)
 
 ### Installation & Running
 
 ```bash
 cd web/react-admin
-pnpm install
-pnpm run dev
+bun install
+bun run dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
@@ -65,10 +65,10 @@ PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=
 ## Available Scripts
 
 ```bash
-pnpm run dev      # Start development server
-pnpm run build    # Build for production
-pnpm run preview  # Preview production build
-pnpm run lint     # Run ESLint
+bun run dev      # Start development server
+bun run build    # Build for production
+bun run preview  # Preview production build
+bun run lint     # Run ESLint
 ```
 
 ## Chat Feature
@@ -82,8 +82,8 @@ The Chat page allows you to interact with LLM models through the proxy:
    - **Max Tokens**: Maximum response length (100 - 8000, default: 2000)
 3. **Set Credential Key**: Open Settings and set credential key
 4. **Start Chatting**: Type your message and press Enter
-4. **Streaming Responses**: Responses stream in real-time
-5. **Controls**:
+5. **Streaming Responses**: Responses stream in real-time
+6. **Controls**:
    - **Stop**: Interrupt generation at any time
    - **Clear**: Reset conversation history
 
@@ -98,7 +98,7 @@ The Chat page allows you to interact with LLM models through the proxy:
 - Requires valid credential keys configured in the system
 - Chat page requires a credential key input (separate from the admin key)
 - Models are loaded from `/v1/models` using the credential key (respects allowed_models)
- - Image upload is enabled only for allowlisted models via `VITE_CHAT_VISION_MODEL_ALLOWLIST`
+- Image upload is enabled only for allowlisted models via `VITE_CHAT_VISION_MODEL_ALLOWLIST`
 
 ## Troubleshooting
 
@@ -120,8 +120,8 @@ The Chat page allows you to interact with LLM models through the proxy:
 
 ```bash
 # Clear dependencies and reinstall
-rm -rf node_modules pnpm-lock.yaml
-pnpm install
+rm -rf node_modules bun.lockb
+bun install
 ```
 
 ## Project Structure
@@ -159,4 +159,4 @@ The Dashboard page embeds a Grafana Public Dashboard via iframe. To enable:
 
 ---
 
-Last Updated: 2025-12-28 10:58 (Asia/Shanghai)
+Last Updated: 2025-01-15 08:54 (Asia/Shanghai)

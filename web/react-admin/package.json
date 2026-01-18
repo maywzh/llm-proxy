@@ -3,8 +3,9 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
+  "packageManager": "bun@1.x",
   "scripts": {
-    "prepare": "(node ../../scripts/install-githooks.mjs 2>/dev/null || true)",
+    "prepare": "(bun ../../scripts/install-githooks.mjs 2>/dev/null || true)",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
