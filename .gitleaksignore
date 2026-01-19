@@ -1,0 +1,22 @@
+# Gitleaks ignore file - for test fixtures and false positives
+# Format: one fingerprint per line
+
+# Rust test fixtures - test_rate_limiting.rs
+f62b59f7bb8556851f94505dd62dc21b511a2b54:rust-server/tests/test_rate_limiting.rs:generic-api-key:269
+f62b59f7bb8556851f94505dd62dc21b511a2b54:rust-server/tests/test_rate_limiting.rs:generic-api-key:288
+5cf27c9ff58461d75c51c221756d72de8be6ccd0:rust-server/tests/test_rate_limiting.rs:generic-api-key:269
+5cf27c9ff58461d75c51c221756d72de8be6ccd0:rust-server/tests/test_rate_limiting.rs:generic-api-key:288
+599b0d4def362387e69ff01dbe1a08e4cac1fe59:rust-server/tests/test_rate_limiting.rs:generic-api-key:246
+599b0d4def362387e69ff01dbe1a08e4cac1fe59:rust-server/tests/test_rate_limiting.rs:generic-api-key:263
+c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:rust-server/tests/test_rate_limiting.rs:generic-api-key:246
+c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:rust-server/tests/test_rate_limiting.rs:generic-api-key:263
+
+# Python test fixtures - test_rate_limiting.py
+f8b50285f1c1432f9e9a7aeceb48e05d709d886e:python-server/tests/test_rate_limiting.py:generic-api-key:287
+f8b50285f1c1432f9e9a7aeceb48e05d709d886e:python-server/tests/test_rate_limiting.py:generic-api-key:295
+adc248a45758f41b88736d2e0331d3ec1e5b99ee:python-server/tests/test_rate_limiting.py:generic-api-key:287
+adc248a45758f41b88736d2e0331d3ec1e5b99ee:python-server/tests/test_rate_limiting.py:generic-api-key:295
+
+# Test script - verify_auth.sh (InvalidFormat is a test case for auth validation)
+599b0d4def362387e69ff01dbe1a08e4cac1fe59:scripts/verify_auth.sh:curl-auth-header:143
+c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:scripts/verify_auth.sh:curl-auth-header:143
