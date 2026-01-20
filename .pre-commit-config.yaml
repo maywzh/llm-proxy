@@ -1,0 +1,47 @@
+# Pre-commit hooks for LLM Proxy project
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # Gitleaks - Secret scanning
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.snap$'
+      - id: end-of-file-fixer
+        exclude: '\.snap$'
+      - id: check-yaml
+        args: ["--unsafe"]
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+
+  # Python formatting and linting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^python-server/
+      - id: ruff-format
+        files: ^python-server/
+
+  # Rust formatting
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+      - id: fmt
+        args: ["--manifest-path", "rust-server/Cargo.toml", "--"]
+      - id: clippy
+        args:
+          ["--manifest-path", "rust-server/Cargo.toml", "--", "-D", "warnings"]
