@@ -1,72 +1,263 @@
-# llm-proxy
+# LLM Proxy - Python Service
 
-llm-proxy 是一个高性能的 LLM API 代理服务，支持加权负载均衡、完整的 Prometheus 监控和 Grafana 可视化。
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-green.svg)](https://fastapi.tiangolo.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 功能特性
+[中文文档](README_CN.md) | English
 
-- ✅ 加权负载均衡（Weighted Load Balancing）
-- ✅ 支持流式和非流式响应
-- ✅ 兼容 OpenAI API 格式
-- ✅ 模型名称映射
-- ✅ **Prometheus 指标收集**
-- ✅ **Grafana Dashboard 可视化**
-- ✅ Token 使用量统计
-- ✅ 请求延迟追踪
-- ✅ Provider 健康监控
-- ✅ 模块化架构设计
-- ✅ 类型安全（Pydantic）
-- ✅ **可选的 Master Key 速率限制**
-- ✅ **动态配置（数据库存储）**
+High-performance LLM API proxy service built with FastAPI, supporting weighted load balancing, complete Prometheus monitoring, and Grafana visualization.
 
-## 配置模式
+> For complete project overview, see the [main README](../README.md)
 
-LLM Proxy 使用数据库存储配置：
+## 📋 Table of Contents
 
-- 设置 `DB_URL` 和 `ADMIN_KEY` 环境变量
-- 配置存储在 PostgreSQL 数据库
-- 支持运行时热更新，无需重启
-- 通过 Admin API 管理配置
+- [Core Features](#-core-features)
+- [Tech Stack](#-tech-stack)
+- [Quick Start](#-quick-start)
+- [Configuration](#️-configuration)
+- [Usage](#-usage)
+- [Admin API](#-admin-api)
+- [Rate Limiting](#️-rate-limiting)
+- [Monitoring](#-monitoring)
+- [Project Structure](#-project-structure)
+- [Development Guide](#️-development-guide)
+- [License](#-license)
 
-### 环境变量
+## ✨ Core Features
 
-| 变量 | 说明 | 必需 |
-|------|------|------|
-| `DB_URL` | PostgreSQL 连接字符串 | 数据库模式必需 |
-| `ADMIN_KEY` | Admin API 认证密钥 | 数据库模式必需 |
-| `PORT` | 服务端口 | 否（默认 18000）|
-| `PROVIDER_SUFFIX` | 可选的模型名称前缀。设置后，形如 `{PROVIDER_SUFFIX}/{model}` 的模型名会被处理为 `{model}` | 否 |
+- ✅ **Weighted Load Balancing** - Intelligent weighted round-robin algorithm for request distribution
+- ✅ **Streaming Responses** - Complete SSE streaming response support
+- ✅ **OpenAI Compatible** - 100% compatible with OpenAI API format
+- ✅ **Model Mapping** - Flexible model name transformation and routing
+- ✅ **Prometheus Monitoring** - Complete metrics collection and export
+- ✅ **Grafana Visualization** - Pre-configured dashboards and alerts
+- ✅ **Token Statistics** - Accurate token usage tracking (using tiktoken)
+- ✅ **Latency Tracking** - P50/P95/P99 latency percentile monitoring
+- ✅ **Health Checks** - Real-time provider health monitoring
+- ✅ **Modular Architecture** - Clear layered architecture design
+- ✅ **Type Safety** - Pydantic 2.0+ data validation
+- ✅ **Rate Limiting** - Optional per-key rate limiting
+- ✅ **Dynamic Configuration** - PostgreSQL-based hot-reload configuration
+- ✅ **Async Processing** - Full async architecture with FastAPI + httpx
 
-### 数据库迁移
+## 🔧 Tech Stack
+
+### Core Framework
+- **Web Framework**: FastAPI 0.110+ - High-performance async Python web framework
+- **ASGI Server**: Uvicorn - Production-grade ASGI server
+- **Python Version**: Python 3.12+
+
+### Data Processing
+- **Data Validation**: Pydantic 2.0+ - Type-safe data models and validation
+- **Database ORM**: SQLAlchemy 2.0+ - Async ORM
+- **Database Driver**: asyncpg - High-performance async PostgreSQL driver
+
+### HTTP & Networking
+- **HTTP Client**: httpx - Async HTTP client
+- **Streaming**: SSE (Server-Sent Events)
+
+### Monitoring & Logging
+- **Metrics Collection**: prometheus-client - Official Prometheus Python client
+- **Logging System**: loguru - Modern Python logging library
+- **Token Counting**: tiktoken - OpenAI's official token counting library
+
+### Security & Rate Limiting
+- **Rate Limiting**: limits 3.10+ - Token bucket algorithm implementation
+- **Authentication**: Bearer Token authentication
+
+### Development Tools
+- **Package Manager**: uv - Ultra-fast Python package manager
+- **Testing Framework**: pytest + pytest-asyncio + pytest-cov
+- **Testing Tools**: hypothesis (property testing) + respx (HTTP mocking)
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.12+
+- PostgreSQL database
+- uv (Python package manager)
+
+### 1. Install Dependencies
 
 ```bash
-# 安装 golang-migrate
-brew install golang-migrate
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 设置数据库 URL
-export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
-
-# 运行迁移
-./scripts/db_migrate.sh up
-
-# 查看迁移版本
-./scripts/db_migrate.sh version
-
-# 回滚一个迁移
-./scripts/db_migrate.sh down
+# Sync dependencies
+uv sync
 ```
 
-### Admin API 示例
+### 2. Configure Environment Variables
+
+Create `.env` file or set environment variables:
 
 ```bash
-# 设置 Admin Key
+# Required: Database connection
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
+
+# Required: Admin API authentication key
 export ADMIN_KEY='your-admin-key'
 
-# 创建 Provider
+# Optional: Service port (default 18000)
+export PORT=18000
+
+# Optional: Model name prefix (for standardizing model name formats)
+export PROVIDER_SUFFIX='Proxy'
+```
+
+### 3. Run Database Migrations
+
+```bash
+# Install golang-migrate
+brew install golang-migrate
+
+# Set database URL
+export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
+
+# Run migrations
+../scripts/db_migrate.sh up
+
+# Check migration version
+../scripts/db_migrate.sh version
+
+# Rollback one migration
+../scripts/db_migrate.sh down
+```
+
+### 4. Start the Service
+
+**Option 1: Direct Run**
+```bash
+# Using quick start script
+./run.sh
+
+# Or using uv
+uv run python main.py
+```
+
+**Option 2: Docker Compose (Recommended, includes monitoring)**
+```bash
+# Start all services (LLM Proxy + Prometheus + Grafana)
+docker-compose up -d
+
+# View logs
+docker-compose logs -f llm-proxy
+
+# Stop services
+docker-compose down
+```
+
+**Service Access URLs:**
+- LLM Proxy: <http://localhost:18000>
+- Prometheus: <http://localhost:9090>
+- Grafana: <http://localhost:3000> (admin/admin)
+- API Documentation: <http://localhost:18000/docs>
+
+## ⚙️ Configuration
+
+For detailed configuration documentation, see the [main README](../README.md#-configuration).
+
+## 📖 Usage
+
+Once the proxy service is running, you can use it just like the OpenAI API:
+
+### Chat Completions
+
+```bash
+curl http://localhost:18000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $YOUR_CREDENTIAL_KEY" \
+  -d '{
+    "model": "gpt-3.5-turbo",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### Streaming Responses
+
+```bash
+curl http://localhost:18000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $YOUR_CREDENTIAL_KEY" \
+  -d '{
+    "model": "gpt-3.5-turbo",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+```
+
+### Model Name Prefix Feature
+
+When `PROVIDER_SUFFIX` environment variable is set, you can use prefixed model names:
+
+```bash
+# Set prefix
+export PROVIDER_SUFFIX=Proxy
+
+# The following two requests are equivalent:
+# 1. Using prefixed model name
+curl http://localhost:18000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Proxy/gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# 2. Using original model name
+curl http://localhost:18000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+#### Prefix Feature Behavior
+
+- If `PROVIDER_SUFFIX` is not set, model names remain unchanged
+- If `PROVIDER_SUFFIX` is set (e.g., "Proxy"):
+  - `Proxy/gpt-4` → `gpt-4` (prefix removed)
+  - `gpt-4` → `gpt-4` (unchanged)
+  - `Other/gpt-4` → `Other/gpt-4` (different prefix, unchanged)
+
+This feature is useful for scenarios requiring unified model name formats, especially when switching between multiple proxy services.
+
+### Health Checks
+
+```bash
+# Basic health check
+curl http://localhost:18000/health
+
+# Detailed health check (tests all providers)
+curl http://localhost:18000/health/detailed
+```
+
+### Supported Endpoints
+
+- `/v1/chat/completions` - Chat completions API
+- `/v1/completions` - Legacy completions API
+- `/v1/models` - List all available models
+- `/health` - Basic health check
+- `/health/detailed` - Detailed health check (tests all providers)
+- `/metrics` - Prometheus metrics endpoint
+- `/docs` - OpenAPI documentation
+
+## 🔑 Admin API
+
+### Provider Management
+
+```bash
+# Set Admin Key
+export ADMIN_KEY='your-admin-key'
+
+# Create Provider
 curl -X POST http://localhost:18000/admin/v1/providers \
   -H "Authorization: Bearer $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "openai-main",
+    "provider_key": "openai-main",
     "provider_type": "openai",
     "api_base": "https://api.openai.com/v1",
     "api_key": "sk-xxx",
@@ -74,16 +265,16 @@ curl -X POST http://localhost:18000/admin/v1/providers \
     "is_enabled": true
   }'
 
-# 列出所有 Provider
+# List all Providers
 curl http://localhost:18000/admin/v1/providers \
   -H "Authorization: Bearer $ADMIN_KEY"
 
-# 获取指定 Provider
-curl http://localhost:18000/admin/v1/providers/openai-main \
+# Get specific Provider
+curl http://localhost:18000/admin/v1/providers/1 \
   -H "Authorization: Bearer $ADMIN_KEY"
 
-# 更新 Provider
-curl -X PUT http://localhost:18000/admin/v1/providers/openai-main \
+# Update Provider
+curl -X PUT http://localhost:18000/admin/v1/providers/1 \
   -H "Authorization: Bearer $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -93,300 +284,193 @@ curl -X PUT http://localhost:18000/admin/v1/providers/openai-main \
     "is_enabled": true
   }'
 
-# 删除 Provider
-curl -X DELETE http://localhost:18000/admin/v1/providers/openai-main \
+# Delete Provider
+curl -X DELETE http://localhost:18000/admin/v1/providers/1 \
   -H "Authorization: Bearer $ADMIN_KEY"
+```
 
-# 创建 Master Key
-curl -X POST http://localhost:18000/admin/v1/master-keys \
+### Credential Management
+
+```bash
+# Create Credential
+curl -X POST http://localhost:18000/admin/v1/credentials \
   -H "Authorization: Bearer $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "key-1",
-    "key": "mk-xxx",
+    "key": "sk-my-secret-key",
     "name": "Default Key",
     "allowed_models": ["*"],
     "is_enabled": true
   }'
 
-# 列出所有 Master Key
-curl http://localhost:18000/admin/v1/master-keys \
+# List all Credentials
+curl http://localhost:18000/admin/v1/credentials \
   -H "Authorization: Bearer $ADMIN_KEY"
 
-# 重新加载配置（热更新）
+# Reload configuration (hot update)
 curl -X POST http://localhost:18000/admin/v1/config/reload \
   -H "Authorization: Bearer $ADMIN_KEY"
 
-# 获取当前配置版本
+# Get current config version
 curl http://localhost:18000/admin/v1/config/version \
   -H "Authorization: Bearer $ADMIN_KEY"
 ```
 
----
+## ⏱️ Rate Limiting
 
-## 快速开始
+The system supports independent rate limiting for each credential key, or rate limiting can be completely disabled.
 
-### 1. 安装依赖
+### Configuration
 
-使用 uv 安装依赖：
-
-```bash
-# 安装 uv（如果还没有安装）
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 同步依赖
-uv sync
-```
-
-### 2. 配置环境变量
-
-创建 `.env` 文件或设置环境变量：
+Configure rate limiting when creating credentials via Admin API:
 
 ```bash
-# 必需：数据库连接
-export DB_URL='postgresql://user:pass@localhost:5432/llm_proxy'
-
-# 必需：Admin API 认证密钥
-export ADMIN_KEY='your-admin-key'
-
-# 可选：服务端口（默认 18000）
-export PORT=18000
-
-# 可选：模型名称前缀（用于统一模型名称格式）
-export PROVIDER_SUFFIX='Proxy'
-```
-
-### 3. 运行数据库迁移
-
-```bash
-./scripts/db_migrate.sh up
-```
-
-### 4. 启动代理服务
-
-#### 方式一：直接运行
-
-```bash
-# 使用快速启动脚本
-./run.sh
-
-# 或使用 uv
-uv run python main.py
-```
-
-#### 方式二：使用 Docker Compose（推荐，包含监控）
-
-```bash
-# 启动所有服务（LLM Proxy + Prometheus + Grafana）
-docker-compose up -d
-
-# 查看日志
-docker-compose logs -f llm-proxy
-
-# 停止服务
-docker-compose down
-```
-
-**服务访问地址：**
-
-- LLM Proxy: <http://localhost:18000>
-- Prometheus: <http://localhost:9090>
-- Grafana: <http://localhost:3000> (admin/admin)
-
-## 使用方法
-
-代理服务启动后，可以像调用 OpenAI API 一样使用：
-
-### Chat Completions
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-3.5-turbo",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### 模型名称前缀功能
-
-当设置了 `PROVIDER_SUFFIX` 环境变量时，可以使用带前缀的模型名称：
-
-```bash
-# 设置前缀
-export PROVIDER_SUFFIX=Proxy
-
-# 以下两种请求是等价的：
-# 1. 使用带前缀的模型名
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Proxy/gpt-4",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-
-# 2. 使用原始模型名
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-#### 前缀功能行为说明
-
-- 如果未设置 `PROVIDER_SUFFIX`，模型名称保持原样
-- 如果设置了 `PROVIDER_SUFFIX`（例如 "Proxy"）：
-  - `Proxy/gpt-4` → `gpt-4`（去除前缀）
-  - `gpt-4` → `gpt-4`（保持不变）
-  - `Other/gpt-4` → `Other/gpt-4`（不同前缀，保持不变）
-
-这个功能适用于需要统一模型名称格式的场景，特别是在多个代理服务之间切换时。
-
-### 流式响应
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-3.5-turbo",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
-```
-
-### 健康检查
-
-```bash
-curl http://localhost:8000/health
-```
-
-## 工作原理
-
-1. 代理从数据库读取多个 API 提供商配置
-2. 使用加权随机算法选择提供商
-3. 将请求转发到选中的提供商
-4. 返回提供商的响应给客户端
-
-根据配置的权重，请求会按比例分配到不同的提供商，实现负载均衡。
-
-## 支持的端点
-
-- `/v1/chat/completions` - Chat 接口
-- `/v1/completions` - Completions 接口
-- `/v1/models` - 列出所有可用模型
-- `/health` - 基础健康检查
-- `/health/detailed` - 详细健康检查（测试所有 provider）
-- `/metrics` - Prometheus 指标端点
-- `/docs` - OpenAPI 文档
-
-## Master Key 速率限制
-
-系统支持为每个 Master Key 配置独立的速率限制，也可以完全禁用速率限制。
-
-### 配置方式
-
-通过 Admin API 创建 Master Key 时配置速率限制：
-
-```bash
-# 创建带速率限制的 Key
-curl -X POST http://localhost:18000/admin/v1/master-keys \
+# Create key with rate limiting
+curl -X POST http://localhost:18000/admin/v1/credentials \
   -H "Authorization: Bearer $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "limited-key",
-    "key": "mk-limited",
+    "key": "sk-limited",
     "name": "Limited Key",
     "rate_limit": 100,
     "is_enabled": true
   }'
 
-# 创建无速率限制的 Key（rate_limit 设为 null 或不设置）
-curl -X POST http://localhost:18000/admin/v1/master-keys \
+# Create key without rate limiting (rate_limit set to null or omitted)
+curl -X POST http://localhost:18000/admin/v1/credentials \
   -H "Authorization: Bearer $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "unlimited-key",
-    "key": "mk-unlimited",
+    "key": "sk-unlimited",
     "name": "Unlimited Key",
     "is_enabled": true
   }'
 ```
 
-### 行为说明
+### Behavior
 
-| 配置 | 行为 |
-|------|------|
-| `rate_limit: {requests_per_second: 100, burst_size: 150}` | 启用速率限制：每秒 100 个请求，允许 150 个突发请求 |
-| `rate_limit: {requests_per_second: 0, burst_size: 0}` | 启用速率限制：阻止所有请求 |
-| 不设置 `rate_limit` 字段 | 禁用速率限制：允许无限请求 |
+| Configuration | Behavior |
+|---------------|----------|
+| `rate_limit: 100` | Rate limiting enabled: 100 requests per second |
+| `rate_limit: 0` | Rate limiting enabled: blocks all requests |
+| `rate_limit` field not set | Rate limiting disabled: unlimited requests |
 
-### 使用场景
+### Use Cases
 
-- **生产环境 Key**：设置合理的速率限制，防止滥用
-- **开发/测试 Key**：可以不设置速率限制，方便开发调试
-- **特殊用途 Key**：根据实际需求灵活配置
+- **Production Keys**: Set reasonable rate limits to prevent abuse
+- **Development/Test Keys**: Can disable rate limiting for easier debugging
+- **Special Purpose Keys**: Configure flexibly based on actual needs
 
-## 监控功能
+## 📊 Monitoring
 
-### Prometheus 指标
+### Prometheus Metrics
 
-系统自动收集以下指标：
+The system automatically collects the following metrics:
 
-- **请求指标**
-  - `llm_proxy_requests_total`: 总请求数（按 method、endpoint、model、provider、status_code）
-  - `llm_proxy_request_duration_seconds`: 请求延迟直方图
-  - `llm_proxy_active_requests`: 当前活跃请求数
+- **Request Metrics**
+  - `llm_proxy_requests_total`: Total request count (by method, endpoint, model, provider, status_code)
+  - `llm_proxy_request_duration_seconds`: Request latency histogram
+  - `llm_proxy_active_requests`: Current active request count
 
-- **Token 使用指标**
-  - `llm_proxy_tokens_total`: Token 使用总量（按 model、provider、token_type）
+- **Token Usage Metrics**
+  - `llm_proxy_tokens_total`: Total token usage (by model, provider, token_type)
 
-- **Provider 健康指标**
-  - `llm_proxy_provider_health`: Provider 健康状态
-  - `llm_proxy_provider_latency_seconds`: Provider 响应延迟
+- **Provider Health Metrics**
+  - `llm_proxy_provider_health`: Provider health status
+  - `llm_proxy_provider_latency_seconds`: Provider response latency
 
 ### Grafana Dashboard
 
-预配置的 Dashboard 包含：
+Pre-configured dashboards include:
 
-- 请求速率趋势
-- P95/P99 延迟
-- Token 使用量统计
-- 状态码分布
-- Provider 负载分布
-- 实时活跃请求数
+- Request rate trends
+- P95/P99 latency
+- Token usage statistics
+- Status code distribution
+- Provider load distribution
+- Real-time active request count
 
-详细文档见 [MONITORING.md](MONITORING.md)
+For detailed documentation, see [MONITORING.md](MONITORING.md)
 
-## 项目结构
+## 📁 Project Structure
 
 ```
 app/
 ├── api/          # API routes
-├── core/         # 核心功能（配置、安全、监控）
-├── models/       # Pydantic 数据模型
-├── services/     # 业务逻辑层
-└── utils/        # 工具函数
+├── core/         # Core functionality (config, security, monitoring)
+├── models/       # Pydantic data models
+├── services/     # Business logic layer
+└── utils/        # Utility functions
 
-grafana/          # Grafana 配置和 Dashboard
-prometheus/       # Prometheus 配置
+grafana/          # Grafana configuration and dashboards
+prometheus/       # Prometheus configuration
 ```
 
-详细重构说明见 [REFACTORING.md](REFACTORING.md)
+For detailed architecture notes, see [REFACTORING.md](REFACTORING.md)
 
-## 注意事项
+## 🛠️ Development Guide
 
-- 确保所有提供商使用相同的 API 格式（默认 OpenAI 格式）
-- API key 需要有效且有足够的配额
-- 建议在生产环境中配置 Grafana 告警规则
+### Running Tests
 
-## 相关文档
+```bash
+# Run all tests
+make test
 
-- [REFACTORING.md](REFACTORING.md) - 重构说明和架构设计
-- [MONITORING.md](MONITORING.md) - 监控系统详细文档
-- [DOCKER_USAGE.md](DOCKER_USAGE.md) - Docker 使用指南
+# Generate coverage report
+make coverage
 
-## License
+# Run specific test file
+pytest tests/test_specific.py -v
+```
 
-MIT
+### Code Quality
+
+```bash
+# Format code
+make format
+
+# Lint code
+make lint
+
+# Type checking
+mypy app
+```
+
+### Docker Development
+
+```bash
+# Build Docker image
+docker build -t llm-proxy:dev .
+
+# Run with Docker Compose
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+```
+
+## How It Works
+
+1. The proxy reads multiple API provider configurations from the database
+2. Uses weighted random algorithm to select a provider
+3. Forwards the request to the selected provider
+4. Returns the provider's response to the client
+
+Based on configured weights, requests are distributed proportionally to different providers, achieving load balancing.
+
+## Notes
+
+- Ensure all providers use the same API format (default OpenAI format)
+- API keys must be valid and have sufficient quota
+- It's recommended to configure Grafana alert rules in production environments
+
+## Related Documentation
+
+- [Main README](../README.md) - Complete project documentation
+- [REFACTORING.md](REFACTORING.md) - Architecture design notes
+- [MONITORING.md](MONITORING.md) - Monitoring system documentation
+- [DOCKER_USAGE.md](DOCKER_USAGE.md) - Docker usage guide
+
+## 📄 License
+
+MIT License

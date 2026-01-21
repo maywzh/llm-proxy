@@ -1,6 +1,15 @@
 # LLM Proxy Admin - Svelte
 
-A Svelte-based admin interface for managing LLM Proxy configurations.
+[![Svelte 5](https://img.shields.io/badge/Svelte-5-orange.svg)](https://svelte.dev/)
+[![SvelteKit](https://img.shields.io/badge/SvelteKit-2-orange.svg)](https://kit.svelte.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue.svg)](https://www.typescriptlang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+[中文文档](README_CN.md) | English
+
+A modern, responsive admin interface built with Svelte 5 for managing LLM Proxy configurations, monitoring, and interactive chat.
+
+> For complete project overview, see the [main README](../../README.md)
 
 ## Quick Start
 
@@ -83,8 +92,8 @@ The Chat page allows you to interact with LLM models through the proxy:
    - **Max Tokens**: Maximum response length (100 - 8000, default: 2000)
 3. **Set Credential Key**: Open Settings and set credential key
 4. **Start Chatting**: Type your message and press Enter
-4. **Streaming Responses**: Responses stream in real-time
-5. **Controls**:
+5. **Streaming Responses**: Responses stream in real-time
+6. **Controls**:
    - **Stop**: Interrupt generation at any time
    - **Clear**: Reset conversation history
 
@@ -99,7 +108,7 @@ The Chat page allows you to interact with LLM models through the proxy:
 - Requires valid credential keys configured in the system
 - Chat page requires a credential key input (separate from the admin key)
 - Models are loaded from `/v1/models` using the credential key (respects allowed_models)
- - Image upload is enabled only for allowlisted models via `VITE_CHAT_VISION_MODEL_ALLOWLIST`
+- Image upload is enabled only for allowlisted models via `VITE_CHAT_VISION_MODEL_ALLOWLIST`
 
 ## Troubleshooting
 

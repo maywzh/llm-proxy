@@ -1,5 +1,7 @@
 # LLM Proxy Admin - React
 
+English | [中文文档](README_CN.md)
+
 A React-based admin interface for managing LLM Proxy configurations.
 
 ## Quick Start
