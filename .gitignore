@@ -65,3 +65,6 @@ k8s/
 **/config.*.yaml
 **/config.yaml
 **/config.*.yaml
+
+**/Claude.md
+**/Agents.md
