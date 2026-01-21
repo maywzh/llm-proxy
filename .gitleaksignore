@@ -20,3 +20,8 @@ adc248a45758f41b88736d2e0331d3ec1e5b99ee:python-server/tests/test_rate_limiting.
 # Test script - verify_auth.sh (InvalidFormat is a test case for auth validation)
 599b0d4def362387e69ff01dbe1a08e4cac1fe59:scripts/verify_auth.sh:curl-auth-header:143
 c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:scripts/verify_auth.sh:curl-auth-header:143
+
+# Python server README - curl examples with placeholder auth headers
+c28031f8cd21988acec11c9cd41277a39035a1c0:python-server/README.md:curl-auth-header:181
+c28031f8cd21988acec11c9cd41277a39035a1c0:python-server/README_CN.md:curl-auth-header:169
+c28031f8cd21988acec11c9cd41277a39035a1c0:python-server/README_CN.md:curl-auth-header:181
