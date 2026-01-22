@@ -262,6 +262,29 @@ export interface HealthCheckResponse {
   unhealthy_providers: number;
 }
 
+// Single Provider Health Check Types
+export interface CheckProviderHealthRequest {
+  models?: string[];
+  max_concurrent?: number;
+  timeout_secs?: number;
+}
+
+export interface ProviderHealthSummary {
+  total_models: number;
+  healthy_models: number;
+  unhealthy_models: number;
+}
+
+export interface CheckProviderHealthResponse {
+  provider_id: number;
+  provider_key: string;
+  status: HealthStatus;
+  summary: ProviderHealthSummary;
+  models: ModelHealthStatus[];
+  avg_response_time_ms: number | null;
+  checked_at: string;
+}
+
 // Modal Types
 export type ModalType =
   | 'provider-create'

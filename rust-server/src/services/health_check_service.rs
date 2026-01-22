@@ -4,12 +4,16 @@
 //! to providers with minimal token usage to verify their availability.
 
 use crate::api::health::{HealthStatus, ModelHealthStatus, ProviderHealthStatus};
+use crate::api::models::{
+    CheckProviderHealthResponse, ModelHealthResult, ProviderHealthSummary,
+};
 use crate::core::database::{Database, ProviderEntity};
 use chrono::Utc;
 use reqwest::Client;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 
 /// Service for checking provider health
@@ -85,6 +89,172 @@ impl HealthCheckService {
         }
     }
 
+    /// Check health of a single provider with concurrent model testing
+    ///
+    /// # Arguments
+    ///
+    /// * `provider` - Provider entity to check
+    /// * `models` - Optional list of models to test (None = use all mapped models)
+    /// * `max_concurrent` - Maximum number of models to test concurrently (default: 2)
+    ///
+    /// # Returns
+    ///
+    /// CheckProviderHealthResponse with test results and summary
+    pub async fn check_provider_health_concurrent(
+        &self,
+        provider: &ProviderEntity,
+        models: Option<Vec<String>>,
+        max_concurrent: usize,
+    ) -> CheckProviderHealthResponse {
+        // Check if provider is disabled
+        if !provider.is_enabled {
+            return CheckProviderHealthResponse {
+                provider_id: provider.id,
+                provider_key: provider.provider_key.clone(),
+                status: "disabled".to_string(),
+                models: vec![],
+                summary: ProviderHealthSummary {
+                    total_models: 0,
+                    healthy_models: 0,
+                    unhealthy_models: 0,
+                },
+                avg_response_time_ms: None,
+                checked_at: Utc::now().to_rfc3339(),
+            };
+        }
+
+        // Determine which models to test
+        let test_models = models.unwrap_or_else(|| self.get_all_mapped_models(provider));
+
+        if test_models.is_empty() {
+            return CheckProviderHealthResponse {
+                provider_id: provider.id,
+                provider_key: provider.provider_key.clone(),
+                status: "unknown".to_string(),
+                models: vec![],
+                summary: ProviderHealthSummary {
+                    total_models: 0,
+                    healthy_models: 0,
+                    unhealthy_models: 0,
+                },
+                avg_response_time_ms: None,
+                checked_at: Utc::now().to_rfc3339(),
+            };
+        }
+
+        // Use semaphore to limit concurrent model tests
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+
+        // Create tasks for concurrent model testing
+        let mut tasks = Vec::new();
+        for model in test_models.clone() {
+            let sem = semaphore.clone();
+            let client = self.client.clone();
+            let provider_clone = provider.clone();
+            let timeout_secs = self.timeout_secs;
+
+            tasks.push(tokio::spawn(async move {
+                // Acquire semaphore permit before testing
+                let _permit = sem.acquire().await.unwrap();
+                Self::test_model(&client, &provider_clone, &model, timeout_secs).await
+            }));
+        }
+
+        // Wait for all tasks to complete
+        let results = futures::future::join_all(tasks).await;
+
+        // Process results and convert to ModelHealthResult
+        let mut model_results = Vec::new();
+        let mut model_statuses = Vec::new();
+        for (i, result) in results.into_iter().enumerate() {
+            match result {
+                Ok(status) => {
+                    model_results.push(ModelHealthResult {
+                        model: status.model.clone(),
+                        status: match status.status {
+                            HealthStatus::Healthy => "healthy".to_string(),
+                            HealthStatus::Unhealthy => "unhealthy".to_string(),
+                            HealthStatus::Disabled => "disabled".to_string(),
+                            HealthStatus::Unknown => "unknown".to_string(),
+                        },
+                        response_time_ms: status.response_time_ms,
+                        error: status.error.clone(),
+                    });
+                    model_statuses.push(status);
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, model = %test_models[i], "Error testing model");
+                    let error_status = ModelHealthStatus {
+                        model: test_models[i].clone(),
+                        status: HealthStatus::Unhealthy,
+                        response_time_ms: None,
+                        error: Some(e.to_string()),
+                    };
+                    model_results.push(ModelHealthResult {
+                        model: test_models[i].clone(),
+                        status: "unhealthy".to_string(),
+                        response_time_ms: None,
+                        error: Some(e.to_string()),
+                    });
+                    model_statuses.push(error_status);
+                }
+            }
+        }
+
+        // Calculate summary statistics
+        let healthy_count = model_statuses
+            .iter()
+            .filter(|m| m.status == HealthStatus::Healthy)
+            .count();
+        let unhealthy_count = model_statuses.len() - healthy_count;
+
+        let summary = ProviderHealthSummary {
+            total_models: model_statuses.len(),
+            healthy_models: healthy_count,
+            unhealthy_models: unhealthy_count,
+        };
+
+        // Determine overall provider status
+        let provider_status = self.determine_provider_status(&model_statuses);
+        let status_str = match provider_status {
+            HealthStatus::Healthy => "healthy",
+            HealthStatus::Unhealthy => "unhealthy",
+            HealthStatus::Disabled => "disabled",
+            HealthStatus::Unknown => "unknown",
+        };
+
+        // Calculate average response time
+        let avg_response_time = self.calculate_avg_response_time(&model_statuses);
+
+        CheckProviderHealthResponse {
+            provider_id: provider.id,
+            provider_key: provider.provider_key.clone(),
+            status: status_str.to_string(),
+            models: model_results,
+            summary,
+            avg_response_time_ms: avg_response_time,
+            checked_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    /// Get all models from provider's model mapping
+    ///
+    /// # Arguments
+    ///
+    /// * `provider` - Provider to get models for
+    ///
+    /// # Returns
+    ///
+    /// List of model names (keys from model_mapping)
+    fn get_all_mapped_models(&self, provider: &ProviderEntity) -> Vec<String> {
+        let model_mapping = &provider.model_mapping.0;
+        if model_mapping.is_empty() {
+            vec![]
+        } else {
+            model_mapping.keys().cloned().collect()
+        }
+    }
+
     /// Test a single model on a provider
     ///
     /// # Arguments
@@ -123,13 +293,13 @@ impl HealthCheckService {
         let start_time = Instant::now();
 
         // Make the request with timeout
+        // Note: .json() automatically sets Content-Type: application/json
         let result = timeout(
             Duration::from_secs(timeout_secs),
             client
                 .post(format!("{}/chat/completions", provider.api_base))
-                .json(&test_payload)
                 .header("Authorization", format!("Bearer {}", provider.api_key))
-                .header("Content-Type", "application/json")
+                .json(&test_payload)
                 .send(),
         )
         .await;
@@ -579,5 +749,125 @@ mod tests {
         assert_eq!(result.status, HealthStatus::Disabled);
         assert_eq!(result.models.len(), 0);
         assert_eq!(result.avg_response_time_ms, None);
+    }
+
+    #[tokio::test]
+    async fn test_check_provider_health_concurrent_disabled() {
+        let service = HealthCheckService::new(10);
+        let mut provider = create_test_provider();
+        provider.is_enabled = false;
+
+        let result = service
+            .check_provider_health_concurrent(&provider, None, 2)
+            .await;
+
+        assert_eq!(result.status, "disabled");
+        assert_eq!(result.models.len(), 0);
+        assert_eq!(result.summary.total_models, 0);
+        assert_eq!(result.summary.healthy_models, 0);
+        assert_eq!(result.summary.unhealthy_models, 0);
+        assert_eq!(result.avg_response_time_ms, None);
+    }
+
+    #[tokio::test]
+    async fn test_check_provider_health_concurrent_no_models() {
+        let service = HealthCheckService::new(10);
+        let provider = create_test_provider();
+
+        // Provider has no model mapping, so get_all_mapped_models returns empty
+        let result = service
+            .check_provider_health_concurrent(&provider, None, 2)
+            .await;
+
+        assert_eq!(result.status, "unknown");
+        assert_eq!(result.models.len(), 0);
+        assert_eq!(result.summary.total_models, 0);
+    }
+
+    #[test]
+    fn test_get_all_mapped_models_empty() {
+        let service = HealthCheckService::new(10);
+        let provider = create_test_provider();
+
+        let models = service.get_all_mapped_models(&provider);
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn test_get_all_mapped_models_with_mapping() {
+        let service = HealthCheckService::new(10);
+        let mut provider = create_test_provider();
+        let mut mapping = HashMap::new();
+        mapping.insert("gpt-4".to_string(), "gpt-4-turbo".to_string());
+        mapping.insert("gpt-3.5-turbo".to_string(), "gpt-35-turbo".to_string());
+        provider.model_mapping = sqlx::types::Json(mapping);
+
+        let models = service.get_all_mapped_models(&provider);
+        assert_eq!(models.len(), 2);
+        let model_set: std::collections::HashSet<_> = models.into_iter().collect();
+        assert!(model_set.contains("gpt-4"));
+        assert!(model_set.contains("gpt-3.5-turbo"));
+    }
+
+    #[test]
+    fn test_check_provider_health_request_defaults() {
+        use crate::api::models::CheckProviderHealthRequest;
+
+        let request = CheckProviderHealthRequest::default();
+        assert!(request.models.is_none());
+        assert_eq!(request.max_concurrent, 2);
+        assert_eq!(request.timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_provider_health_summary_creation() {
+        let summary = ProviderHealthSummary {
+            total_models: 5,
+            healthy_models: 3,
+            unhealthy_models: 2,
+        };
+
+        assert_eq!(summary.total_models, 5);
+        assert_eq!(summary.healthy_models, 3);
+        assert_eq!(summary.unhealthy_models, 2);
+    }
+
+    #[test]
+    fn test_model_health_result_creation() {
+        use crate::api::models::ModelHealthResult;
+
+        let result = ModelHealthResult {
+            model: "gpt-4".to_string(),
+            status: "healthy".to_string(),
+            response_time_ms: Some(150),
+            error: None,
+        };
+
+        assert_eq!(result.model, "gpt-4");
+        assert_eq!(result.status, "healthy");
+        assert_eq!(result.response_time_ms, Some(150));
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_check_provider_health_response_creation() {
+        let response = CheckProviderHealthResponse {
+            provider_id: 1,
+            provider_key: "test-provider".to_string(),
+            status: "healthy".to_string(),
+            models: vec![],
+            summary: ProviderHealthSummary {
+                total_models: 0,
+                healthy_models: 0,
+                unhealthy_models: 0,
+            },
+            avg_response_time_ms: None,
+            checked_at: "2024-01-15T10:30:00Z".to_string(),
+        };
+
+        assert_eq!(response.provider_id, 1);
+        assert_eq!(response.provider_key, "test-provider");
+        assert_eq!(response.status, "healthy");
+        assert!(response.models.is_empty());
     }
 }

@@ -28,6 +28,7 @@
   let healthData = $state<HealthCheckResponse | null>(null);
   let lastCheckTime = $state<string | null>(null);
   let checking = $state(false);
+  let checkingProviders: Set<number> = new SvelteSet();
   let error = $state<string | null>(null);
   let expandedProviders: Set<number> = new SvelteSet();
 
@@ -62,32 +63,176 @@
     error = null;
 
     try {
-      const response = await client.checkProvidersHealth({
-        timeout_secs: 30,
-        max_concurrent: 2,
+      // If no health data yet, fetch providers first
+      let providerIds: number[];
+      if (!healthData) {
+        const providersResponse = await client.listProviders();
+        providerIds = providersResponse.providers.map(p => p.id);
+        // Initialize health data with empty providers
+        const initialProviders: import('$lib/types').ProviderHealthStatus[] =
+          providersResponse.providers.map(p => ({
+            provider_id: p.id,
+            provider_key: p.provider_key,
+            status: 'unknown' as import('$lib/types').HealthStatus,
+            models: [],
+            avg_response_time_ms: null,
+            checked_at: new Date().toISOString(),
+          }));
+        healthData = {
+          providers: initialProviders,
+          total_providers: initialProviders.length,
+          healthy_providers: 0,
+          unhealthy_providers: 0,
+        };
+      } else {
+        providerIds = healthData.providers.map(p => p.provider_id);
+      }
+
+      // Check all providers in parallel, updating each as results come in
+      const checkPromises = providerIds.map(async id => {
+        checkingProviders.add(id);
+        checkingProviders = checkingProviders;
+        try {
+          const response = await client.checkProviderHealth(id, {
+            max_concurrent: 2,
+            timeout_secs: 30,
+          });
+
+          // Update this specific provider in healthData
+          if (healthData) {
+            const updatedProviders = healthData.providers.map(p => {
+              if (p.provider_id === id) {
+                return {
+                  provider_id: response.provider_id,
+                  provider_key: response.provider_key,
+                  status: response.status,
+                  models: response.models,
+                  avg_response_time_ms:
+                    response.models.reduce(
+                      (sum: number, m) => sum + (m.response_time_ms || 0),
+                      0
+                    ) / response.models.length || null,
+                  checked_at: response.checked_at,
+                };
+              }
+              return p;
+            });
+
+            const updatedHealthData = {
+              ...healthData,
+              providers: updatedProviders,
+              healthy_providers: updatedProviders.filter(
+                p => p.status === 'healthy'
+              ).length,
+              unhealthy_providers: updatedProviders.filter(
+                p => p.status === 'unhealthy'
+              ).length,
+            };
+
+            healthData = updatedHealthData;
+
+            // Update cache
+            const cache: HealthCheckCache = {
+              timestamp: new Date().toISOString(),
+              data: updatedHealthData,
+            };
+            localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
+
+            // Auto-expand if unhealthy
+            if (response.status === 'unhealthy') {
+              expandedProviders.add(id);
+              expandedProviders = expandedProviders;
+            }
+          }
+        } catch {
+          // Error checking provider - silently continue with other providers
+        } finally {
+          checkingProviders.delete(id);
+          checkingProviders = checkingProviders;
+        }
       });
 
+      await Promise.all(checkPromises);
+
       const timestamp = new Date().toISOString();
-      healthData = response;
       lastCheckTime = timestamp;
-
-      // Save to cache
-      const cache: HealthCheckCache = { timestamp, data: response };
-      localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
-
-      // Auto-expand unhealthy providers
-      if (response.providers) {
-        expandedProviders = new SvelteSet(
-          response.providers
-            .filter(p => p.status === 'unhealthy')
-            .map(p => p.provider_id)
-        );
-      }
     } catch (err) {
       error =
         err instanceof Error ? err.message : 'Failed to check health status';
     } finally {
       checking = false;
+    }
+  }
+
+  async function handleCheckProviderHealth(providerId: number) {
+    const client = auth.apiClient;
+    if (!client) return;
+
+    checkingProviders.add(providerId);
+    checkingProviders = checkingProviders;
+    error = null;
+
+    try {
+      const response = await client.checkProviderHealth(providerId, {
+        max_concurrent: 2,
+        timeout_secs: 30,
+      });
+
+      // Update the provider in healthData
+      if (healthData) {
+        const updatedProviders = healthData.providers.map(p => {
+          if (p.provider_id === providerId) {
+            // Convert CheckProviderHealthResponse to ProviderHealthStatus format
+            return {
+              provider_id: response.provider_id,
+              provider_key: response.provider_key,
+              status: response.status,
+              models: response.models,
+              avg_response_time_ms:
+                response.models.reduce(
+                  (sum: number, m) => sum + (m.response_time_ms || 0),
+                  0
+                ) / response.models.length || null,
+              checked_at: response.checked_at,
+            };
+          }
+          return p;
+        });
+
+        const updatedHealthData = {
+          ...healthData,
+          providers: updatedProviders,
+          healthy_providers: updatedProviders.filter(
+            p => p.status === 'healthy'
+          ).length,
+          unhealthy_providers: updatedProviders.filter(
+            p => p.status === 'unhealthy'
+          ).length,
+        };
+
+        healthData = updatedHealthData;
+
+        // Update cache
+        const cache: HealthCheckCache = {
+          timestamp: lastCheckTime || new Date().toISOString(),
+          data: updatedHealthData,
+        };
+        localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
+
+        // Auto-expand if unhealthy
+        if (response.status === 'unhealthy') {
+          expandedProviders.add(providerId);
+          expandedProviders = expandedProviders;
+        }
+      }
+    } catch (err) {
+      error =
+        err instanceof Error
+          ? err.message
+          : 'Failed to check provider health status';
+    } finally {
+      checkingProviders.delete(providerId);
+      checkingProviders = checkingProviders;
     }
   }
 
@@ -286,10 +431,10 @@
     </div>
   {/if}
 
-  <!-- Providers List -->
-  <div class="card">
-    <div class="card-header flex justify-between items-center">
-      <h2 class="card-title">
+  <!-- Providers Grid -->
+  <div class="space-y-4">
+    <div class="flex justify-between items-center">
+      <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">
         Provider Health Status
         {#if healthData}
           ({healthData.providers.length})
@@ -297,9 +442,11 @@
       </h2>
     </div>
 
-    <div class="card-body p-0">
-      {#if !healthData}
-        <div class="text-center py-12 text-gray-500 dark:text-gray-400">
+    {#if !healthData}
+      <div class="card">
+        <div
+          class="card-body text-center py-12 text-gray-500 dark:text-gray-400"
+        >
           <Activity class="w-12 h-12 mx-auto mb-4 text-gray-400" />
           <p class="mb-2">No health check data available</p>
           <p class="text-sm mb-4">Click "Check Health" to start monitoring</p>
@@ -316,26 +463,23 @@
             {/if}
           </button>
         </div>
-      {:else if healthData.providers.length === 0}
-        <div class="text-center py-12 text-gray-500 dark:text-gray-400">
+      </div>
+    {:else if healthData.providers.length === 0}
+      <div class="card">
+        <div
+          class="card-body text-center py-12 text-gray-500 dark:text-gray-400"
+        >
           No providers configured yet.
         </div>
-      {:else}
-        <div class="divide-y divide-gray-200 dark:divide-gray-700">
-          {#each healthData.providers as provider (provider.provider_id)}
-            <div
-              class="p-4 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-            >
+      </div>
+    {:else}
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {#each healthData.providers as provider (provider.provider_id)}
+          <div class="card hover:shadow-lg transition-shadow">
+            <div class="card-body">
               <!-- Provider Header -->
-              <div
-                class="flex items-center justify-between cursor-pointer"
-                onclick={() => toggleProvider(provider.provider_id)}
-                onkeydown={e =>
-                  e.key === 'Enter' && toggleProvider(provider.provider_id)}
-                role="button"
-                tabindex="0"
-              >
-                <div class="flex items-center space-x-4 flex-1">
+              <div class="flex items-start justify-between mb-4">
+                <div class="flex items-center space-x-3 flex-1 min-w-0">
                   <div class="shrink-0">
                     {#if getStatusIcon(provider.status) === Check}
                       <Check
@@ -356,132 +500,177 @@
                     {/if}
                   </div>
                   <div class="flex-1 min-w-0">
-                    <div class="flex items-center space-x-3">
-                      <h3
-                        class="text-lg font-semibold text-gray-900 dark:text-gray-100"
-                      >
-                        {provider.provider_key}
-                      </h3>
-                      <span class={getStatusBadgeClass(provider.status)}>
-                        {provider.status}
-                      </span>
-                    </div>
-                    <div
-                      class="flex items-center space-x-4 mt-1 text-sm text-gray-600 dark:text-gray-400"
+                    <h3
+                      class="text-lg font-semibold text-gray-900 dark:text-gray-100 truncate"
                     >
-                      <span>ID: {provider.provider_id}</span>
-                      <span>•</span>
-                      <span>
-                        {provider.models.length} model{provider.models
-                          .length !== 1
-                          ? 's'
-                          : ''} tested
-                      </span>
-                      {#if provider.avg_response_time_ms !== null}
-                        <span>•</span>
-                        <span>
-                          Avg: {formatResponseTime(
-                            provider.avg_response_time_ms
-                          )}
-                        </span>
-                      {/if}
-                    </div>
+                      {provider.provider_key}
+                    </h3>
+                    <span class={getStatusBadgeClass(provider.status)}>
+                      {provider.status}
+                    </span>
                   </div>
-                </div>
-                <div class="flex items-center space-x-4">
-                  <div
-                    class="text-right text-sm text-gray-500 dark:text-gray-400"
-                  >
-                    <p>Last checked:</p>
-                    <p>{formatTimestamp(provider.checked_at)}</p>
-                  </div>
-                  <button class="btn-icon">
-                    {#if expandedProviders.has(provider.provider_id)}
-                      <ChevronUp class="w-5 h-5" />
-                    {:else}
-                      <ChevronDown class="w-5 h-5" />
-                    {/if}
-                  </button>
                 </div>
               </div>
 
+              <!-- Provider Stats -->
+              <div class="space-y-2 mb-4">
+                <div class="flex items-center justify-between text-sm">
+                  <span class="text-gray-600 dark:text-gray-400">
+                    Models Tested
+                  </span>
+                  <span class="font-medium text-gray-900 dark:text-gray-100">
+                    {provider.models.length}
+                  </span>
+                </div>
+                {#if provider.avg_response_time_ms !== null}
+                  <div class="flex items-center justify-between text-sm">
+                    <span class="text-gray-600 dark:text-gray-400">
+                      Avg Response
+                    </span>
+                    <span class="font-medium text-gray-900 dark:text-gray-100">
+                      {formatResponseTime(provider.avg_response_time_ms)}
+                    </span>
+                  </div>
+                {/if}
+              </div>
+
+              <!-- Check Button -->
+              <button
+                onclick={e => {
+                  e.stopPropagation();
+                  handleCheckProviderHealth(provider.provider_id);
+                }}
+                disabled={checkingProviders.has(provider.provider_id)}
+                class="btn btn-sm btn-secondary w-full flex items-center justify-center space-x-2 mb-3"
+                title="Check this provider's health"
+              >
+                <RefreshCw
+                  class="w-4 h-4 {checkingProviders.has(provider.provider_id)
+                    ? 'animate-spin'
+                    : ''}"
+                />
+                <span>Check</span>
+              </button>
+
+              <!-- Last Checked -->
+              <div
+                class="text-xs text-gray-500 dark:text-gray-400 text-center border-t border-gray-200 dark:border-gray-700 pt-3"
+              >
+                <div class="flex items-center justify-center space-x-1">
+                  <Clock class="w-3 h-3" />
+                  <span>{formatTimestamp(provider.checked_at)}</span>
+                </div>
+              </div>
+
+              <!-- Expand/Collapse Button -->
+              <button
+                onclick={() => toggleProvider(provider.provider_id)}
+                class="btn btn-sm btn-ghost w-full flex items-center justify-center space-x-2 mt-2"
+              >
+                <span class="text-sm">
+                  {expandedProviders.has(provider.provider_id)
+                    ? 'Hide Details'
+                    : 'Show Details'}
+                </span>
+                {#if expandedProviders.has(provider.provider_id)}
+                  <ChevronUp class="w-4 h-4" />
+                {:else}
+                  <ChevronDown class="w-4 h-4" />
+                {/if}
+              </button>
+
               <!-- Model Details (Expanded) -->
               {#if expandedProviders.has(provider.provider_id)}
-                <div class="mt-4 ml-9 space-y-2">
+                <div
+                  class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700 space-y-2"
+                >
                   <h4
                     class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2"
                   >
                     Model Test Results:
                   </h4>
-                  <div class="space-y-2">
-                    {#each provider.models as model, idx (idx)}
-                      <div
-                        class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-900 rounded-lg"
-                      >
-                        <div class="flex items-center space-x-3">
-                          <div class="shrink-0">
-                            {#if getStatusIcon(model.status) === Check}
-                              <Check
-                                class="w-5 h-5 {getStatusIconClass(
-                                  model.status
-                                )}"
-                              />
-                            {:else if getStatusIcon(model.status) === XCircle}
-                              <XCircle
-                                class="w-5 h-5 {getStatusIconClass(
-                                  model.status
-                                )}"
-                              />
-                            {:else if getStatusIcon(model.status) === MinusCircle}
-                              <MinusCircle
-                                class="w-5 h-5 {getStatusIconClass(
-                                  model.status
-                                )}"
-                              />
-                            {:else}
-                              <HelpCircle
-                                class="w-5 h-5 {getStatusIconClass(
-                                  model.status
-                                )}"
-                              />
-                            {/if}
-                          </div>
-                          <div>
-                            <p
-                              class="font-medium text-gray-900 dark:text-gray-100"
-                            >
-                              {model.model}
-                            </p>
-                            {#if model.error}
+                  {#if checkingProviders.has(provider.provider_id)}
+                    <div
+                      class="flex items-center justify-center p-6 bg-gray-50 dark:bg-gray-900 rounded-lg"
+                    >
+                      <Loader2
+                        class="w-5 h-5 animate-spin text-blue-500 mr-2"
+                      />
+                      <span class="text-sm text-gray-600 dark:text-gray-400">
+                        Checking...
+                      </span>
+                    </div>
+                  {:else}
+                    <div class="space-y-2">
+                      {#each provider.models as model, idx (idx)}
+                        <div class="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
+                          <div class="flex items-center justify-between mb-1">
+                            <div class="flex items-center space-x-2">
+                              <div class="shrink-0">
+                                {#if getStatusIcon(model.status) === Check}
+                                  <Check
+                                    class="w-5 h-5 {getStatusIconClass(
+                                      model.status
+                                    )}"
+                                  />
+                                {:else if getStatusIcon(model.status) === XCircle}
+                                  <XCircle
+                                    class="w-5 h-5 {getStatusIconClass(
+                                      model.status
+                                    )}"
+                                  />
+                                {:else if getStatusIcon(model.status) === MinusCircle}
+                                  <MinusCircle
+                                    class="w-5 h-5 {getStatusIconClass(
+                                      model.status
+                                    )}"
+                                  />
+                                {:else}
+                                  <HelpCircle
+                                    class="w-5 h-5 {getStatusIconClass(
+                                      model.status
+                                    )}"
+                                  />
+                                {/if}
+                              </div>
                               <p
-                                class="text-sm text-red-600 dark:text-red-400 mt-1"
+                                class="font-medium text-sm text-gray-900 dark:text-gray-100 truncate"
                               >
-                                {model.error}
+                                {model.model}
                               </p>
-                            {/if}
-                          </div>
-                        </div>
-                        <div class="flex items-center space-x-4">
-                          <span class={getStatusBadgeClass(model.status)}>
-                            {model.status}
-                          </span>
-                          {#if model.response_time_ms !== null}
+                            </div>
                             <span
-                              class="text-sm text-gray-600 dark:text-gray-400"
+                              class="{getStatusBadgeClass(
+                                model.status
+                              )} text-xs"
+                            >
+                              {model.status}
+                            </span>
+                          </div>
+                          {#if model.response_time_ms !== null}
+                            <div
+                              class="text-xs text-gray-600 dark:text-gray-400"
                             >
                               {formatResponseTime(model.response_time_ms)}
-                            </span>
+                            </div>
+                          {/if}
+                          {#if model.error}
+                            <p
+                              class="text-xs text-red-600 dark:text-red-400 mt-1"
+                            >
+                              {model.error}
+                            </p>
                           {/if}
                         </div>
-                      </div>
-                    {/each}
-                  </div>
+                      {/each}
+                    </div>
+                  {/if}
                 </div>
               {/if}
             </div>
-          {/each}
-        </div>
-      {/if}
-    </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 </div>

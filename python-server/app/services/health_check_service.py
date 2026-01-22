@@ -10,9 +10,11 @@ from loguru import logger
 
 from app.core.database import Database, ProviderModel, get_provider_by_id
 from app.models.health import (
+    CheckProviderHealthResponse,
     HealthStatus,
     ModelHealthStatus,
     ProviderHealthStatus,
+    ProviderHealthSummary,
 )
 
 
@@ -76,6 +78,126 @@ class HealthCheckService:
             checked_at=datetime.utcnow().isoformat() + "Z",
         )
 
+    async def check_provider_health_concurrent(
+        self,
+        provider: ProviderModel,
+        models: Optional[list[str]] = None,
+        max_concurrent: int = 2,
+    ) -> CheckProviderHealthResponse:
+        """Check health of a single provider with concurrent model testing
+
+        Args:
+            provider: Provider model to check
+            models: List of models to test (None = use all mapped models)
+            max_concurrent: Maximum number of models to test concurrently (default: 2)
+
+        Returns:
+            CheckProviderHealthResponse with test results and summary
+        """
+        # Check if provider is disabled
+        if not provider.is_enabled:
+            return CheckProviderHealthResponse(
+                provider_id=provider.id,
+                provider_key=provider.provider_key,
+                status=HealthStatus.DISABLED,
+                models=[],
+                summary=ProviderHealthSummary(
+                    total_models=0,
+                    healthy_models=0,
+                    unhealthy_models=0,
+                ),
+                avg_response_time_ms=None,
+                checked_at=datetime.utcnow().isoformat() + "Z",
+            )
+
+        # Determine which models to test
+        test_models = models or self._get_all_mapped_models(provider)
+
+        if not test_models:
+            return CheckProviderHealthResponse(
+                provider_id=provider.id,
+                provider_key=provider.provider_key,
+                status=HealthStatus.UNKNOWN,
+                models=[],
+                summary=ProviderHealthSummary(
+                    total_models=0,
+                    healthy_models=0,
+                    unhealthy_models=0,
+                ),
+                avg_response_time_ms=None,
+                checked_at=datetime.utcnow().isoformat() + "Z",
+            )
+
+        # Use semaphore to limit concurrent model tests
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def test_with_limit(model: str) -> ModelHealthStatus:
+            """Test a model with concurrency limit"""
+            async with semaphore:
+                return await self._test_model(provider, model)
+
+        # Run all model tests with controlled concurrency
+        results = await asyncio.gather(
+            *[test_with_limit(m) for m in test_models],
+            return_exceptions=True,
+        )
+
+        # Process results and filter out exceptions
+        model_statuses = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Error testing model {test_models[i]}: {result}")
+                model_statuses.append(
+                    ModelHealthStatus(
+                        model=test_models[i],
+                        status=HealthStatus.UNHEALTHY,
+                        response_time_ms=None,
+                        error=str(result),
+                    )
+                )
+            else:
+                model_statuses.append(result)
+
+        # Calculate summary statistics
+        healthy_count = sum(
+            1 for m in model_statuses if m.status == HealthStatus.HEALTHY
+        )
+        unhealthy_count = len(model_statuses) - healthy_count
+
+        summary = ProviderHealthSummary(
+            total_models=len(model_statuses),
+            healthy_models=healthy_count,
+            unhealthy_models=unhealthy_count,
+        )
+
+        # Determine overall provider status
+        provider_status = self._determine_provider_status(model_statuses)
+
+        # Calculate average response time
+        avg_response_time = self._calculate_avg_response_time(model_statuses)
+
+        return CheckProviderHealthResponse(
+            provider_id=provider.id,
+            provider_key=provider.provider_key,
+            status=provider_status,
+            models=model_statuses,
+            summary=summary,
+            avg_response_time_ms=avg_response_time,
+            checked_at=datetime.utcnow().isoformat() + "Z",
+        )
+
+    def _get_all_mapped_models(self, provider: ProviderModel) -> list[str]:
+        """Get all models from provider's model mapping
+
+        Args:
+            provider: Provider to get models for
+
+        Returns:
+            List of model names (keys from model_mapping)
+        """
+        model_mapping = provider.get_model_mapping()
+        return list(model_mapping.keys()) if model_mapping else []
+
     async def _test_model(
         self,
         provider: ProviderModel,
@@ -104,13 +226,13 @@ class HealthCheckService:
         start_time = time.time()
 
         try:
+            # Note: json= parameter automatically sets Content-Type: application/json
             async with httpx.AsyncClient(timeout=self.timeout_secs) as client:
                 response = await client.post(
                     f"{provider.api_base}/chat/completions",
                     json=test_payload,
                     headers={
                         "Authorization": f"Bearer {provider.api_key}",
-                        "Content-Type": "application/json",
                     },
                 )
 

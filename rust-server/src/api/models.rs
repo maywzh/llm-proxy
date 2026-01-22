@@ -184,6 +184,125 @@ pub struct ApiErrorDetail {
     pub code: u16,
 }
 
+/// Request body for checking a single provider's health with concurrent model testing.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "models": ["gpt-4", "gpt-3.5-turbo"],
+    "max_concurrent": 2,
+    "timeout_secs": 30
+}))]
+pub struct CheckProviderHealthRequest {
+    /// Specific models to test. If empty/null, tests ALL models from provider's model_mapping
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
+
+    /// Maximum number of models to test concurrently (default: 2, range: 1-10)
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent: usize,
+
+    /// Timeout for each model test in seconds (default: 30, range: 1-120)
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_max_concurrent() -> usize {
+    2
+}
+
+fn default_timeout_secs() -> u64 {
+    30
+}
+
+impl Default for CheckProviderHealthRequest {
+    fn default() -> Self {
+        Self {
+            models: None,
+            max_concurrent: 2,
+            timeout_secs: 30,
+        }
+    }
+}
+
+/// Summary statistics for provider health check.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "total_models": 3,
+    "healthy_models": 2,
+    "unhealthy_models": 1
+}))]
+pub struct ProviderHealthSummary {
+    /// Total number of models tested
+    pub total_models: usize,
+    /// Number of healthy models
+    pub healthy_models: usize,
+    /// Number of unhealthy models
+    pub unhealthy_models: usize,
+}
+
+/// Response for checking a single provider's health with concurrent model testing.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "provider_id": 1,
+    "provider_key": "openai-primary",
+    "status": "healthy",
+    "models": [{
+        "model": "gpt-4",
+        "status": "healthy",
+        "response_time_ms": 1234,
+        "error": null
+    }, {
+        "model": "gpt-3.5-turbo",
+        "status": "unhealthy",
+        "response_time_ms": 5000,
+        "error": "Timeout after 30s"
+    }],
+    "summary": {
+        "total_models": 2,
+        "healthy_models": 1,
+        "unhealthy_models": 1
+    },
+    "avg_response_time_ms": 3117,
+    "checked_at": "2024-01-15T10:30:00Z"
+}))]
+pub struct CheckProviderHealthResponse {
+    /// Provider ID
+    pub provider_id: i32,
+    /// Provider key identifier
+    pub provider_key: String,
+    /// Overall provider status: healthy, unhealthy, disabled, unknown
+    pub status: String,
+    /// Health status for each tested model
+    pub models: Vec<ModelHealthResult>,
+    /// Summary statistics
+    pub summary: ProviderHealthSummary,
+    /// Average response time across all models in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_response_time_ms: Option<i32>,
+    /// ISO 8601 timestamp of when health check was performed
+    pub checked_at: String,
+}
+
+/// Model health result for the check provider health response.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "model": "gpt-4",
+    "status": "healthy",
+    "response_time_ms": 1234,
+    "error": null
+}))]
+pub struct ModelHealthResult {
+    /// Model name (client-facing, from mapping key)
+    pub model: String,
+    /// Model status: healthy, unhealthy
+    pub status: String,
+    /// Response time in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_time_ms: Option<i32>,
+    /// Error message if unhealthy, null otherwise
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

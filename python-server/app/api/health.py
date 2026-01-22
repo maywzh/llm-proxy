@@ -8,15 +8,20 @@ from loguru import logger
 from app.api.admin import verify_admin_key, get_db, ErrorResponse
 from app.core.database import Database, get_provider_by_id
 from app.models.health import (
+    CheckProviderHealthRequest,
+    CheckProviderHealthResponse,
     HealthCheckRequest,
     HealthCheckResponse,
     ProviderHealthStatus,
     HealthStatus,
 )
-from app.services.health_check_service import check_providers_health
+from app.services.health_check_service import check_providers_health, HealthCheckService
 
 
 router = APIRouter(prefix="/admin/v1/health", tags=["health"])
+
+# Separate router for provider-specific health check endpoint
+provider_health_router = APIRouter(prefix="/admin/v1/providers", tags=["health"])
 
 
 @router.post(
@@ -158,3 +163,78 @@ async def api_get_provider_health(
         )
 
     return health_statuses[0]
+
+
+@provider_health_router.post(
+    "/{provider_id}/health",
+    response_model=CheckProviderHealthResponse,
+    summary="Check provider health with concurrent model testing",
+    description="""Check health status of a specific provider by testing all its mapped models
+with configurable concurrency control. This endpoint makes actual API calls
+with minimal token usage (max_tokens=5) to verify model availability.""",
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": "Invalid request parameters",
+        },
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Provider does not exist",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "Service unavailable - Database not configured",
+        },
+    },
+)
+async def api_check_provider_health_concurrent(
+    provider_id: int,
+    request: CheckProviderHealthRequest = CheckProviderHealthRequest(),
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> CheckProviderHealthResponse:
+    """Check health of a specific provider with concurrent model testing
+
+    This endpoint tests provider availability by making actual API calls
+    with minimal token usage (max_tokens=5) to reduce costs. Models are
+    tested concurrently with configurable concurrency control.
+
+    Args:
+        provider_id: Provider ID to check
+        request: Health check request with optional models, concurrency, and timeout
+
+    Returns:
+        Provider health status with summary statistics
+    """
+    # Get provider
+    provider = await get_provider_by_id(db, provider_id)
+    if not provider:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Provider with ID {provider_id} not found",
+        )
+
+    logger.info(
+        f"Concurrent health check requested for provider {provider_id}: "
+        f"models={request.models}, max_concurrent={request.max_concurrent}, "
+        f"timeout={request.timeout_secs}s"
+    )
+
+    # Create service and check provider health
+    service = HealthCheckService(db, timeout_secs=request.timeout_secs)
+    result = await service.check_provider_health_concurrent(
+        provider=provider,
+        models=request.models,
+        max_concurrent=request.max_concurrent,
+    )
+
+    logger.info(
+        f"Concurrent health check completed for provider {provider_id}: "
+        f"{result.summary.healthy_models}/{result.summary.total_models} healthy"
+    )
+
+    return result

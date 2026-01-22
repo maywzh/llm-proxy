@@ -229,6 +229,7 @@ Full CRUD operations for providers and credentials:
 | `/admin/v1/providers/{id}` | GET | Get provider by ID |
 | `/admin/v1/providers/{id}` | PUT | Update provider |
 | `/admin/v1/providers/{id}` | DELETE | Delete provider |
+| `/admin/v1/providers/{id}/health` | POST | Check provider health with concurrent model testing |
 | `/admin/v1/credentials` | GET | List all credentials |
 | `/admin/v1/credentials` | POST | Create credential |
 | `/admin/v1/credentials/{id}` | GET | Get credential by ID |
