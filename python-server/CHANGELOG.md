@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Provider Health Check API**: New endpoint `POST /admin/v1/providers/{id}/health` for checking provider health
+  - Test all mapped models or specific models with configurable concurrency
+  - Configurable timeout and concurrent request limits
+  - Returns detailed health status for each model including latency and error information
+  - Implemented in [`app/api/health.py`](app/api/health.py) and [`app/services/health_check_service.py`](app/services/health_check_service.py)
+
 ### Fixed
 
 - **Faithful Error Passthrough**: Fixed proxy to faithfully return backend provider errors

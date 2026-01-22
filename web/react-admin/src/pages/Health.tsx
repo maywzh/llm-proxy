@@ -18,6 +18,7 @@ import type {
   ProviderHealthStatus,
   HealthCheckResponse,
   HealthStatus,
+  CheckProviderHealthResponse,
 } from '../types';
 
 const HEALTH_CACHE_KEY = 'llm-proxy-health-check-cache';
@@ -35,6 +36,9 @@ const Health: React.FC = () => {
   const [lastCheckTime, setLastCheckTime] = useState<string | null>(null);
   const [loading] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [checkingProviders, setCheckingProviders] = useState<Set<number>>(
+    new Set()
+  );
   const [error, setError] = useState<string | null>(null);
   const [expandedProviders, setExpandedProviders] = useState<Set<number>>(
     new Set()
@@ -71,28 +75,102 @@ const Health: React.FC = () => {
     setError(null);
 
     try {
-      const response = await apiClient.checkProvidersHealth({
-        timeout_secs: 30,
-        max_concurrent: 2,
+      // If no health data yet, fetch providers first
+      let providerIds: number[];
+      if (!healthData) {
+        const providersResponse = await apiClient.listProviders();
+        providerIds = providersResponse.providers.map(p => p.id);
+        // Initialize health data with empty providers
+        const initialProviders: ProviderHealthStatus[] =
+          providersResponse.providers.map(p => ({
+            provider_id: p.id,
+            provider_key: p.provider_key,
+            status: 'unknown' as HealthStatus,
+            models: [],
+            avg_response_time_ms: null,
+            checked_at: new Date().toISOString(),
+          }));
+        setHealthData({
+          providers: initialProviders,
+          total_providers: initialProviders.length,
+          healthy_providers: 0,
+          unhealthy_providers: 0,
+        });
+      } else {
+        providerIds = healthData.providers.map(p => p.provider_id);
+      }
+
+      // Check all providers in parallel, updating each as results come in
+      const checkPromises = providerIds.map(async id => {
+        setCheckingProviders(prev => new Set(prev).add(id));
+        try {
+          const response = await apiClient.checkProviderHealth(id, {
+            max_concurrent: 2,
+            timeout_secs: 30,
+          });
+
+          // Update this specific provider in healthData
+          setHealthData(prev => {
+            if (!prev) return prev;
+
+            const updatedProviders = prev.providers.map(p => {
+              if (p.provider_id === id) {
+                return {
+                  provider_id: response.provider_id,
+                  provider_key: response.provider_key,
+                  status: response.status,
+                  models: response.models,
+                  avg_response_time_ms:
+                    response.models.reduce(
+                      (sum, m) => sum + (m.response_time_ms || 0),
+                      0
+                    ) / response.models.length || null,
+                  checked_at: response.checked_at,
+                };
+              }
+              return p;
+            });
+
+            const updatedHealthData = {
+              ...prev,
+              providers: updatedProviders,
+              healthy_providers: updatedProviders.filter(
+                p => p.status === 'healthy'
+              ).length,
+              unhealthy_providers: updatedProviders.filter(
+                p => p.status === 'unhealthy'
+              ).length,
+            };
+
+            // Update cache
+            const cache: HealthCheckCache = {
+              timestamp: new Date().toISOString(),
+              data: updatedHealthData,
+            };
+            localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
+
+            // Auto-expand if unhealthy
+            if (response.status === 'unhealthy') {
+              setExpandedProviders(prev => new Set(prev).add(id));
+            }
+
+            return updatedHealthData;
+          });
+        } catch {
+          // Error handled silently - provider status remains unchanged
+        } finally {
+          setCheckingProviders(prev => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        }
       });
 
+      await Promise.all(checkPromises);
+
       const timestamp = new Date().toISOString();
-      setHealthData(response);
       setLastCheckTime(timestamp);
-
-      // Save to cache
-      const cache: HealthCheckCache = { timestamp, data: response };
-      localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
-
-      // Auto-expand unhealthy providers
-      if (response.providers) {
-        const unhealthyIds = new Set(
-          response.providers
-            .filter(p => p.status === 'unhealthy')
-            .map(p => p.provider_id)
-        );
-        setExpandedProviders(unhealthyIds);
-      }
     } catch (err) {
       setError(
         err instanceof Error ? err.message : 'Failed to check health status'
@@ -100,7 +178,84 @@ const Health: React.FC = () => {
     } finally {
       setChecking(false);
     }
-  }, [apiClient]);
+  }, [apiClient, healthData]);
+
+  const handleCheckProviderHealth = useCallback(
+    async (providerId: number) => {
+      if (!apiClient) return;
+
+      setCheckingProviders(prev => new Set(prev).add(providerId));
+      setError(null);
+
+      try {
+        const response: CheckProviderHealthResponse =
+          await apiClient.checkProviderHealth(providerId, {
+            max_concurrent: 2,
+            timeout_secs: 30,
+          });
+
+        // Update the provider in healthData
+        if (healthData) {
+          const updatedProviders = healthData.providers.map(p => {
+            if (p.provider_id === providerId) {
+              // Convert CheckProviderHealthResponse to ProviderHealthStatus format
+              return {
+                provider_id: response.provider_id,
+                provider_key: response.provider_key,
+                status: response.status,
+                models: response.models,
+                avg_response_time_ms:
+                  response.models.reduce(
+                    (sum, m) => sum + (m.response_time_ms || 0),
+                    0
+                  ) / response.models.length || null,
+                checked_at: response.checked_at,
+              };
+            }
+            return p;
+          });
+
+          const updatedHealthData = {
+            ...healthData,
+            providers: updatedProviders,
+            healthy_providers: updatedProviders.filter(
+              p => p.status === 'healthy'
+            ).length,
+            unhealthy_providers: updatedProviders.filter(
+              p => p.status === 'unhealthy'
+            ).length,
+          };
+
+          setHealthData(updatedHealthData);
+
+          // Update cache
+          const cache: HealthCheckCache = {
+            timestamp: lastCheckTime || new Date().toISOString(),
+            data: updatedHealthData,
+          };
+          localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
+
+          // Auto-expand if unhealthy
+          if (response.status === 'unhealthy') {
+            setExpandedProviders(prev => new Set(prev).add(providerId));
+          }
+        }
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Failed to check provider health status'
+        );
+      } finally {
+        setCheckingProviders(prev => {
+          const next = new Set(prev);
+          next.delete(providerId);
+          return next;
+        });
+      }
+    },
+    [apiClient, healthData, lastCheckTime]
+  );
 
   const toggleProvider = (providerId: number) => {
     setExpandedProviders(prev => {
@@ -285,10 +440,10 @@ const Health: React.FC = () => {
         </div>
       )}
 
-      {/* Providers List */}
-      <div className="card">
-        <div className="card-header flex justify-between items-center">
-          <h2 className="card-title">
+      {/* Providers Grid */}
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100">
             Provider Health Status
             {healthData && ` (${healthData.providers.length})`}
           </h2>
@@ -300,9 +455,9 @@ const Health: React.FC = () => {
           )}
         </div>
 
-        <div className="card-body p-0">
-          {!healthData ? (
-            <div className="text-center py-12 text-gray-500 dark:text-gray-400">
+        {!healthData ? (
+          <div className="card">
+            <div className="card-body text-center py-12 text-gray-500 dark:text-gray-400">
               <Activity className="w-12 h-12 mx-auto mb-4 text-gray-400" />
               <p className="mb-2">No health check data available</p>
               <p className="text-sm mb-4">
@@ -323,122 +478,157 @@ const Health: React.FC = () => {
                 )}
               </button>
             </div>
-          ) : healthData.providers.length === 0 ? (
-            <div className="text-center py-12 text-gray-500 dark:text-gray-400">
+          </div>
+        ) : healthData.providers.length === 0 ? (
+          <div className="card">
+            <div className="card-body text-center py-12 text-gray-500 dark:text-gray-400">
               No providers configured yet.
             </div>
-          ) : (
-            <div className="divide-y divide-gray-200 dark:divide-gray-700">
-              {healthData.providers.map((provider: ProviderHealthStatus) => (
-                <div
-                  key={provider.provider_id}
-                  className="p-4 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-                >
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {healthData.providers.map((provider: ProviderHealthStatus) => (
+              <div
+                key={provider.provider_id}
+                className="card hover:shadow-lg transition-shadow"
+              >
+                <div className="card-body">
                   {/* Provider Header */}
-                  <div
-                    className="flex items-center justify-between cursor-pointer"
-                    onClick={() => toggleProvider(provider.provider_id)}
-                  >
-                    <div className="flex items-center space-x-4 flex-1">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center space-x-3 flex-1 min-w-0">
                       <div className="shrink-0">
                         {getStatusIcon(provider.status)}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center space-x-3">
-                          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                            {provider.provider_key}
-                          </h3>
-                          <span
-                            className={getStatusBadgeClass(provider.status)}
-                          >
-                            {provider.status}
-                          </span>
-                        </div>
-                        <div className="flex items-center space-x-4 mt-1 text-sm text-gray-600 dark:text-gray-400">
-                          <span>ID: {provider.provider_id}</span>
-                          <span>•</span>
-                          <span>
-                            {provider.models.length} model
-                            {provider.models.length !== 1 ? 's' : ''} tested
-                          </span>
-                          {provider.avg_response_time_ms !== null && (
-                            <>
-                              <span>•</span>
-                              <span>
-                                Avg:{' '}
-                                {formatResponseTime(
-                                  provider.avg_response_time_ms
-                                )}
-                              </span>
-                            </>
-                          )}
-                        </div>
+                        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 truncate">
+                          {provider.provider_key}
+                        </h3>
+                        <span className={getStatusBadgeClass(provider.status)}>
+                          {provider.status}
+                        </span>
                       </div>
-                    </div>
-                    <div className="flex items-center space-x-4">
-                      <div className="text-right text-sm text-gray-500 dark:text-gray-400">
-                        <p>Last checked:</p>
-                        <p>{formatTimestamp(provider.checked_at)}</p>
-                      </div>
-                      <button className="btn-icon">
-                        {expandedProviders.has(provider.provider_id) ? (
-                          <ChevronUp className="w-5 h-5" />
-                        ) : (
-                          <ChevronDown className="w-5 h-5" />
-                        )}
-                      </button>
                     </div>
                   </div>
 
+                  {/* Provider Stats */}
+                  <div className="space-y-2 mb-4">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-gray-600 dark:text-gray-400">
+                        Models Tested
+                      </span>
+                      <span className="font-medium text-gray-900 dark:text-gray-100">
+                        {provider.models.length}
+                      </span>
+                    </div>
+                    {provider.avg_response_time_ms !== null && (
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-gray-600 dark:text-gray-400">
+                          Avg Response
+                        </span>
+                        <span className="font-medium text-gray-900 dark:text-gray-100">
+                          {formatResponseTime(provider.avg_response_time_ms)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Check Button */}
+                  <button
+                    onClick={e => {
+                      e.stopPropagation();
+                      handleCheckProviderHealth(provider.provider_id);
+                    }}
+                    disabled={checkingProviders.has(provider.provider_id)}
+                    className="btn btn-sm btn-secondary w-full flex items-center justify-center space-x-2 mb-3"
+                    title="Check this provider's health"
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 ${checkingProviders.has(provider.provider_id) ? 'animate-spin' : ''}`}
+                    />
+                    <span>Check</span>
+                  </button>
+
+                  {/* Last Checked */}
+                  <div className="text-xs text-gray-500 dark:text-gray-400 text-center border-t border-gray-200 dark:border-gray-700 pt-3">
+                    <div className="flex items-center justify-center space-x-1">
+                      <Clock className="w-3 h-3" />
+                      <span>{formatTimestamp(provider.checked_at)}</span>
+                    </div>
+                  </div>
+
+                  {/* Expand/Collapse Button */}
+                  <button
+                    onClick={() => toggleProvider(provider.provider_id)}
+                    className="btn btn-sm btn-ghost w-full flex items-center justify-center space-x-2 mt-2"
+                  >
+                    <span className="text-sm">
+                      {expandedProviders.has(provider.provider_id)
+                        ? 'Hide Details'
+                        : 'Show Details'}
+                    </span>
+                    {expandedProviders.has(provider.provider_id) ? (
+                      <ChevronUp className="w-4 h-4" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4" />
+                    )}
+                  </button>
+
                   {/* Model Details (Expanded) */}
                   {expandedProviders.has(provider.provider_id) && (
-                    <div className="mt-4 ml-9 space-y-2">
+                    <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700 space-y-2">
                       <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
                         Model Test Results:
                       </h4>
-                      <div className="space-y-2">
-                        {provider.models.map((model, idx) => (
-                          <div
-                            key={idx}
-                            className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-900 rounded-lg"
-                          >
-                            <div className="flex items-center space-x-3">
-                              <div className="shrink-0">
-                                {getStatusIcon(model.status)}
-                              </div>
-                              <div>
-                                <p className="font-medium text-gray-900 dark:text-gray-100">
-                                  {model.model}
-                                </p>
-                                {model.error && (
-                                  <p className="text-sm text-red-600 dark:text-red-400 mt-1">
-                                    {model.error}
+                      {checkingProviders.has(provider.provider_id) ? (
+                        <div className="flex items-center justify-center p-6 bg-gray-50 dark:bg-gray-900 rounded-lg">
+                          <Loader2 className="w-5 h-5 animate-spin text-blue-500 mr-2" />
+                          <span className="text-sm text-gray-600 dark:text-gray-400">
+                            Checking...
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {provider.models.map((model, idx) => (
+                            <div
+                              key={idx}
+                              className="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg"
+                            >
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="flex items-center space-x-2">
+                                  <div className="shrink-0">
+                                    {getStatusIcon(model.status)}
+                                  </div>
+                                  <p className="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">
+                                    {model.model}
                                   </p>
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex items-center space-x-4">
-                              <span
-                                className={getStatusBadgeClass(model.status)}
-                              >
-                                {model.status}
-                              </span>
-                              {model.response_time_ms !== null && (
-                                <span className="text-sm text-gray-600 dark:text-gray-400">
-                                  {formatResponseTime(model.response_time_ms)}
+                                </div>
+                                <span
+                                  className={`${getStatusBadgeClass(model.status)} text-xs`}
+                                >
+                                  {model.status}
                                 </span>
+                              </div>
+                              {model.response_time_ms !== null && (
+                                <div className="text-xs text-gray-600 dark:text-gray-400">
+                                  {formatResponseTime(model.response_time_ms)}
+                                </div>
+                              )}
+                              {model.error && (
+                                <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                                  {model.error}
+                                </p>
                               )}
                             </div>
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

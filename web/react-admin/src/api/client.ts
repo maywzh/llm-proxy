@@ -24,6 +24,8 @@ import type {
   HealthCheckRequest,
   HealthCheckResponse,
   ProviderHealthStatus,
+  CheckProviderHealthRequest,
+  CheckProviderHealthResponse,
 } from '../types';
 
 export class ApiClient {
@@ -233,6 +235,19 @@ export class ApiClient {
     const queryString = params.toString();
     const endpoint = `/admin/v1/health/providers/${providerId}${queryString ? `?${queryString}` : ''}`;
     return this.request<ProviderHealthStatus>(endpoint);
+  }
+
+  async checkProviderHealth(
+    providerId: number,
+    request?: CheckProviderHealthRequest
+  ): Promise<CheckProviderHealthResponse> {
+    return this.request<CheckProviderHealthResponse>(
+      `/admin/v1/providers/${providerId}/health`,
+      {
+        method: 'POST',
+        body: JSON.stringify(request || {}),
+      }
+    );
   }
 
   // Chat API
