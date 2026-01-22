@@ -14,7 +14,8 @@ use std::sync::Arc;
 use utoipa::ToSchema;
 
 use crate::api::admin::{verify_admin_auth, AdminError, AdminState};
-use crate::services::health_check_service::check_providers_health;
+use crate::api::models::{CheckProviderHealthRequest, CheckProviderHealthResponse};
+use crate::services::health_check_service::{check_providers_health, HealthCheckService};
 
 /// Health status enum
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
@@ -298,9 +299,85 @@ pub async fn get_provider_health(
     Ok(Json(health_statuses[0].clone()))
 }
 
+/// Check provider health with concurrent model testing
+///
+/// Check health status of a specific provider by testing all its mapped models
+/// with configurable concurrency control. This endpoint makes actual API calls
+/// with minimal token usage (max_tokens=5) to verify model availability.
+#[utoipa::path(
+    post,
+    path = "/admin/v1/providers/{provider_id}/health",
+    tag = "health",
+    params(
+        ("provider_id" = i32, Path, description = "Provider ID")
+    ),
+    request_body = CheckProviderHealthRequest,
+    responses(
+        (status = 200, description = "Health check completed", body = CheckProviderHealthResponse),
+        (status = 400, description = "Invalid request parameters", body = crate::api::admin::AdminErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::api::admin::AdminErrorResponse),
+        (status = 404, description = "Provider not found", body = crate::api::admin::AdminErrorResponse)
+    )
+)]
+pub async fn check_provider_health_concurrent(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(provider_id): Path<i32>,
+    Json(request): Json<CheckProviderHealthRequest>,
+) -> Result<Json<CheckProviderHealthResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    // Get provider to verify it exists
+    let db = state.dynamic_config.database();
+    let provider = db
+        .get_provider(provider_id)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("Provider with ID {} not found", provider_id)))?;
+
+    // Validate request parameters
+    if request.max_concurrent < 1 || request.max_concurrent > 10 {
+        return Err(AdminError::BadRequest(
+            "max_concurrent must be between 1 and 10".to_string(),
+        ));
+    }
+    if request.timeout_secs < 1 || request.timeout_secs > 120 {
+        return Err(AdminError::BadRequest(
+            "timeout_secs must be between 1 and 120".to_string(),
+        ));
+    }
+
+    tracing::info!(
+        provider_id = provider_id,
+        models = ?request.models,
+        max_concurrent = request.max_concurrent,
+        timeout_secs = request.timeout_secs,
+        "Concurrent health check requested for provider"
+    );
+
+    // Create service and check provider health
+    let service = HealthCheckService::new(request.timeout_secs);
+    let result = service
+        .check_provider_health_concurrent(&provider, request.models, request.max_concurrent)
+        .await;
+
+    tracing::info!(
+        provider_id = provider_id,
+        healthy_models = result.summary.healthy_models,
+        total_models = result.summary.total_models,
+        "Concurrent health check completed for provider"
+    );
+
+    Ok(Json(result))
+}
+
 /// Create health check router
 pub fn health_router() -> Router<Arc<AdminState>> {
     Router::new()
         .route("/check", post(check_health))
         .route("/providers/:provider_id", get(get_provider_health))
+}
+
+/// Create provider health router (for /admin/v1/providers/{id}/health endpoint)
+pub fn provider_health_router() -> Router<Arc<AdminState>> {
+    Router::new().route("/:provider_id/health", post(check_provider_health_concurrent))
 }

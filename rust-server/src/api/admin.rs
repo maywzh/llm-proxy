@@ -38,6 +38,7 @@ use crate::core::database::{
         reload_config,
         crate::api::health::check_health,
         crate::api::health::get_provider_health,
+        crate::api::health::check_provider_health_concurrent,
     ),
     components(
         schemas(
@@ -57,6 +58,10 @@ use crate::core::database::{
             crate::api::health::ProviderHealthStatus,
             crate::api::health::HealthCheckRequest,
             crate::api::health::HealthCheckResponse,
+            crate::api::models::CheckProviderHealthRequest,
+            crate::api::models::CheckProviderHealthResponse,
+            crate::api::models::ProviderHealthSummary,
+            crate::api::models::ModelHealthResult,
         )
     ),
     tags(
@@ -1097,7 +1102,7 @@ pub async fn reload_config(
 
 /// Create Admin API router
 pub fn admin_router(state: Arc<AdminState>) -> Router {
-    use crate::api::health::health_router;
+    use crate::api::health::{health_router, provider_health_router};
     
     Router::new()
         // Auth routes
@@ -1110,6 +1115,8 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
                 .put(update_provider)
                 .delete(delete_provider),
         )
+        // Provider health check route (POST /admin/v1/providers/{id}/health)
+        .nest("/providers", provider_health_router())
         // Credential routes
         .route("/credentials", get(list_credentials).post(create_credential))
         .route(

@@ -44,6 +44,7 @@ PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=
 ## Features
 
 - **Provider Management**: Create, edit, delete, and toggle LLM providers
+  - **Health Check**: Test provider connectivity and model availability with concurrent testing
 - **Credential Management**: Manage API keys with rate limiting and model restrictions
 - **Chat Interface**: Interactive chat with LLM models using streaming responses
   - Model selection from all available providers
@@ -161,4 +162,4 @@ The Dashboard page embeds a Grafana Public Dashboard via iframe. To enable:
 
 ---
 
-Last Updated: 2025-01-15 08:54 (Asia/Shanghai)
+Last Updated: 2026-01-15 15:05 (Asia/Shanghai)

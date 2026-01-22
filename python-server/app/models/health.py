@@ -140,3 +140,103 @@ class HealthCheckResponse(BaseModel):
     total_providers: int = Field(..., description="Total number of providers checked")
     healthy_providers: int = Field(..., description="Number of healthy providers")
     unhealthy_providers: int = Field(..., description="Number of unhealthy providers")
+
+
+class CheckProviderHealthRequest(BaseModel):
+    """Request body for checking a single provider's health with concurrent model testing"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "models": ["gpt-4", "gpt-3.5-turbo"],
+                "max_concurrent": 2,
+                "timeout_secs": 30,
+            }
+        }
+    )
+
+    models: Optional[list[str]] = Field(
+        None,
+        description="Specific models to test. If empty/null, tests ALL models from provider's model_mapping",
+    )
+    max_concurrent: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        description="Maximum number of models to test concurrently (default: 2)",
+    )
+    timeout_secs: int = Field(
+        default=30,
+        ge=1,
+        le=120,
+        description="Timeout for each model test in seconds (default: 30)",
+    )
+
+
+class ProviderHealthSummary(BaseModel):
+    """Summary statistics for provider health check"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "total_models": 3,
+                "healthy_models": 2,
+                "unhealthy_models": 1,
+            }
+        }
+    )
+
+    total_models: int = Field(..., description="Total number of models tested")
+    healthy_models: int = Field(..., description="Number of healthy models")
+    unhealthy_models: int = Field(..., description="Number of unhealthy models")
+
+
+class CheckProviderHealthResponse(BaseModel):
+    """Response for checking a single provider's health with concurrent model testing"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "provider_id": 1,
+                "provider_key": "openai-primary",
+                "status": "healthy",
+                "models": [
+                    {
+                        "model": "gpt-4",
+                        "status": "healthy",
+                        "response_time_ms": 1234,
+                        "error": None,
+                    },
+                    {
+                        "model": "gpt-3.5-turbo",
+                        "status": "unhealthy",
+                        "response_time_ms": 5000,
+                        "error": "Timeout after 30s",
+                    },
+                ],
+                "summary": {
+                    "total_models": 2,
+                    "healthy_models": 1,
+                    "unhealthy_models": 1,
+                },
+                "avg_response_time_ms": 3117,
+                "checked_at": "2024-01-15T10:30:00Z",
+            }
+        }
+    )
+
+    provider_id: int = Field(..., description="Provider ID")
+    provider_key: str = Field(..., description="Provider key identifier")
+    status: HealthStatus = Field(
+        ..., description="Overall provider status: healthy, unhealthy, disabled, unknown"
+    )
+    models: list[ModelHealthStatus] = Field(
+        ..., description="Health status for each tested model"
+    )
+    summary: ProviderHealthSummary = Field(..., description="Summary statistics")
+    avg_response_time_ms: Optional[int] = Field(
+        None, description="Average response time across all models in milliseconds"
+    )
+    checked_at: str = Field(
+        ..., description="ISO 8601 timestamp of when health check was performed"
+    )

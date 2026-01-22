@@ -432,6 +432,16 @@ curl -X PUT http://localhost:18000/admin/v1/providers/openai-main \
 curl -X DELETE http://localhost:18000/admin/v1/providers/openai-main \
   -H "Authorization: Bearer $ADMIN_KEY"
 
+# Check Provider Health
+curl -X POST http://localhost:18000/admin/v1/providers/1/health \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "models": ["gpt-4", "gpt-3.5-turbo"],
+    "max_concurrent": 2,
+    "timeout_secs": 30
+  }'
+
 # Create a Master Key
 curl -X POST http://localhost:18000/admin/v1/master-keys \
   -H "Authorization: Bearer $ADMIN_KEY" \
