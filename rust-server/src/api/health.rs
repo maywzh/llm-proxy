@@ -199,6 +199,7 @@ pub async fn check_health(
     // Check providers health
     let health_statuses = check_providers_health(
         state.dynamic_config.database(),
+        &state.http_client,
         request.provider_ids,
         request.models,
         request.timeout_secs,
@@ -283,6 +284,7 @@ pub async fn get_provider_health(
     // Check provider health (use default max_concurrent=2 for single provider)
     let health_statuses = check_providers_health(
         db,
+        &state.http_client,
         Some(vec![provider_id]),
         model_list,
         query.timeout_secs,
@@ -355,7 +357,7 @@ pub async fn check_provider_health_concurrent(
     );
 
     // Create service and check provider health
-    let service = HealthCheckService::new(request.timeout_secs);
+    let service = HealthCheckService::new(state.http_client.clone(), request.timeout_secs);
     let result = service
         .check_provider_health_concurrent(&provider, request.models, request.max_concurrent)
         .await;

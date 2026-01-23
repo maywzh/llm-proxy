@@ -189,6 +189,7 @@ impl utoipa::Modify for SecurityAddon {
 pub struct AdminState {
     pub dynamic_config: Arc<DynamicConfig>,
     pub admin_key: String,
+    pub http_client: reqwest::Client,
 }
 
 /// Verify admin authentication
