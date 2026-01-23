@@ -9,6 +9,7 @@ import httpx
 from loguru import logger
 
 from app.core.database import Database, ProviderModel, get_provider_by_id
+from app.core.http_client import get_http_client
 from app.models.health import (
     CheckProviderHealthResponse,
     HealthStatus,
@@ -226,40 +227,41 @@ class HealthCheckService:
         start_time = time.time()
 
         try:
-            # Note: json= parameter automatically sets Content-Type: application/json
-            async with httpx.AsyncClient(timeout=self.timeout_secs) as client:
-                response = await client.post(
-                    f"{provider.api_base}/chat/completions",
-                    json=test_payload,
-                    headers={
-                        "Authorization": f"Bearer {provider.api_key}",
-                    },
+            # Use shared HTTP client with per-request timeout override
+            client = get_http_client()
+            response = await client.post(
+                f"{provider.api_base}/chat/completions",
+                json=test_payload,
+                headers={
+                    "Authorization": f"Bearer {provider.api_key}",
+                },
+                timeout=self.timeout_secs,
+            )
+
+            elapsed_ms = int((time.time() - start_time) * 1000)
+
+            if response.status_code == 200:
+                return ModelHealthStatus(
+                    model=model,
+                    status=HealthStatus.HEALTHY,
+                    response_time_ms=elapsed_ms,
+                    error=None,
                 )
+            else:
+                error_msg = f"HTTP {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "error" in error_data:
+                        error_msg = error_data["error"].get("message", error_msg)
+                except Exception:
+                    pass
 
-                elapsed_ms = int((time.time() - start_time) * 1000)
-
-                if response.status_code == 200:
-                    return ModelHealthStatus(
-                        model=model,
-                        status=HealthStatus.HEALTHY,
-                        response_time_ms=elapsed_ms,
-                        error=None,
-                    )
-                else:
-                    error_msg = f"HTTP {response.status_code}"
-                    try:
-                        error_data = response.json()
-                        if "error" in error_data:
-                            error_msg = error_data["error"].get("message", error_msg)
-                    except Exception:
-                        pass
-
-                    return ModelHealthStatus(
-                        model=model,
-                        status=HealthStatus.UNHEALTHY,
-                        response_time_ms=elapsed_ms,
-                        error=error_msg,
-                    )
+                return ModelHealthStatus(
+                    model=model,
+                    status=HealthStatus.UNHEALTHY,
+                    response_time_ms=elapsed_ms,
+                    error=error_msg,
+                )
 
         except asyncio.TimeoutError:
             elapsed_ms = int((time.time() - start_time) * 1000)

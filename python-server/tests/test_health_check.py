@@ -99,12 +99,10 @@ class TestHealthCheckService:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
             mock_client.post.return_value = mock_response
-            mock_client_class.return_value = mock_client
+            mock_get_client.return_value = mock_client
 
             result = await service.check_provider_health(
                 mock_provider, models=["gpt-4"]
@@ -122,12 +120,10 @@ class TestHealthCheckService:
     @pytest.mark.asyncio
     async def test_check_provider_health_timeout(self, service, mock_provider):
         """Test health check with timeout"""
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
             mock_client.post.side_effect = asyncio.TimeoutError()
-            mock_client_class.return_value = mock_client
+            mock_get_client.return_value = mock_client
 
             result = await service.check_provider_health(
                 mock_provider, models=["gpt-4"]
@@ -145,12 +141,10 @@ class TestHealthCheckService:
         mock_response.status_code = 401
         mock_response.json.return_value = {"error": {"message": "Invalid API key"}}
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
             mock_client.post.return_value = mock_response
-            mock_client_class.return_value = mock_client
+            mock_get_client.return_value = mock_client
 
             result = await service.check_provider_health(
                 mock_provider, models=["gpt-4"]
@@ -373,12 +367,10 @@ class TestConcurrentHealthCheck:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
             mock_client.post.return_value = mock_response
-            mock_client_class.return_value = mock_client
+            mock_get_client.return_value = mock_client
 
             result = await service.check_provider_health_concurrent(
                 mock_provider, models=["gpt-4", "gpt-3.5-turbo"], max_concurrent=2
@@ -410,12 +402,10 @@ class TestConcurrentHealthCheck:
                 mock_response.json.return_value = {"error": {"message": "Invalid key"}}
             return mock_response
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
             mock_client.post = mock_post
-            mock_client_class.return_value = mock_client
+            mock_get_client.return_value = mock_client
 
             result = await service.check_provider_health_concurrent(
                 mock_provider, models=["gpt-4", "gpt-3.5-turbo"], max_concurrent=2
@@ -434,12 +424,10 @@ class TestConcurrentHealthCheck:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
             mock_client.post.return_value = mock_response
-            mock_client_class.return_value = mock_client
+            mock_get_client.return_value = mock_client
 
             # Don't specify models - should test all mapped models
             result = await service.check_provider_health_concurrent(
@@ -489,12 +477,10 @@ class TestConcurrentHealthCheck:
             mock_response.status_code = 200
             return mock_response
 
-        with patch("httpx.AsyncClient") as mock_client_class:
+        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
             mock_client.post = mock_post
-            mock_client_class.return_value = mock_client
+            mock_get_client.return_value = mock_client
 
             # Test with max_concurrent=2 and 3 models
             await service.check_provider_health_concurrent(

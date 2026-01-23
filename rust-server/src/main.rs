@@ -118,18 +118,19 @@ async fn async_main() -> Result<()> {
     // Create dynamic config manager
     let dynamic_config = Arc::new(DynamicConfig::new(runtime_config, db.clone()));
 
-    // Create admin state
-    let admin_state = Arc::new(AdminState {
-        dynamic_config: dynamic_config.clone(),
-        admin_key,
-    });
-
     // Get server config from environment
     let base_config = AppConfig::from_env()?;
     let port = base_config.server.port;
 
     // Create HTTP client
     let http_client = create_http_client(&base_config);
+
+    // Create admin state
+    let admin_state = Arc::new(AdminState {
+        dynamic_config: dynamic_config.clone(),
+        admin_key,
+        http_client: http_client.clone(),
+    });
 
     // Build router
     let app = build_router(dynamic_config, admin_state, base_config, http_client);

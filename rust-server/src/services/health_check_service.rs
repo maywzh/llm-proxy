@@ -24,12 +24,7 @@ pub struct HealthCheckService {
 
 impl HealthCheckService {
     /// Create a new health check service
-    pub fn new(timeout_secs: u64) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
-            .build()
-            .unwrap_or_else(|_| Client::new());
-
+    pub fn new(client: Client, timeout_secs: u64) -> Self {
         Self {
             client,
             timeout_secs,
@@ -462,6 +457,7 @@ impl HealthCheckService {
 /// # Arguments
 ///
 /// * `db` - Database instance
+/// * `client` - HTTP client to use for health checks
 /// * `provider_ids` - Optional list of provider IDs to check (None = all enabled providers)
 /// * `models` - Optional list of models to test (None = default test models)
 /// * `timeout_secs` - Timeout for each model test
@@ -472,6 +468,7 @@ impl HealthCheckService {
 /// List of provider health statuses
 pub async fn check_providers_health(
     db: &Arc<Database>,
+    client: &Client,
     provider_ids: Option<Vec<i32>>,
     models: Option<Vec<String>>,
     timeout_secs: u64,
@@ -493,14 +490,14 @@ pub async fn check_providers_health(
 
     // Use semaphore to limit concurrent provider checks
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
-    
+
     // Check all providers with controlled concurrency
     let mut tasks = Vec::new();
     for provider in providers {
-        let service_clone = HealthCheckService::new(timeout_secs);
+        let service_clone = HealthCheckService::new(client.clone(), timeout_secs);
         let models_clone = models.clone();
         let sem = semaphore.clone();
-        
+
         tasks.push(tokio::spawn(async move {
             // Acquire semaphore permit before checking
             let _permit = sem.acquire().await.unwrap();
@@ -549,7 +546,8 @@ mod tests {
 
     #[test]
     fn test_get_default_test_models_with_mapping() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let mut provider = create_test_provider();
         let mut mapping = HashMap::new();
         mapping.insert("model1".to_string(), "provider-model1".to_string());
@@ -572,7 +570,8 @@ mod tests {
 
     #[test]
     fn test_get_default_test_models_openai() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let provider = create_test_provider();
 
         let models = service.get_default_test_models(&provider);
@@ -581,7 +580,8 @@ mod tests {
 
     #[test]
     fn test_get_default_test_models_anthropic() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let mut provider = create_test_provider();
         provider.provider_type = "anthropic".to_string();
 
@@ -591,7 +591,8 @@ mod tests {
 
     #[test]
     fn test_get_default_test_models_azure() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let mut provider = create_test_provider();
         provider.provider_type = "azure".to_string();
 
@@ -601,7 +602,8 @@ mod tests {
 
     #[test]
     fn test_determine_provider_status_all_healthy() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let statuses = vec![
             ModelHealthStatus {
                 model: "model1".to_string(),
@@ -625,7 +627,8 @@ mod tests {
 
     #[test]
     fn test_determine_provider_status_partially_healthy() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let statuses = vec![
             ModelHealthStatus {
                 model: "model1".to_string(),
@@ -649,7 +652,8 @@ mod tests {
 
     #[test]
     fn test_determine_provider_status_all_unhealthy() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let statuses = vec![
             ModelHealthStatus {
                 model: "model1".to_string(),
@@ -673,7 +677,8 @@ mod tests {
 
     #[test]
     fn test_determine_provider_status_empty() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let statuses = vec![];
 
         assert_eq!(
@@ -684,7 +689,8 @@ mod tests {
 
     #[test]
     fn test_calculate_avg_response_time() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let statuses = vec![
             ModelHealthStatus {
                 model: "model1".to_string(),
@@ -711,7 +717,8 @@ mod tests {
 
     #[test]
     fn test_calculate_avg_response_time_with_none() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let statuses = vec![
             ModelHealthStatus {
                 model: "model1".to_string(),
@@ -732,7 +739,8 @@ mod tests {
 
     #[test]
     fn test_calculate_avg_response_time_empty() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let statuses = vec![];
 
         assert_eq!(service.calculate_avg_response_time(&statuses), None);
@@ -740,7 +748,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_provider_health_disabled() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let mut provider = create_test_provider();
         provider.is_enabled = false;
 
@@ -753,7 +762,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_provider_health_concurrent_disabled() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let mut provider = create_test_provider();
         provider.is_enabled = false;
 
@@ -771,7 +781,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_provider_health_concurrent_no_models() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let provider = create_test_provider();
 
         // Provider has no model mapping, so get_all_mapped_models returns empty
@@ -786,7 +797,8 @@ mod tests {
 
     #[test]
     fn test_get_all_mapped_models_empty() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let provider = create_test_provider();
 
         let models = service.get_all_mapped_models(&provider);
@@ -795,7 +807,8 @@ mod tests {
 
     #[test]
     fn test_get_all_mapped_models_with_mapping() {
-        let service = HealthCheckService::new(10);
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
         let mut provider = create_test_provider();
         let mut mapping = HashMap::new();
         mapping.insert("gpt-4".to_string(), "gpt-4-turbo".to_string());
