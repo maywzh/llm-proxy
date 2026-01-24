@@ -39,6 +39,14 @@ pub struct AppConfig {
     /// If set (e.g., "Proxy"), then "Proxy/gpt-4" is equivalent to "gpt-4"
     #[serde(default)]
     pub provider_suffix: Option<String>,
+
+    /// Minimum tokens limit for max_tokens clamping
+    #[serde(default = "default_min_tokens_limit")]
+    pub min_tokens_limit: u32,
+
+    /// Maximum tokens limit for max_tokens clamping
+    #[serde(default = "default_max_tokens_limit")]
+    pub max_tokens_limit: u32,
 }
 
 /// Configuration for a credential with optional rate limiting.
@@ -148,6 +156,14 @@ fn default_request_timeout() -> u64 {
     300
 }
 
+fn default_min_tokens_limit() -> u32 {
+    100
+}
+
+fn default_max_tokens_limit() -> u32 {
+    4096
+}
+
 impl AppConfig {
     /// Load server configuration from environment variables.
     /// Providers and master keys are loaded from the database.
@@ -172,6 +188,14 @@ impl AppConfig {
             .ok()
             .and_then(|t| t.parse().ok());
         let provider_suffix = std::env::var("PROVIDER_SUFFIX").ok();
+        let min_tokens_limit = std::env::var("MIN_TOKENS_LIMIT")
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(default_min_tokens_limit);
+        let max_tokens_limit = std::env::var("MAX_TOKENS_LIMIT")
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(default_max_tokens_limit);
 
         Ok(Self {
             providers: vec![],
@@ -181,6 +205,8 @@ impl AppConfig {
             ttft_timeout_secs,
             credentials: vec![],
             provider_suffix,
+            min_tokens_limit,
+            max_tokens_limit,
         })
     }
 }

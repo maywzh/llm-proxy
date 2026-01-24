@@ -37,6 +37,9 @@ class EnvConfig:
         # Global provider suffix that can be optionally prefixed to model names
         # e.g., if PROVIDER_SUFFIX="Proxy", then "Proxy/gpt-4" and "gpt-4" are equivalent
         self.provider_suffix: Optional[str] = os.environ.get("PROVIDER_SUFFIX")
+        # Token limits for max_tokens clamping
+        self.min_tokens_limit: int = int(os.environ.get("MIN_TOKENS_LIMIT", "100"))
+        self.max_tokens_limit: int = int(os.environ.get("MAX_TOKENS_LIMIT", "4096"))
 
     @classmethod
     def from_env(cls) -> "EnvConfig":
