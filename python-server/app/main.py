@@ -13,6 +13,10 @@ from fastapi.openapi.utils import get_openapi
 
 from app.api.router import api_router, metrics_router, admin_router
 from app.services.provider_service import get_provider_service
+from app.services.langfuse_service import (
+    init_langfuse_service,
+    shutdown_langfuse_service,
+)
 from app.core.config import get_config, get_env_config
 from app.core.http_client import get_http_client, close_http_client
 from app.core.middleware import MetricsMiddleware
@@ -67,9 +71,16 @@ async def lifespan(app: FastAPI):
 
     _log_provider_info()
 
+    # Initialize Langfuse service (optional, fails gracefully if not configured)
+    init_langfuse_service()
+
     yield
 
     logger.info("Shutting down LLM API Proxy")
+
+    # Shutdown Langfuse service (flushes pending events)
+    shutdown_langfuse_service()
+
     await close_http_client()
     await close_database()
     logger.info("Cleanup completed")
