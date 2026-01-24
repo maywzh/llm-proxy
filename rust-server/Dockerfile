@@ -17,19 +17,19 @@ RUN apt-get update && \
 
 
 
-# Set up Cargo config to use tesla-mirrors as default registry FIRST (before WORKDIR)
+# Set up Cargo config to use tesla-mirrors as crates.io replacement
 RUN mkdir -p ${CARGO_HOME:-/usr/local/cargo} && \
-    printf '[registry]\ndefault = "tesla-mirrors"\n\n[registries.tesla-mirrors]\nindex = "sparse+https://mirrors.tesla.cn/cargo/index/"\n' > ${CARGO_HOME:-/usr/local/cargo}/config.toml && \
+    printf '[source.crates-io]\nreplace-with = "tesla-mirrors"\n\n[source.tesla-mirrors]\nregistry = "sparse+https://mirrors.tesla.cn/cargo/index/"\n' > ${CARGO_HOME:-/usr/local/cargo}/config.toml && \
     cat ${CARGO_HOME:-/usr/local/cargo}/config.toml
 
 WORKDIR /app
 
 # Also create project-level cargo config as backup
 RUN mkdir -p .cargo && \
-    printf '[registry]\ndefault = "tesla-mirrors"\n\n[registries.tesla-mirrors]\nindex = "sparse+https://mirrors.tesla.cn/cargo/index/"\n' > .cargo/config.toml
+    printf '[source.crates-io]\nreplace-with = "tesla-mirrors"\n\n[source.tesla-mirrors]\nregistry = "sparse+https://mirrors.tesla.cn/cargo/index/"\n' > .cargo/config.toml
 
-# Copy manifests (Cargo.lock will be regenerated with mirror source)
-COPY Cargo.toml ./
+# Copy manifests (include Cargo.lock to avoid re-resolving dependencies)
+COPY Cargo.toml Cargo.lock ./
 
 # Copy benches directory (needed by Cargo.toml)
 
