@@ -1,7 +1,8 @@
 """Completions API endpoints"""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Tuple
 import json
 import uuid
 
@@ -18,6 +19,7 @@ from app.services.langfuse_service import (
     GenerationData,
     extract_client_metadata,
     build_langfuse_tags,
+    LangfuseService,
 )
 from app.utils.streaming import create_streaming_response, rewrite_model_in_response
 from app.core.config import get_config, get_env_config
@@ -30,9 +32,28 @@ from app.core.logging import (
     clear_provider_context,
     get_api_key_name,
 )
+from app.models.provider import Provider
 
 router = APIRouter()
 logger = get_logger()
+
+
+@dataclass
+class RequestContext:
+    """Context data for a completion request.
+
+    Holds all the parsed and computed data needed throughout the request lifecycle.
+    """
+
+    request_id: str
+    credential_name: str
+    endpoint: str
+    trace_id: Optional[str]
+    generation_data: GenerationData
+    original_model: Optional[str]
+    effective_model: Optional[str]
+    request_data: dict
+    is_streaming: bool
 
 
 def _strip_provider_suffix(model: str) -> str:
@@ -76,6 +97,7 @@ async def _close_stream_resources(stream_ctx):
 
 
 def _parse_non_stream_error(response: httpx.Response) -> dict:
+    """Parse error response body from non-streaming request."""
     try:
         return response.json()
     except Exception:
@@ -84,6 +106,7 @@ def _parse_non_stream_error(response: httpx.Response) -> dict:
 
 
 async def _parse_stream_error(response: httpx.Response) -> dict:
+    """Parse error response body from streaming request."""
     try:
         body = await response.aread()
     except Exception:
@@ -97,12 +120,28 @@ async def _parse_stream_error(response: httpx.Response) -> dict:
     return {"error": {"message": f"HTTP {response.status_code}"}}
 
 
-async def proxy_completion_request(
-    request: Request, endpoint: str, provider_svc: ProviderService
-):
-    """Common logic for proxying completion requests with Langfuse tracing"""
-    # Initialize Langfuse tracing
-    langfuse_service = get_langfuse_service()
+def _init_langfuse_trace(
+    request: Request,
+    endpoint: str,
+    langfuse_service: LangfuseService,
+) -> Tuple[str, str, Optional[str], GenerationData]:
+    """Initialize Langfuse tracing for a completion request.
+
+    Creates a trace and initializes generation data for tracking the request
+    through Langfuse observability.
+
+    Args:
+        request: The FastAPI request object
+        endpoint: The API endpoint being called (e.g., "chat/completions")
+        langfuse_service: The Langfuse service instance
+
+    Returns:
+        Tuple containing:
+        - request_id: Unique identifier for this request
+        - credential_name: Name of the credential used for authentication
+        - trace_id: Langfuse trace ID (None if tracing disabled/not sampled)
+        - generation_data: Initialized GenerationData for tracking
+    """
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     credential_name = getattr(request.state, "credential_name", "anonymous")
 
@@ -132,6 +171,35 @@ async def proxy_completion_request(
         start_time=datetime.now(timezone.utc),
     )
 
+    return request_id, credential_name, trace_id, generation_data
+
+
+async def _parse_request_body(
+    request: Request,
+    generation_data: GenerationData,
+    trace_id: Optional[str],
+    langfuse_service: LangfuseService,
+) -> Tuple[dict, Optional[str], Optional[str]]:
+    """Parse and validate the request body.
+
+    Extracts the JSON body, handles client disconnection and JSON errors,
+    and captures input data for Langfuse tracing.
+
+    Args:
+        request: The FastAPI request object
+        generation_data: GenerationData to update with parsed info
+        trace_id: Langfuse trace ID for error recording
+        langfuse_service: The Langfuse service instance
+
+    Returns:
+        Tuple containing:
+        - data: Parsed request body as dict
+        - original_model: The model name from the request
+        - effective_model: The model name with provider suffix stripped
+
+    Raises:
+        HTTPException: If client disconnects or JSON is invalid
+    """
     try:
         data = await request.json()
     except ClientDisconnect:
@@ -178,7 +246,34 @@ async def proxy_completion_request(
     }
     generation_data.is_streaming = data.get("stream", False)
 
-    # Select provider based on the effective model (without provider suffix)
+    return data, original_model, effective_model
+
+
+def _select_provider(
+    provider_svc: ProviderService,
+    effective_model: Optional[str],
+    generation_data: GenerationData,
+    trace_id: Optional[str],
+    langfuse_service: LangfuseService,
+) -> Provider:
+    """Select a provider using weighted algorithm.
+
+    Selects the appropriate provider based on the model and updates
+    generation data with provider information.
+
+    Args:
+        provider_svc: The provider service for selection
+        effective_model: The model name (with provider suffix stripped)
+        generation_data: GenerationData to update with provider info
+        trace_id: Langfuse trace ID for error recording and updates
+        langfuse_service: The Langfuse service instance
+
+    Returns:
+        The selected Provider
+
+    Raises:
+        HTTPException: If no provider is available for the model
+    """
     try:
         provider = provider_svc.get_next_provider(model=effective_model)
     except ValueError as e:
@@ -210,269 +305,439 @@ async def proxy_completion_request(
             model=effective_model or "unknown",
         )
 
-    # Store effective model (without provider suffix) and provider in request state for metrics
-    request.state.model = effective_model or "unknown"
-    request.state.provider = provider.name
+    return provider
 
-    if "model" in data and provider.model_mapping:
-        # Use effective_model for model_mapping lookup (supports wildcard patterns)
-        data["model"] = provider.get_mapped_model(effective_model)
+
+async def _handle_streaming_request(
+    request: Request,
+    provider: Provider,
+    data: dict,
+    effective_model: Optional[str],
+    generation_data: GenerationData,
+    trace_id: Optional[str],
+    langfuse_service: LangfuseService,
+    endpoint: str,
+) -> Response:
+    """Handle a streaming (SSE) completion request.
+
+    Establishes a streaming connection to the provider and returns
+    a streaming response to the client.
+
+    Args:
+        request: The FastAPI request object
+        provider: The selected provider configuration
+        data: The request body data
+        effective_model: The model name (with provider suffix stripped)
+        generation_data: GenerationData for Langfuse tracing
+        trace_id: Langfuse trace ID
+        langfuse_service: The Langfuse service instance
+        endpoint: The API endpoint being called
+
+    Returns:
+        A streaming Response object
+    """
+    logger.debug(f"Streaming request to {provider.name} for model {effective_model}")
 
     headers = {
         "Authorization": f"Bearer {provider.api_key}",
         "Content-Type": "application/json",
     }
-
     url = f"{provider.api_base}/{endpoint}"
+
+    # Use shared HTTP client for streaming
+    client = get_http_client()
+    stream_ctx = client.stream("POST", url, json=data, headers=headers)
+    try:
+        response = await stream_ctx.__aenter__()
+    except Exception:
+        # Don't close shared client, just exit stream context
+        await stream_ctx.__aexit__(None, None, None)
+        raise
+
+    try:
+        if response.status_code >= 400:
+            error_body = await _parse_stream_error(response)
+            logger.error(
+                f"Backend API returned error status {response.status_code} "
+                f"from provider {provider.name} during streaming"
+            )
+            await _close_stream_resources(stream_ctx)
+
+            # Record error in Langfuse
+            generation_data.is_error = True
+            generation_data.error_message = (
+                error_body.get("error", {}).get("message", "")
+                or f"HTTP {response.status_code}"
+            )
+            generation_data.end_time = datetime.now(timezone.utc)
+            if trace_id:
+                langfuse_service.trace_generation(generation_data)
+
+            error_response = JSONResponse(
+                content=error_body, status_code=response.status_code
+            )
+            return _attach_response_metadata(
+                error_response, request.state.model, provider.name
+            )
+
+        config = get_config()
+        # Pass generation_data to streaming response for TTFT and output capture
+        streaming_response = create_streaming_response(
+            response,
+            effective_model,
+            provider.name,
+            data,
+            config.ttft_timeout_secs,
+            generation_data=generation_data if trace_id else None,
+        )
+        streaming_response.background = BackgroundTask(
+            _close_stream_resources, stream_ctx
+        )
+        return _attach_response_metadata(
+            streaming_response, request.state.model, provider.name
+        )
+    except Exception:
+        await _close_stream_resources(stream_ctx)
+        raise
+
+
+def _record_token_metrics(
+    usage: dict,
+    model_name: str,
+    provider_name: str,
+    generation_data: GenerationData,
+) -> None:
+    """Record token usage metrics to Prometheus.
+
+    Updates Prometheus counters for prompt, completion, and total tokens.
+
+    Args:
+        usage: The usage dict from the API response
+        model_name: The model name for metric labels
+        provider_name: The provider name for metric labels
+        generation_data: GenerationData to update with token counts
+    """
+    api_key_name = get_api_key_name()
+
+    # Capture usage for Langfuse
+    generation_data.prompt_tokens = usage.get("prompt_tokens", 0)
+    generation_data.completion_tokens = usage.get("completion_tokens", 0)
+    generation_data.total_tokens = usage.get("total_tokens", 0)
+
+    if "prompt_tokens" in usage:
+        TOKEN_USAGE.labels(
+            model=model_name,
+            provider=provider_name,
+            token_type="prompt",
+            api_key_name=api_key_name,
+        ).inc(usage["prompt_tokens"])
+
+    if "completion_tokens" in usage:
+        TOKEN_USAGE.labels(
+            model=model_name,
+            provider=provider_name,
+            token_type="completion",
+            api_key_name=api_key_name,
+        ).inc(usage["completion_tokens"])
+
+    if "total_tokens" in usage:
+        TOKEN_USAGE.labels(
+            model=model_name,
+            provider=provider_name,
+            token_type="total",
+            api_key_name=api_key_name,
+        ).inc(usage["total_tokens"])
+
+        logger.debug(
+            f"Token usage - model={model_name} provider={provider_name} key={api_key_name} "
+            f"prompt={usage.get('prompt_tokens', 0)} "
+            f"completion={usage.get('completion_tokens', 0)} "
+            f"total={usage.get('total_tokens', 0)}"
+        )
+
+
+async def _handle_non_streaming_request(
+    request: Request,
+    provider: Provider,
+    data: dict,
+    effective_model: Optional[str],
+    generation_data: GenerationData,
+    trace_id: Optional[str],
+    langfuse_service: LangfuseService,
+    endpoint: str,
+) -> Response:
+    """Handle a non-streaming completion request.
+
+    Makes a synchronous request to the provider and returns the JSON response.
+
+    Args:
+        request: The FastAPI request object
+        provider: The selected provider configuration
+        data: The request body data
+        effective_model: The model name (with provider suffix stripped)
+        generation_data: GenerationData for Langfuse tracing
+        trace_id: Langfuse trace ID
+        langfuse_service: The Langfuse service instance
+        endpoint: The API endpoint being called
+
+    Returns:
+        A JSON Response object
+    """
+    logger.debug(
+        f"Non-streaming request to {provider.name} for model {effective_model}"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {provider.api_key}",
+        "Content-Type": "application/json",
+    }
+    url = f"{provider.api_base}/{endpoint}"
+
+    # Use shared HTTP client for non-streaming requests
+    client = get_http_client()
+    response = await client.post(url, json=data, headers=headers)
+
+    # Check if backend API returned an error status code
+    # Faithfully pass through the backend error
+    if response.status_code >= 400:
+        error_body = _parse_non_stream_error(response)
+
+        logger.error(
+            f"Backend API returned error status {response.status_code} "
+            f"from provider {provider.name}"
+        )
+
+        # Record error in Langfuse
+        generation_data.is_error = True
+        # Handle both {"error": "string"} and {"error": {"message": "string"}} formats
+        error_field = error_body.get("error", {})
+        if isinstance(error_field, str):
+            generation_data.error_message = error_field
+        elif isinstance(error_field, dict):
+            generation_data.error_message = error_field.get("message", "")
+        else:
+            generation_data.error_message = f"HTTP {response.status_code}"
+
+        if not generation_data.error_message:
+            generation_data.error_message = f"HTTP {response.status_code}"
+
+        generation_data.end_time = datetime.now(timezone.utc)
+        if trace_id:
+            langfuse_service.trace_generation(generation_data)
+
+        # Faithfully return the backend's status code and error body
+        # Use Response instead of JSONResponse to avoid double serialization
+        error_response = Response(
+            content=json.dumps(error_body),
+            status_code=response.status_code,
+            media_type="application/json",
+        )
+        return _attach_response_metadata(
+            error_response, request.state.model, provider.name
+        )
+
+    response_data = response.json()
+
+    # Capture output for Langfuse
+    if "choices" in response_data and response_data["choices"]:
+        choice = response_data["choices"][0]
+        generation_data.output_content = choice.get("message", {}).get("content", "")
+        generation_data.finish_reason = choice.get("finish_reason")
+
+    # Extract and record token usage
+    if "usage" in response_data:
+        # Use effective_model (without provider suffix) for metrics
+        model_name = effective_model or "unknown"
+        _record_token_metrics(
+            response_data["usage"],
+            model_name,
+            provider.name,
+            generation_data,
+        )
+
+    # Record successful generation in Langfuse
+    generation_data.end_time = datetime.now(timezone.utc)
+    if trace_id:
+        langfuse_service.trace_generation(generation_data)
+
+    # Use effective_model in response so client sees model without provider suffix
+    response_data = rewrite_model_in_response(response_data, effective_model)
+    success_response = JSONResponse(
+        content=response_data, status_code=response.status_code
+    )
+    return _attach_response_metadata(
+        success_response, request.state.model, provider.name
+    )
+
+
+def _handle_request_error(
+    error: Exception,
+    provider: Provider,
+    generation_data: GenerationData,
+    trace_id: Optional[str],
+    langfuse_service: LangfuseService,
+) -> HTTPException:
+    """Handle errors that occur during request processing.
+
+    Logs the error, records it in Langfuse, and returns an appropriate HTTPException.
+
+    Args:
+        error: The exception that occurred
+        provider: The provider configuration
+        generation_data: GenerationData for Langfuse tracing
+        trace_id: Langfuse trace ID
+        langfuse_service: The Langfuse service instance
+
+    Returns:
+        An HTTPException to raise
+    """
+    generation_data.is_error = True
+    generation_data.end_time = datetime.now(timezone.utc)
+
+    if isinstance(error, TTFTTimeoutError):
+        logger.error(f"TTFT timeout for provider {provider.name}: {str(error)}")
+        generation_data.error_message = f"TTFT timeout: first token not received within {error.timeout_secs} seconds"
+        if trace_id:
+            langfuse_service.trace_generation(generation_data)
+        return HTTPException(
+            status_code=504,
+            detail={
+                "error": {
+                    "message": f"TTFT timeout: first token not received within {error.timeout_secs} seconds",
+                    "type": "timeout_error",
+                    "code": "ttft_timeout",
+                }
+            },
+        )
+
+    if isinstance(error, httpx.RemoteProtocolError):
+        logger.error(
+            f"Remote protocol error for provider {provider.name}: {str(error)} - "
+            f"Provider closed connection unexpectedly during request"
+        )
+        generation_data.error_message = (
+            f"Provider {provider.name} connection closed unexpectedly"
+        )
+        if trace_id:
+            langfuse_service.trace_generation(generation_data)
+        return HTTPException(
+            status_code=502,
+            detail=f"Provider {provider.name} connection closed unexpectedly",
+        )
+
+    if isinstance(error, httpx.TimeoutException):
+        logger.error(f"Timeout error for provider {provider.name}: {str(error)}")
+        generation_data.error_message = "Gateway timeout"
+        if trace_id:
+            langfuse_service.trace_generation(generation_data)
+        return HTTPException(status_code=504, detail="Gateway timeout")
+
+    if isinstance(error, httpx.HTTPStatusError):
+        logger.error(
+            f"HTTP error for provider {provider.name}: {error.response.status_code} - {str(error)}"
+        )
+        generation_data.error_message = str(error)
+        if trace_id:
+            langfuse_service.trace_generation(generation_data)
+        return HTTPException(status_code=error.response.status_code, detail=str(error))
+
+    if isinstance(error, httpx.RequestError):
+        logger.error(
+            f"Network request error for provider {provider.name}: {str(error)}"
+        )
+        generation_data.error_message = f"Provider {provider.name} network error"
+        if trace_id:
+            langfuse_service.trace_generation(generation_data)
+        return HTTPException(
+            status_code=502, detail=f"Provider {provider.name} network error"
+        )
+
+    # Unexpected error
+    logger.exception(f"Unexpected error for provider {provider.name}")
+    generation_data.error_message = "Internal server error"
+    if trace_id:
+        langfuse_service.trace_generation(generation_data)
+    return HTTPException(status_code=500, detail="Internal server error")
+
+
+async def proxy_completion_request(
+    request: Request, endpoint: str, provider_svc: ProviderService
+) -> Response:
+    """Proxy completion requests to LLM providers with Langfuse tracing.
+
+    This is the main coordinator function that orchestrates the completion request
+    flow by delegating to specialized helper functions.
+
+    Args:
+        request: The FastAPI request object
+        endpoint: The API endpoint (e.g., "chat/completions" or "completions")
+        provider_svc: The provider service for selecting providers
+
+    Returns:
+        A Response object (streaming or JSON)
+
+    Raises:
+        HTTPException: For various error conditions
+    """
+    # Initialize Langfuse tracing
+    langfuse_service = get_langfuse_service()
+    request_id, credential_name, trace_id, generation_data = _init_langfuse_trace(
+        request, endpoint, langfuse_service
+    )
+
+    # Parse and validate request body
+    data, original_model, effective_model = await _parse_request_body(
+        request, generation_data, trace_id, langfuse_service
+    )
+
+    # Select provider based on the effective model (without provider suffix)
+    provider = _select_provider(
+        provider_svc, effective_model, generation_data, trace_id, langfuse_service
+    )
+
+    # Store effective model (without provider suffix) and provider in request state for metrics
+    request.state.model = effective_model or "unknown"
+    request.state.provider = provider.name
+
+    # Apply model mapping if configured
+    if "model" in data and provider.model_mapping:
+        # Use effective_model for model_mapping lookup (supports wildcard patterns)
+        data["model"] = provider.get_mapped_model(effective_model)
 
     try:
         # Set provider context for logging
         set_provider_context(provider.name)
 
         if data.get("stream", False):
-            logger.debug(
-                f"Streaming request to {provider.name} for model {effective_model}"
+            return await _handle_streaming_request(
+                request,
+                provider,
+                data,
+                effective_model,
+                generation_data,
+                trace_id,
+                langfuse_service,
+                endpoint,
             )
-            # Use shared HTTP client for streaming
-            client = get_http_client()
-            stream_ctx = client.stream("POST", url, json=data, headers=headers)
-            try:
-                response = await stream_ctx.__aenter__()
-            except Exception:
-                # Don't close shared client, just exit stream context
-                await stream_ctx.__aexit__(None, None, None)
-                raise
-
-            try:
-                if response.status_code >= 400:
-                    error_body = await _parse_stream_error(response)
-                    logger.error(
-                        f"Backend API returned error status {response.status_code} "
-                        f"from provider {provider.name} during streaming"
-                    )
-                    await _close_stream_resources(stream_ctx)
-
-                    # Record error in Langfuse
-                    generation_data.is_error = True
-                    generation_data.error_message = (
-                        error_body.get("error", {}).get("message", "")
-                        or f"HTTP {response.status_code}"
-                    )
-                    generation_data.end_time = datetime.now(timezone.utc)
-                    if trace_id:
-                        langfuse_service.trace_generation(generation_data)
-
-                    error_response = JSONResponse(
-                        content=error_body, status_code=response.status_code
-                    )
-                    return _attach_response_metadata(
-                        error_response, request.state.model, provider.name
-                    )
-
-                config = get_config()
-                # Pass generation_data to streaming response for TTFT and output capture
-                streaming_response = create_streaming_response(
-                    response,
-                    effective_model,
-                    provider.name,
-                    data,
-                    config.ttft_timeout_secs,
-                    generation_data=generation_data if trace_id else None,
-                )
-                streaming_response.background = BackgroundTask(
-                    _close_stream_resources, stream_ctx
-                )
-                return _attach_response_metadata(
-                    streaming_response, request.state.model, provider.name
-                )
-            except Exception:
-                await _close_stream_resources(stream_ctx)
-                raise
         else:
-            logger.debug(
-                f"Non-streaming request to {provider.name} for model {effective_model}"
-            )
-            # Use shared HTTP client for non-streaming requests
-            client = get_http_client()
-            response = await client.post(url, json=data, headers=headers)
-
-            # Check if backend API returned an error status code
-            # Faithfully pass through the backend error
-            if response.status_code >= 400:
-                error_body = _parse_non_stream_error(response)
-
-                logger.error(
-                    f"Backend API returned error status {response.status_code} "
-                    f"from provider {provider.name}"
-                )
-
-                # Record error in Langfuse
-                generation_data.is_error = True
-                # Handle both {"error": "string"} and {"error": {"message": "string"}} formats
-                error_field = error_body.get("error", {})
-                if isinstance(error_field, str):
-                    generation_data.error_message = error_field
-                elif isinstance(error_field, dict):
-                    generation_data.error_message = error_field.get("message", "")
-                else:
-                    generation_data.error_message = f"HTTP {response.status_code}"
-
-                if not generation_data.error_message:
-                    generation_data.error_message = f"HTTP {response.status_code}"
-
-                generation_data.end_time = datetime.now(timezone.utc)
-                if trace_id:
-                    langfuse_service.trace_generation(generation_data)
-
-                # Faithfully return the backend's status code and error body
-                # Use Response instead of JSONResponse to avoid double serialization
-                error_response = Response(
-                    content=json.dumps(error_body),
-                    status_code=response.status_code,
-                    media_type="application/json"
-                )
-                return _attach_response_metadata(
-                    error_response, request.state.model, provider.name
-                )
-
-            response_data = response.json()
-
-            # Capture output for Langfuse
-            if "choices" in response_data and response_data["choices"]:
-                choice = response_data["choices"][0]
-                generation_data.output_content = choice.get("message", {}).get(
-                    "content", ""
-                )
-                generation_data.finish_reason = choice.get("finish_reason")
-
-            # Extract and record token usage
-            if "usage" in response_data:
-                usage = response_data["usage"]
-                # Use effective_model (without provider suffix) for metrics
-                model_name = effective_model or "unknown"
-                api_key_name = get_api_key_name()
-
-                # Capture usage for Langfuse
-                generation_data.prompt_tokens = usage.get("prompt_tokens", 0)
-                generation_data.completion_tokens = usage.get("completion_tokens", 0)
-                generation_data.total_tokens = usage.get("total_tokens", 0)
-
-                if "prompt_tokens" in usage:
-                    TOKEN_USAGE.labels(
-                        model=model_name,
-                        provider=provider.name,
-                        token_type="prompt",
-                        api_key_name=api_key_name,
-                    ).inc(usage["prompt_tokens"])
-
-                if "completion_tokens" in usage:
-                    TOKEN_USAGE.labels(
-                        model=model_name,
-                        provider=provider.name,
-                        token_type="completion",
-                        api_key_name=api_key_name,
-                    ).inc(usage["completion_tokens"])
-
-                if "total_tokens" in usage:
-                    TOKEN_USAGE.labels(
-                        model=model_name,
-                        provider=provider.name,
-                        token_type="total",
-                        api_key_name=api_key_name,
-                    ).inc(usage["total_tokens"])
-
-                    logger.debug(
-                        f"Token usage - model={model_name} provider={provider.name} key={api_key_name} "
-                        f"prompt={usage.get('prompt_tokens', 0)} "
-                        f"completion={usage.get('completion_tokens', 0)} "
-                        f"total={usage.get('total_tokens', 0)}"
-                    )
-
-            # Record successful generation in Langfuse
-            generation_data.end_time = datetime.now(timezone.utc)
-            if trace_id:
-                langfuse_service.trace_generation(generation_data)
-
-            # Use effective_model in response so client sees model without provider suffix
-            response_data = rewrite_model_in_response(response_data, effective_model)
-            success_response = JSONResponse(
-                content=response_data, status_code=response.status_code
-            )
-            return _attach_response_metadata(
-                success_response, request.state.model, provider.name
+            return await _handle_non_streaming_request(
+                request,
+                provider,
+                data,
+                effective_model,
+                generation_data,
+                trace_id,
+                langfuse_service,
+                endpoint,
             )
 
-    except TTFTTimeoutError as e:
-        logger.error(f"TTFT timeout for provider {provider.name}: {str(e)}")
-        generation_data.is_error = True
-        generation_data.error_message = (
-            f"TTFT timeout: first token not received within {e.timeout_secs} seconds"
-        )
-        generation_data.end_time = datetime.now(timezone.utc)
-        if trace_id:
-            langfuse_service.trace_generation(generation_data)
-        raise HTTPException(
-            status_code=504,
-            detail={
-                "error": {
-                    "message": f"TTFT timeout: first token not received within {e.timeout_secs} seconds",
-                    "type": "timeout_error",
-                    "code": "ttft_timeout",
-                }
-            },
-        )
-    except httpx.RemoteProtocolError as e:
-        logger.error(
-            f"Remote protocol error for provider {provider.name}: {str(e)} - "
-            f"Provider closed connection unexpectedly during request"
-        )
-        generation_data.is_error = True
-        generation_data.error_message = (
-            f"Provider {provider.name} connection closed unexpectedly"
-        )
-        generation_data.end_time = datetime.now(timezone.utc)
-        if trace_id:
-            langfuse_service.trace_generation(generation_data)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Provider {provider.name} connection closed unexpectedly",
-        )
-    except httpx.TimeoutException as e:
-        logger.error(f"Timeout error for provider {provider.name}: {str(e)}")
-        generation_data.is_error = True
-        generation_data.error_message = "Gateway timeout"
-        generation_data.end_time = datetime.now(timezone.utc)
-        if trace_id:
-            langfuse_service.trace_generation(generation_data)
-        raise HTTPException(status_code=504, detail="Gateway timeout")
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            f"HTTP error for provider {provider.name}: {e.response.status_code} - {str(e)}"
-        )
-        generation_data.is_error = True
-        generation_data.error_message = str(e)
-        generation_data.end_time = datetime.now(timezone.utc)
-        if trace_id:
-            langfuse_service.trace_generation(generation_data)
-        raise HTTPException(status_code=e.response.status_code, detail=str(e))
-    except httpx.RequestError as e:
-        logger.error(f"Network request error for provider {provider.name}: {str(e)}")
-        generation_data.is_error = True
-        generation_data.error_message = f"Provider {provider.name} network error"
-        generation_data.end_time = datetime.now(timezone.utc)
-        if trace_id:
-            langfuse_service.trace_generation(generation_data)
-        raise HTTPException(
-            status_code=502, detail=f"Provider {provider.name} network error"
-        )
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is (already handled)
+        raise
     except Exception as e:
-        logger.exception(f"Unexpected error for provider {provider.name}")
-        generation_data.is_error = True
-        generation_data.error_message = "Internal server error"
-        generation_data.end_time = datetime.now(timezone.utc)
-        if trace_id:
-            langfuse_service.trace_generation(generation_data)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise _handle_request_error(
+            e, provider, generation_data, trace_id, langfuse_service
+        )
     finally:
         # Clear provider context after request
         clear_provider_context()

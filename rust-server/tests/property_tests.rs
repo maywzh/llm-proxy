@@ -36,6 +36,8 @@ fn app_config_strategy() -> impl Strategy<Value = AppConfig> {
         ttft_timeout_secs: None,
         credentials: vec![],
         provider_suffix: None,
+        min_tokens_limit: 100,
+        max_tokens_limit: 4096,
     })
 }
 
@@ -106,6 +108,8 @@ proptest! {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            min_tokens_limit: 100,
+            max_tokens_limit: 4096,
         };
 
         let service = ProviderService::new(config);
@@ -192,6 +196,8 @@ proptest! {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            min_tokens_limit: 100,
+            max_tokens_limit: 4096,
         };
 
         let service = ProviderService::new(config);
@@ -249,6 +255,8 @@ proptest! {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            min_tokens_limit: 100,
+            max_tokens_limit: 4096,
         };
 
         let service = ProviderService::new(config);
@@ -349,6 +357,8 @@ mod quickcheck_tests {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            min_tokens_limit: 100,
+            max_tokens_limit: 4096,
         };
 
         let service = ProviderService::new(config);
@@ -382,6 +392,8 @@ mod quickcheck_tests {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            min_tokens_limit: 100,
+            max_tokens_limit: 4096,
         };
 
         let service = ProviderService::new(config);
@@ -470,6 +482,8 @@ mod complex_multi_provider_tests {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            min_tokens_limit: 100,
+            max_tokens_limit: 4096,
         };
 
         let service = ProviderService::new(config);

@@ -95,17 +95,16 @@ fn get_key_name(key_config: &Option<CredentialConfig>) -> String {
 
 /// Strip the provider suffix from model name if configured.
 fn strip_provider_suffix(model: &str, provider_suffix: Option<&str>) -> String {
-    match provider_suffix {
-        Some(suffix) if !suffix.is_empty() => {
-            let prefix = format!("{}/", suffix);
-            if model.starts_with(&prefix) {
-                model[prefix.len()..].to_string()
-            } else {
-                model.to_string()
-            }
-        }
-        _ => model.to_string(),
-    }
+    let Some(suffix) = provider_suffix.filter(|s| !s.is_empty()) else {
+        return model.to_string();
+    };
+
+    // Check if model starts with "suffix/" without allocating
+    model
+        .strip_prefix(suffix)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(model)
+        .to_string()
 }
 
 // ============================================================================

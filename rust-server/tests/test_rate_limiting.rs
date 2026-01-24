@@ -113,6 +113,8 @@ fn test_app_state_with_rate_limiter() {
         ttft_timeout_secs: None,
         credentials,
         provider_suffix: None,
+        min_tokens_limit: 100,
+        max_tokens_limit: 4096,
     };
 
     let provider_service = ProviderService::new(config.clone());
@@ -177,6 +179,8 @@ fn test_disabled_key_not_rate_limited() {
             allowed_models: vec![],
         }],
         provider_suffix: None,
+        min_tokens_limit: 100,
+        max_tokens_limit: 4096,
     };
 
     let rate_limiter = RateLimiter::new();
@@ -219,6 +223,8 @@ fn test_key_without_rate_limit_config() {
             allowed_models: vec![],
         }],
         provider_suffix: None,
+        min_tokens_limit: 100,
+        max_tokens_limit: 4096,
     };
 
     let rate_limiter = RateLimiter::new();
@@ -294,6 +300,8 @@ fn test_mixed_rate_limits() {
                 allowed_models: vec![],
             },
         ],
+        min_tokens_limit: 100,
+        max_tokens_limit: 4096,
     };
 
     let rate_limiter = RateLimiter::new();
