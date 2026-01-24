@@ -53,6 +53,8 @@ impl ProviderService {
     ///     ttft_timeout_secs: None,
     ///     credentials: vec![],
     ///     provider_suffix: None,
+    ///     min_tokens_limit: 1,
+    ///     max_tokens_limit: 128000,
     /// };
     /// let service = ProviderService::new(config);
     /// ```
@@ -98,15 +100,11 @@ impl ProviderService {
     pub fn get_next_provider(&self, model: Option<&str>) -> Result<Provider, String> {
         let mut rng = thread_rng();
 
-        // If no model specified, use all providers with original weights
-        if model.is_none() {
+        let Some(model_name) = model else {
             let index = self.weighted_index.sample(&mut rng);
             return Ok(self.providers[index].clone());
-        }
+        };
 
-        let model_name = model.unwrap();
-
-        // Filter providers that have the requested model (supports wildcard patterns)
         let mut available_providers = Vec::new();
         let mut available_weights = Vec::new();
 
@@ -117,12 +115,10 @@ impl ProviderService {
             }
         }
 
-        // If no provider has the model, return error
         if available_providers.is_empty() {
             return Err(format!("No provider supports model: {}", model_name));
         }
 
-        // Create weighted index for available providers
         let weighted_index = WeightedIndex::new(&available_weights)
             .map_err(|e| format!("Failed to create weighted index: {}", e))?;
 

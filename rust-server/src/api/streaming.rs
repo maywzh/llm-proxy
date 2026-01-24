@@ -12,27 +12,25 @@ use axum::body::Body;
 use axum::response::Response as AxumResponse;
 use bytes::Bytes;
 use chrono::Utc;
+use dashmap::DashMap;
 use futures::stream::{Stream, StreamExt};
 use reqwest::Response;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // Global cache for BPE encoders to avoid repeated initialization
+// Uses DashMap for lock-free reads and fine-grained locking on writes
 lazy_static::lazy_static! {
-    static ref BPE_CACHE: RwLock<HashMap<String, Arc<tiktoken_rs::CoreBPE>>> = RwLock::new(HashMap::new());
+    static ref BPE_CACHE: DashMap<String, Arc<tiktoken_rs::CoreBPE>> = DashMap::new();
 }
 
 /// Get or create a cached BPE encoder for the given model
 fn get_cached_bpe(model: &str) -> Option<Arc<tiktoken_rs::CoreBPE>> {
-    // Try to read from cache first (fast path)
-    {
-        let cache = BPE_CACHE.read().ok()?;
-        if let Some(bpe) = cache.get(model) {
-            return Some(Arc::clone(bpe));
-        }
+    // Try to read from cache first (lock-free read via DashMap)
+    if let Some(bpe) = BPE_CACHE.get(model) {
+        return Some(Arc::clone(&bpe));
     }
     
     // Cache miss - create new encoder
@@ -42,10 +40,8 @@ fn get_cached_bpe(model: &str) -> Option<Arc<tiktoken_rs::CoreBPE>> {
     
     let bpe_arc = Arc::new(bpe);
     
-    // Store in cache
-    if let Ok(mut cache) = BPE_CACHE.write() {
-        cache.insert(model.to_string(), Arc::clone(&bpe_arc));
-    }
+    // Store in cache (fine-grained locking via DashMap)
+    BPE_CACHE.insert(model.to_string(), Arc::clone(&bpe_arc));
     
     Some(bpe_arc)
 }
