@@ -560,6 +560,242 @@ class TestComplexMultiProviderMultiModel:
 
 
 @pytest.mark.unit
+class TestWildcardModelMapping:
+    """Test wildcard/regex pattern matching in model mapping"""
+
+    def test_provider_selection_with_regex_pattern(
+        self, monkeypatch, clear_config_cache
+    ):
+        """Test provider selection with regex pattern in model_mapping"""
+        from app.models.config import AppConfig, ProviderConfig
+
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name="claude-provider",
+                    api_base="https://api.claude.com",
+                    api_key="key1",
+                    weight=1,
+                    model_mapping={
+                        "claude-opus-4-5-.*": "claude-opus-mapped",  # Regex pattern
+                    },
+                ),
+                ProviderConfig(
+                    name="openai-provider",
+                    api_base="https://api.openai.com",
+                    api_key="key2",
+                    weight=1,
+                    model_mapping={
+                        "gpt-4": "gpt-4-turbo",  # Exact match
+                    },
+                ),
+            ]
+        )
+
+        from app.services import provider_service as ps_module
+
+        monkeypatch.setattr(ps_module, "get_config", lambda: config)
+
+        service = ProviderService()
+        service.initialize()
+
+        # Test regex pattern matching - should select claude-provider
+        provider = service.get_next_provider(model="claude-opus-4-5-20240620")
+        assert provider.name == "claude-provider"
+        assert (
+            provider.get_mapped_model("claude-opus-4-5-20240620")
+            == "claude-opus-mapped"
+        )
+
+        # Test another variant of the pattern
+        provider = service.get_next_provider(model="claude-opus-4-5-latest")
+        assert provider.name == "claude-provider"
+        assert (
+            provider.get_mapped_model("claude-opus-4-5-latest") == "claude-opus-mapped"
+        )
+
+        # Test exact match - should select openai-provider
+        provider = service.get_next_provider(model="gpt-4")
+        assert provider.name == "openai-provider"
+        assert provider.get_mapped_model("gpt-4") == "gpt-4-turbo"
+
+        # Test non-matching model - should raise error
+        with pytest.raises(ValueError, match="No provider supports model"):
+            service.get_next_provider(model="unknown-model")
+
+    def test_provider_selection_with_simple_wildcard(
+        self, monkeypatch, clear_config_cache
+    ):
+        """Test provider selection with simple wildcard (*) in model_mapping"""
+        from app.models.config import AppConfig, ProviderConfig
+
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name="gemini-provider",
+                    api_base="https://api.gemini.com",
+                    api_key="key1",
+                    weight=1,
+                    model_mapping={
+                        "gemini-*": "gemini-pro",  # Simple wildcard
+                    },
+                ),
+            ]
+        )
+
+        from app.services import provider_service as ps_module
+
+        monkeypatch.setattr(ps_module, "get_config", lambda: config)
+
+        service = ProviderService()
+        service.initialize()
+
+        # Test simple wildcard matching
+        provider = service.get_next_provider(model="gemini-pro")
+        assert provider.name == "gemini-provider"
+        assert provider.get_mapped_model("gemini-pro") == "gemini-pro"
+
+        provider = service.get_next_provider(model="gemini-ultra")
+        assert provider.name == "gemini-provider"
+        assert provider.get_mapped_model("gemini-ultra") == "gemini-pro"
+
+        provider = service.get_next_provider(model="gemini-1.5-pro")
+        assert provider.name == "gemini-provider"
+        assert provider.get_mapped_model("gemini-1.5-pro") == "gemini-pro"
+
+    def test_exact_match_priority_over_pattern(self, monkeypatch, clear_config_cache):
+        """Test that exact matches take priority over pattern matches"""
+        from app.models.config import AppConfig, ProviderConfig
+
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name="provider1",
+                    api_base="https://api1.com",
+                    api_key="key1",
+                    weight=1,
+                    model_mapping={
+                        "claude-.*": "claude-pattern",  # Pattern
+                        "claude-opus": "claude-opus-exact",  # Exact match
+                    },
+                ),
+            ]
+        )
+
+        from app.services import provider_service as ps_module
+
+        monkeypatch.setattr(ps_module, "get_config", lambda: config)
+
+        service = ProviderService()
+        service.initialize()
+
+        # Exact match should take priority
+        provider = service.get_next_provider(model="claude-opus")
+        assert provider.get_mapped_model("claude-opus") == "claude-opus-exact"
+
+        # Pattern should match other claude models
+        provider = service.get_next_provider(model="claude-sonnet")
+        assert provider.get_mapped_model("claude-sonnet") == "claude-pattern"
+
+    def test_multiple_providers_with_patterns(self, monkeypatch, clear_config_cache):
+        """Test weighted selection when multiple providers have matching patterns"""
+        from app.models.config import AppConfig, ProviderConfig
+        from collections import Counter
+
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name="provider1",
+                    api_base="https://api1.com",
+                    api_key="key1",
+                    weight=2,
+                    model_mapping={
+                        "claude-opus-4-5-.*": "provider1-claude",
+                    },
+                ),
+                ProviderConfig(
+                    name="provider2",
+                    api_base="https://api2.com",
+                    api_key="key2",
+                    weight=1,
+                    model_mapping={
+                        "claude-opus-4-5-.*": "provider2-claude",
+                    },
+                ),
+            ]
+        )
+
+        from app.services import provider_service as ps_module
+
+        monkeypatch.setattr(ps_module, "get_config", lambda: config)
+
+        service = ProviderService()
+        service.initialize()
+
+        # Both providers should be selected with weighted distribution
+        selections = [
+            service.get_next_provider(model="claude-opus-4-5-20240620").name
+            for _ in range(1000)
+        ]
+        counts = Counter(selections)
+
+        assert "provider1" in counts
+        assert "provider2" in counts
+
+        # Should follow weight distribution (2:1 ratio)
+        ratio = counts["provider1"] / counts["provider2"]
+        assert 1.5 < ratio < 2.5, f"Ratio was {ratio}, expected ~2.0"
+
+    def test_get_all_models_filters_patterns(self, monkeypatch, clear_config_cache):
+        """Test that get_all_models filters out wildcard/regex patterns"""
+        from app.models.config import AppConfig, ProviderConfig
+
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name="provider1",
+                    api_base="https://api1.com",
+                    api_key="key1",
+                    weight=1,
+                    model_mapping={
+                        "gpt-4": "gpt-4-turbo",  # Exact match - should be included
+                        "claude-opus-4-5-.*": "claude-mapped",  # Regex pattern - should be filtered
+                        "gemini-*": "gemini-pro",  # Simple wildcard - should be filtered
+                    },
+                ),
+                ProviderConfig(
+                    name="provider2",
+                    api_base="https://api2.com",
+                    api_key="key2",
+                    weight=1,
+                    model_mapping={
+                        "gpt-3.5-turbo": "gpt-3.5-turbo-0125",  # Exact match - should be included
+                        "claude-.*": "claude-default",  # Regex pattern - should be filtered
+                    },
+                ),
+            ]
+        )
+
+        from app.services import provider_service as ps_module
+
+        monkeypatch.setattr(ps_module, "get_config", lambda: config)
+        ps_module._provider_service = None
+
+        service = ProviderService()
+        service.initialize()
+
+        models = service.get_all_models()
+
+        # Only exact matches should be returned
+        assert models == {"gpt-4", "gpt-3.5-turbo"}
+
+        # Patterns should NOT be in the result
+        assert "claude-opus-4-5-.*" not in models
+        assert "gemini-*" not in models
+        assert "claude-.*" not in models
+
+
+@pytest.mark.unit
 class TestProviderServiceState:
     """Test provider service state management"""
 

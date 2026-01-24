@@ -4,8 +4,9 @@
 //! including request/response conversion and streaming support.
 
 use llm_proxy_rust::api::claude_models::{
-    constants, ClaudeContentBlock, ClaudeMessage, ClaudeMessageContent, ClaudeMessagesRequest,
-    ClaudeResponse, ClaudeSystemPrompt, ClaudeTool, ClaudeUsage,
+    constants, ClaudeContentBlock, ClaudeContentBlockToolResult, ClaudeMessage,
+    ClaudeMessageContent, ClaudeMessagesRequest, ClaudeResponse, ClaudeSystemPrompt, ClaudeTool,
+    ClaudeUsage,
 };
 use llm_proxy_rust::services::{claude_to_openai_request, openai_to_claude_response};
 use serde_json::json;
@@ -36,7 +37,7 @@ fn test_claude_to_openai_basic_request() {
         thinking: None,
     };
 
-    let openai_request = claude_to_openai_request(&request, None);
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
 
     assert_eq!(openai_request["model"], "claude-3-opus-20240229");
     assert_eq!(openai_request["max_tokens"], 1024);
@@ -72,7 +73,7 @@ fn test_claude_to_openai_with_system_prompt() {
         thinking: None,
     };
 
-    let openai_request = claude_to_openai_request(&request, None);
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
 
     let messages = openai_request["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 2);
@@ -108,7 +109,7 @@ fn test_claude_to_openai_with_model_mapping() {
         "gpt-4-turbo-preview".to_string(),
     );
 
-    let openai_request = claude_to_openai_request(&request, Some(&model_mapping));
+    let openai_request = claude_to_openai_request(&request, Some(&model_mapping), 1, 8192);
 
     assert_eq!(openai_request["model"], "gpt-4-turbo-preview");
 }
@@ -144,7 +145,7 @@ fn test_claude_to_openai_with_tools() {
         thinking: None,
     };
 
-    let openai_request = claude_to_openai_request(&request, None);
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
 
     let tools = openai_request["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 1);
@@ -173,7 +174,7 @@ fn test_claude_to_openai_with_stop_sequences() {
         thinking: None,
     };
 
-    let openai_request = claude_to_openai_request(&request, None);
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
 
     let stop = openai_request["stop"].as_array().unwrap();
     assert_eq!(stop.len(), 2);
@@ -429,7 +430,7 @@ fn test_claude_to_openai_multi_turn_conversation() {
         thinking: None,
     };
 
-    let openai_request = claude_to_openai_request(&request, None);
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
 
     let messages = openai_request["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 3);
@@ -463,7 +464,316 @@ fn test_claude_streaming_request() {
         thinking: None,
     };
 
-    let openai_request = claude_to_openai_request(&request, None);
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
 
     assert_eq!(openai_request["stream"], true);
+}
+
+// ============================================================================
+// Langfuse Input Capture Tests
+// ============================================================================
+
+#[test]
+fn test_langfuse_input_messages_capture_basic() {
+    let request = ClaudeMessagesRequest {
+        model: "claude-3-opus-20240229".to_string(),
+        max_tokens: 1024,
+        messages: vec![ClaudeMessage {
+            role: "user".to_string(),
+            content: ClaudeMessageContent::Text("Hello, how are you?".to_string()),
+        }],
+        system: None,
+        stop_sequences: None,
+        stream: false,
+        temperature: Some(0.7),
+        top_p: Some(0.9),
+        top_k: None,
+        metadata: None,
+        tools: None,
+        tool_choice: None,
+        thinking: None,
+    };
+
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
+
+    // Simulate what claude.rs does for Langfuse tracing
+    let input_messages: Vec<serde_json::Value> = openai_request
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|arr| arr.to_vec())
+        .unwrap_or_default();
+
+    assert_eq!(input_messages.len(), 1);
+    assert_eq!(input_messages[0]["role"], "user");
+    assert_eq!(input_messages[0]["content"], "Hello, how are you?");
+}
+
+#[test]
+fn test_langfuse_input_messages_capture_with_system() {
+    let request = ClaudeMessagesRequest {
+        model: "claude-3-opus-20240229".to_string(),
+        max_tokens: 1024,
+        messages: vec![ClaudeMessage {
+            role: "user".to_string(),
+            content: ClaudeMessageContent::Text("Hello!".to_string()),
+        }],
+        system: Some(ClaudeSystemPrompt::Text(
+            "You are a helpful assistant.".to_string(),
+        )),
+        stop_sequences: None,
+        stream: false,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        metadata: None,
+        tools: None,
+        tool_choice: None,
+        thinking: None,
+    };
+
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
+
+    let input_messages: Vec<serde_json::Value> = openai_request
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|arr| arr.to_vec())
+        .unwrap_or_default();
+
+    // System message should be first
+    assert_eq!(input_messages.len(), 2);
+    assert_eq!(input_messages[0]["role"], "system");
+    assert_eq!(input_messages[0]["content"], "You are a helpful assistant.");
+    assert_eq!(input_messages[1]["role"], "user");
+    assert_eq!(input_messages[1]["content"], "Hello!");
+}
+
+#[test]
+fn test_langfuse_input_messages_capture_multi_turn() {
+    let request = ClaudeMessagesRequest {
+        model: "claude-3-opus-20240229".to_string(),
+        max_tokens: 1024,
+        messages: vec![
+            ClaudeMessage {
+                role: "user".to_string(),
+                content: ClaudeMessageContent::Text("Hello!".to_string()),
+            },
+            ClaudeMessage {
+                role: "assistant".to_string(),
+                content: ClaudeMessageContent::Text("Hi there! How can I help?".to_string()),
+            },
+            ClaudeMessage {
+                role: "user".to_string(),
+                content: ClaudeMessageContent::Text("What's 2+2?".to_string()),
+            },
+        ],
+        system: Some(ClaudeSystemPrompt::Text("Be concise.".to_string())),
+        stop_sequences: None,
+        stream: false,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        metadata: None,
+        tools: None,
+        tool_choice: None,
+        thinking: None,
+    };
+
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
+
+    let input_messages: Vec<serde_json::Value> = openai_request
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|arr| arr.to_vec())
+        .unwrap_or_default();
+
+    assert_eq!(input_messages.len(), 4);
+    assert_eq!(input_messages[0]["role"], "system");
+    assert_eq!(input_messages[1]["role"], "user");
+    assert_eq!(input_messages[2]["role"], "assistant");
+    assert_eq!(input_messages[3]["role"], "user");
+    assert_eq!(input_messages[3]["content"], "What's 2+2?");
+}
+
+#[test]
+fn test_langfuse_model_parameters_capture() {
+    let request = ClaudeMessagesRequest {
+        model: "claude-3-opus-20240229".to_string(),
+        max_tokens: 2048,
+        messages: vec![ClaudeMessage {
+            role: "user".to_string(),
+            content: ClaudeMessageContent::Text("Hello!".to_string()),
+        }],
+        system: None,
+        stop_sequences: Some(vec!["STOP".to_string(), "END".to_string()]),
+        stream: false,
+        temperature: Some(0.8),
+        top_p: Some(0.95),
+        top_k: None,
+        metadata: None,
+        tools: None,
+        tool_choice: None,
+        thinking: None,
+    };
+
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
+
+    // Simulate what claude.rs does for Langfuse model parameters capture
+    let mut model_parameters: HashMap<String, serde_json::Value> = HashMap::new();
+    let param_keys = ["temperature", "max_tokens", "top_p", "stop"];
+    for key in param_keys {
+        if let Some(val) = openai_request.get(key) {
+            model_parameters.insert(key.to_string(), val.clone());
+        }
+    }
+
+    assert_eq!(model_parameters.get("temperature"), Some(&json!(0.8)));
+    assert_eq!(model_parameters.get("max_tokens"), Some(&json!(2048)));
+    assert_eq!(model_parameters.get("top_p"), Some(&json!(0.95)));
+    assert_eq!(
+        model_parameters.get("stop"),
+        Some(&json!(["STOP", "END"]))
+    );
+}
+
+#[test]
+fn test_langfuse_model_parameters_partial() {
+    let request = ClaudeMessagesRequest {
+        model: "claude-3-opus-20240229".to_string(),
+        max_tokens: 1024,
+        messages: vec![ClaudeMessage {
+            role: "user".to_string(),
+            content: ClaudeMessageContent::Text("Hello!".to_string()),
+        }],
+        system: None,
+        stop_sequences: None,
+        stream: false,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        metadata: None,
+        tools: None,
+        tool_choice: None,
+        thinking: None,
+    };
+
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
+
+    let mut model_parameters: HashMap<String, serde_json::Value> = HashMap::new();
+    let param_keys = ["temperature", "max_tokens", "top_p", "stop"];
+    for key in param_keys {
+        if let Some(val) = openai_request.get(key) {
+            model_parameters.insert(key.to_string(), val.clone());
+        }
+    }
+
+    // Only max_tokens should be present
+    assert_eq!(model_parameters.get("max_tokens"), Some(&json!(1024)));
+    assert!(model_parameters.get("temperature").is_none());
+    assert!(model_parameters.get("top_p").is_none());
+    assert!(model_parameters.get("stop").is_none());
+}
+
+#[test]
+fn test_langfuse_input_messages_with_content_blocks() {
+    let request = ClaudeMessagesRequest {
+        model: "claude-3-opus-20240229".to_string(),
+        max_tokens: 1024,
+        messages: vec![ClaudeMessage {
+            role: "user".to_string(),
+            content: ClaudeMessageContent::Blocks(vec![ClaudeContentBlock::text(
+                "Hello from blocks!",
+            )]),
+        }],
+        system: None,
+        stop_sequences: None,
+        stream: false,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        metadata: None,
+        tools: None,
+        tool_choice: None,
+        thinking: None,
+    };
+
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
+
+    let input_messages: Vec<serde_json::Value> = openai_request
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|arr| arr.to_vec())
+        .unwrap_or_default();
+
+    assert_eq!(input_messages.len(), 1);
+    assert_eq!(input_messages[0]["role"], "user");
+    // Content could be string or array depending on conversion
+    let content = &input_messages[0]["content"];
+    assert!(
+        content.is_string() || content.is_array(),
+        "content should be string or array"
+    );
+}
+
+#[test]
+fn test_langfuse_input_messages_with_tool_result() {
+    let request = ClaudeMessagesRequest {
+        model: "claude-3-opus-20240229".to_string(),
+        max_tokens: 1024,
+        messages: vec![
+            ClaudeMessage {
+                role: "user".to_string(),
+                content: ClaudeMessageContent::Text("What's the weather?".to_string()),
+            },
+            ClaudeMessage {
+                role: "assistant".to_string(),
+                content: ClaudeMessageContent::Blocks(vec![ClaudeContentBlock::tool_use(
+                    "call_123",
+                    "get_weather",
+                    json!({"location": "San Francisco"}),
+                )]),
+            },
+            ClaudeMessage {
+                role: "user".to_string(),
+                content: ClaudeMessageContent::Blocks(vec![ClaudeContentBlock::ToolResult(
+                    ClaudeContentBlockToolResult {
+                        content_type: "tool_result".to_string(),
+                        tool_use_id: "call_123".to_string(),
+                        content: json!("Sunny, 72°F"),
+                        is_error: None,
+                    },
+                )]),
+            },
+        ],
+        system: None,
+        stop_sequences: None,
+        stream: false,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        metadata: None,
+        tools: Some(vec![ClaudeTool {
+            name: "get_weather".to_string(),
+            description: Some("Get weather information".to_string()),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string"}
+                }
+            }),
+        }]),
+        tool_choice: None,
+        thinking: None,
+    };
+
+    let openai_request = claude_to_openai_request(&request, None, 1, 8192);
+
+    let input_messages: Vec<serde_json::Value> = openai_request
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|arr| arr.to_vec())
+        .unwrap_or_default();
+
+    // Should have user, assistant with tool_calls, and tool response
+    assert!(input_messages.len() >= 3, "Should have at least 3 messages");
+    assert_eq!(input_messages[0]["role"], "user");
 }

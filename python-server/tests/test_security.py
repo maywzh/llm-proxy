@@ -220,7 +220,7 @@ class TestSecurityIntegration:
     @pytest.mark.asyncio
     async def test_security_with_dependencies(self, monkeypatch, clear_config_cache):
         """Test security works with FastAPI dependencies"""
-        from app.api.dependencies import verify_auth
+        from app.core.security import verify_credential_key
         from fastapi import HTTPException
 
         raw_key = "secret-key"
@@ -247,12 +247,13 @@ class TestSecurityIntegration:
         monkeypatch.setattr(security_module, "get_config", lambda: config)
         init_rate_limiter()
 
-        result = await verify_auth(f"Bearer {raw_key}")
+        is_valid, result = verify_credential_key(authorization=f"Bearer {raw_key}")
+        assert is_valid is True
         assert result is not None
         assert result.name == "test-key"
 
         with pytest.raises(HTTPException) as exc_info:
-            await verify_auth("Bearer wrong-key")
+            verify_credential_key(authorization="Bearer wrong-key")
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio

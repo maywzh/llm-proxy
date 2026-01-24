@@ -190,6 +190,10 @@ sequenceDiagram
 
 - **Model Name Mapping**: Translate model names between client and provider
   - Configured per-provider in database
+  - Supports wildcard/regex patterns (e.g., `claude-opus-4-5-.*`, `gemini-*`)
+  - Exact matches take priority over pattern matches
+  - Python: [`match_model_pattern()`](python-server/app/models/provider.py#L40)
+  - Rust: [`match_model_pattern()`](rust-server/src/api/models.rs#L78)
 
 ### Authentication & Security
 

@@ -270,7 +270,11 @@ providers:
     api_key: "${API_KEY_1}"
     weight: 2  # Higher weight = more requests
     model_mapping:
+      # Exact match
       "claude-4.5-sonnet": "actual-provider-model"
+      # Wildcard/regex patterns supported:
+      "claude-opus-4-5-.*": "claude-opus-mapped"  # Regex pattern
+      "gemini-*": "gemini-pro"                     # Simple wildcard (* -> .*)
 
 # Master Key configuration
 master_keys:

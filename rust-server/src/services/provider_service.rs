@@ -3,7 +3,7 @@
 //! This module implements weighted round-robin selection of LLM providers
 //! with thread-safe state management.
 
-use crate::api::models::Provider;
+use crate::api::models::{is_pattern, Provider};
 use crate::core::config::AppConfig;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
@@ -106,12 +106,12 @@ impl ProviderService {
 
         let model_name = model.unwrap();
 
-        // Filter providers that have the requested model
+        // Filter providers that have the requested model (supports wildcard patterns)
         let mut available_providers = Vec::new();
         let mut available_weights = Vec::new();
 
         for (provider, &weight) in self.providers.iter().zip(self.weights.iter()) {
-            if provider.model_mapping.contains_key(model_name) {
+            if provider.supports_model(model_name) {
                 available_providers.push(provider.clone());
                 available_weights.push(weight);
             }
@@ -147,11 +147,16 @@ impl ProviderService {
     /// Get all unique model names across all providers.
     ///
     /// Returns a set of model identifiers that can be requested.
+    /// Note: Wildcard/regex patterns are filtered out from the result.
+    /// Only exact model names are returned for /v1/models compatibility.
     pub fn get_all_models(&self) -> HashSet<String> {
         let mut models = HashSet::new();
         for provider in self.providers.iter() {
             for model in provider.model_mapping.keys() {
-                models.insert(model.clone());
+                // Filter out wildcard/regex patterns
+                if !is_pattern(model) {
+                    models.insert(model.clone());
+                }
             }
         }
         models
@@ -217,6 +222,8 @@ mod tests {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            min_tokens_limit: 1,
+            max_tokens_limit: 128000,
         }
     }
 
@@ -235,6 +242,8 @@ mod tests {
             ttft_timeout_secs: None,
             credentials: vec![],
             provider_suffix: None,
+            min_tokens_limit: 1,
+            max_tokens_limit: 128000,
         }
     }
 
@@ -559,5 +568,254 @@ mod tests {
         // Should follow weight distribution (2:1 ratio)
         let ratio = provider1_count as f64 / provider2_count as f64;
         assert!(ratio > 1.5 && ratio < 2.5, "Ratio was {}", ratio);
+    }
+
+    #[test]
+    fn test_provider_selection_with_regex_pattern() {
+        let config = AppConfig {
+            providers: vec![
+                ProviderConfig {
+                    name: "claude-provider".to_string(),
+                    api_base: "https://api.claude.com".to_string(),
+                    api_key: "key1".to_string(),
+                    weight: 1,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("claude-opus-4-5-.*".to_string(), "claude-opus-mapped".to_string());
+                        map
+                    },
+                },
+                ProviderConfig {
+                    name: "openai-provider".to_string(),
+                    api_base: "https://api.openai.com".to_string(),
+                    api_key: "key2".to_string(),
+                    weight: 1,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("gpt-4".to_string(), "gpt-4-turbo".to_string());
+                        map
+                    },
+                },
+            ],
+            server: ServerConfig::default(),
+            verify_ssl: true,
+            request_timeout_secs: 300,
+            ttft_timeout_secs: None,
+            credentials: vec![],
+            provider_suffix: None,
+            min_tokens_limit: 1,
+            max_tokens_limit: 128000,
+        };
+
+        let service = ProviderService::new(config);
+
+        // Test regex pattern matching - should select claude-provider
+        let provider = service.get_next_provider(Some("claude-opus-4-5-20240620")).unwrap();
+        assert_eq!(provider.name, "claude-provider");
+        assert_eq!(provider.get_mapped_model("claude-opus-4-5-20240620"), "claude-opus-mapped");
+
+        // Test another variant of the pattern
+        let provider = service.get_next_provider(Some("claude-opus-4-5-latest")).unwrap();
+        assert_eq!(provider.name, "claude-provider");
+        assert_eq!(provider.get_mapped_model("claude-opus-4-5-latest"), "claude-opus-mapped");
+
+        // Test exact match - should select openai-provider
+        let provider = service.get_next_provider(Some("gpt-4")).unwrap();
+        assert_eq!(provider.name, "openai-provider");
+        assert_eq!(provider.get_mapped_model("gpt-4"), "gpt-4-turbo");
+
+        // Test non-matching model - should return error
+        let result = service.get_next_provider(Some("unknown-model"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_provider_selection_with_simple_wildcard() {
+        let config = AppConfig {
+            providers: vec![ProviderConfig {
+                name: "gemini-provider".to_string(),
+                api_base: "https://api.gemini.com".to_string(),
+                api_key: "key1".to_string(),
+                weight: 1,
+                model_mapping: {
+                    let mut map = HashMap::new();
+                    map.insert("gemini-*".to_string(), "gemini-pro".to_string());
+                    map
+                },
+            }],
+            server: ServerConfig::default(),
+            verify_ssl: true,
+            request_timeout_secs: 300,
+            ttft_timeout_secs: None,
+            credentials: vec![],
+            provider_suffix: None,
+            min_tokens_limit: 1,
+            max_tokens_limit: 128000,
+        };
+
+        let service = ProviderService::new(config);
+
+        // Test simple wildcard matching
+        let provider = service.get_next_provider(Some("gemini-pro")).unwrap();
+        assert_eq!(provider.name, "gemini-provider");
+        assert_eq!(provider.get_mapped_model("gemini-pro"), "gemini-pro");
+
+        let provider = service.get_next_provider(Some("gemini-ultra")).unwrap();
+        assert_eq!(provider.name, "gemini-provider");
+        assert_eq!(provider.get_mapped_model("gemini-ultra"), "gemini-pro");
+
+        let provider = service.get_next_provider(Some("gemini-1.5-pro")).unwrap();
+        assert_eq!(provider.name, "gemini-provider");
+        assert_eq!(provider.get_mapped_model("gemini-1.5-pro"), "gemini-pro");
+    }
+
+    #[test]
+    fn test_exact_match_priority_over_pattern() {
+        let config = AppConfig {
+            providers: vec![ProviderConfig {
+                name: "provider1".to_string(),
+                api_base: "https://api1.com".to_string(),
+                api_key: "key1".to_string(),
+                weight: 1,
+                model_mapping: {
+                    let mut map = HashMap::new();
+                    map.insert("claude-.*".to_string(), "claude-pattern".to_string());
+                    map.insert("claude-opus".to_string(), "claude-opus-exact".to_string());
+                    map
+                },
+            }],
+            server: ServerConfig::default(),
+            verify_ssl: true,
+            request_timeout_secs: 300,
+            ttft_timeout_secs: None,
+            credentials: vec![],
+            provider_suffix: None,
+            min_tokens_limit: 1,
+            max_tokens_limit: 128000,
+        };
+
+        let service = ProviderService::new(config);
+
+        // Exact match should take priority
+        let provider = service.get_next_provider(Some("claude-opus")).unwrap();
+        assert_eq!(provider.get_mapped_model("claude-opus"), "claude-opus-exact");
+
+        // Pattern should match other claude models
+        let provider = service.get_next_provider(Some("claude-sonnet")).unwrap();
+        assert_eq!(provider.get_mapped_model("claude-sonnet"), "claude-pattern");
+    }
+
+    #[test]
+    fn test_multiple_providers_with_patterns_weighted() {
+        let config = AppConfig {
+            providers: vec![
+                ProviderConfig {
+                    name: "provider1".to_string(),
+                    api_base: "https://api1.com".to_string(),
+                    api_key: "key1".to_string(),
+                    weight: 2,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("claude-opus-4-5-.*".to_string(), "provider1-claude".to_string());
+                        map
+                    },
+                },
+                ProviderConfig {
+                    name: "provider2".to_string(),
+                    api_base: "https://api2.com".to_string(),
+                    api_key: "key2".to_string(),
+                    weight: 1,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("claude-opus-4-5-.*".to_string(), "provider2-claude".to_string());
+                        map
+                    },
+                },
+            ],
+            server: ServerConfig::default(),
+            verify_ssl: true,
+            request_timeout_secs: 300,
+            ttft_timeout_secs: None,
+            credentials: vec![],
+            provider_suffix: None,
+            min_tokens_limit: 1,
+            max_tokens_limit: 128000,
+        };
+
+        let service = ProviderService::new(config);
+
+        let mut provider1_count = 0;
+        let mut provider2_count = 0;
+
+        // Both providers should be selected with weighted distribution
+        for _ in 0..1000 {
+            let provider = service.get_next_provider(Some("claude-opus-4-5-20240620")).unwrap();
+            if provider.name == "provider1" {
+                provider1_count += 1;
+            } else {
+                provider2_count += 1;
+            }
+        }
+
+        assert!(provider1_count > 0);
+        assert!(provider2_count > 0);
+
+        // Should follow weight distribution (2:1 ratio)
+        let ratio = provider1_count as f64 / provider2_count as f64;
+        assert!(ratio > 1.5 && ratio < 2.5, "Ratio was {}", ratio);
+    }
+
+    #[test]
+    fn test_get_all_models_filters_patterns() {
+        let config = AppConfig {
+            providers: vec![
+                ProviderConfig {
+                    name: "provider1".to_string(),
+                    api_base: "https://api1.com".to_string(),
+                    api_key: "key1".to_string(),
+                    weight: 1,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("gpt-4".to_string(), "gpt-4-turbo".to_string()); // Exact match
+                        map.insert("claude-opus-4-5-.*".to_string(), "claude-mapped".to_string()); // Regex pattern
+                        map.insert("gemini-*".to_string(), "gemini-pro".to_string()); // Simple wildcard
+                        map
+                    },
+                },
+                ProviderConfig {
+                    name: "provider2".to_string(),
+                    api_base: "https://api2.com".to_string(),
+                    api_key: "key2".to_string(),
+                    weight: 1,
+                    model_mapping: {
+                        let mut map = HashMap::new();
+                        map.insert("gpt-3.5-turbo".to_string(), "gpt-3.5-turbo-0125".to_string()); // Exact match
+                        map.insert("claude-.*".to_string(), "claude-default".to_string()); // Regex pattern
+                        map
+                    },
+                },
+            ],
+            server: ServerConfig::default(),
+            verify_ssl: true,
+            request_timeout_secs: 300,
+            ttft_timeout_secs: None,
+            credentials: vec![],
+            provider_suffix: None,
+            min_tokens_limit: 1,
+            max_tokens_limit: 128000,
+        };
+
+        let service = ProviderService::new(config);
+        let models = service.get_all_models();
+
+        // Only exact matches should be returned
+        assert!(models.contains("gpt-4"));
+        assert!(models.contains("gpt-3.5-turbo"));
+        assert_eq!(models.len(), 2);
+
+        // Patterns should NOT be in the result
+        assert!(!models.contains("claude-opus-4-5-.*"));
+        assert!(!models.contains("gemini-*"));
+        assert!(!models.contains("claude-.*"));
     }
 }
