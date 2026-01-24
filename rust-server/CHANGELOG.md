@@ -12,6 +12,13 @@
 
 ### Fixed
 
+- **Streaming Connection Establishment**: Fixed delayed downstream connection establishment for streaming requests
+  - **Before**: Downstream connection was established only after receiving the first token from upstream provider
+  - **After**: Downstream connection is established immediately, matching Python server behavior
+  - TTFT timeout is now handled inside the stream, not before returning the response
+  - This improves perceived latency for streaming requests as clients receive response headers immediately
+  - Implemented in [`src/api/streaming.rs`](src/api/streaming.rs)
+
 - **Faithful Error Passthrough**: Fixed proxy to faithfully return backend provider errors
   - **BREAKING**: Backend 4xx/5xx errors now return original status code (was: always 500)
   - Backend error response body is now passed through unchanged

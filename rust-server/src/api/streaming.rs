@@ -60,6 +60,10 @@ struct StreamState {
     original_model: String,
     provider_name: String,
     api_key_name: String,
+    /// TTFT timeout in seconds (None = disabled)
+    ttft_timeout_secs: Option<u64>,
+    /// Whether the first chunk has been received
+    first_chunk_received: bool,
 }
 
 impl StreamState {
@@ -69,6 +73,7 @@ impl StreamState {
         original_model: String,
         provider_name: String,
         api_key_name: String,
+        ttft_timeout_secs: Option<u64>,
     ) -> Self {
         Self {
             stream: Box::pin(stream),
@@ -80,6 +85,8 @@ impl StreamState {
             original_model,
             provider_name,
             api_key_name,
+            ttft_timeout_secs,
+            first_chunk_received: false,
         }
     }
 }
@@ -140,7 +147,11 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
 
 /// Create an SSE stream from a provider response with token counting and optional TTFT timeout.
 ///
-/// This function uses `unfold` to maintain state sequentially - NO synchronization needed!
+/// This function establishes the downstream connection IMMEDIATELY and handles TTFT timeout
+/// inside the stream itself. This matches Python's behavior where the connection is established
+/// first, then streaming begins.
+///
+/// Uses `unfold` to maintain state sequentially - NO synchronization needed!
 /// Each stream processes chunks sequentially, so state is local and lock-free.
 ///
 /// Reads api_key_name from context (set by API_KEY_NAME.scope() in handlers).
@@ -159,121 +170,106 @@ pub async fn create_sse_stream(
     input_tokens: Option<usize>,
     ttft_timeout_secs: Option<u64>,
 ) -> Result<AxumResponse, AppError> {
-    let mut stream = response.bytes_stream();
+    let stream = response.bytes_stream();
     
     // Get api_key_name from context
     let api_key_name = get_api_key_name();
     
-    // Handle TTFT timeout for the first chunk
-    let first_chunk = if let Some(timeout_secs) = ttft_timeout_secs {
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), stream.next()).await {
-            Ok(chunk) => chunk,
-            Err(_) => {
-                tracing::warn!(
-                    "TTFT timeout: first token not received within {} seconds from {}",
-                    timeout_secs,
-                    provider_name
-                );
-                return Err(AppError::TTFTTimeout {
-                    timeout_secs,
-                    provider_name,
-                });
-            }
-        }
-    } else {
-        stream.next().await
-    };
-
-    // Process the first chunk if available
-    let (first_chunk_data, stream_ended) = match first_chunk {
-        Some(Ok(bytes)) => (Some(bytes), false),
-        Some(Err(e)) => {
-            tracing::error!("Stream error on first chunk: {}", e);
-            let error_event = json!({
-                "error": {
-                    "message": e.to_string(),
-                    "type": "stream_error",
-                    "code": "provider_error"
-                }
-            });
-            let error_message = format!(
-                "event: error\ndata: {}\n\ndata: [DONE]\n\n",
-                error_event
-            );
-            let body = Body::from(error_message);
-            return Ok(AxumResponse::builder()
-                .status(200)
-                .header("Content-Type", "text/event-stream")
-                .header("Cache-Control", "no-cache")
-                .header("Connection", "keep-alive")
-                .body(body)
-                .unwrap());
-        }
-        None => (None, true),
-    };
-
-    // Create initial state - all local, no Arc/Atomic needed!
-    let mut initial_state = StreamState::new(
+    // Create initial state with TTFT timeout config - connection established immediately!
+    // TTFT timeout is handled inside the stream, not before returning the response.
+    let initial_state = StreamState::new(
         stream,
         input_tokens.unwrap_or(0),
         original_model,
         provider_name,
         api_key_name,
+        ttft_timeout_secs,
     );
 
-    // If we have a first chunk, we need to process it and prepend to the stream
-    let byte_stream = if let Some(first_bytes) = first_chunk_data {
-        // Process the first chunk through the same logic
-        let first_output = process_chunk(&mut initial_state, first_bytes);
-        
-        // Create a stream that yields the first chunk, then continues with the rest
-        let first_stream = futures::stream::once(async move { Ok::<Vec<u8>, std::io::Error>(first_output) });
-        let rest_stream = futures::stream::unfold(initial_state, |mut state| async move {
-            match state.stream.next().await {
-                Some(Ok(bytes)) => {
-                    let output = process_chunk(&mut state, bytes);
-                    Some((Ok(output), state))
+    // Create the byte stream using unfold - TTFT timeout handled inside
+    let byte_stream = futures::stream::unfold(initial_state, |mut state| async move {
+        // Get the next chunk, applying TTFT timeout for the first chunk only
+        let chunk_result = if !state.first_chunk_received {
+            // First chunk - apply TTFT timeout if configured
+            if let Some(timeout_secs) = state.ttft_timeout_secs {
+                match tokio::time::timeout(Duration::from_secs(timeout_secs), state.stream.next()).await {
+                    Ok(chunk) => chunk,
+                    Err(_) => {
+                        // TTFT timeout - send error event and terminate stream
+                        tracing::warn!(
+                            "TTFT timeout: first token not received within {} seconds from {}",
+                            timeout_secs,
+                            state.provider_name
+                        );
+                        let error_event = json!({
+                            "error": {
+                                "message": format!(
+                                    "TTFT timeout: first token not received within {} seconds",
+                                    timeout_secs
+                                ),
+                                "type": "timeout_error",
+                                "code": "ttft_timeout"
+                            }
+                        });
+                        let error_message = format!(
+                            "event: error\ndata: {}\n\ndata: [DONE]\n\n",
+                            error_event
+                        );
+                        
+                        // Terminate the stream
+                        let terminated_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
+                            Box::pin(futures::stream::empty());
+                        state.stream = terminated_stream;
+                        state.first_chunk_received = true;
+                        
+                        return Some((Ok::<Vec<u8>, std::io::Error>(error_message.into_bytes()), state));
+                    }
                 }
-                Some(Err(e)) => {
-                    tracing::error!("Stream error: {}", e);
-                    let error_event = json!({
-                        "error": {
-                            "message": e.to_string(),
-                            "type": "stream_error",
-                            "code": "provider_error"
-                        }
-                    });
-                    let error_message = format!(
-                        "event: error\ndata: {}\n\ndata: [DONE]\n\n",
-                        error_event
-                    );
-                    
-                    let terminated_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
-                        Box::pin(futures::stream::empty());
-                    let mut final_state = state;
-                    final_state.stream = terminated_stream;
-                    
-                    Some((Ok(error_message.into_bytes()), final_state))
-                }
-                None => {
-                    finalize_stream(&state);
-                    None
-                }
+            } else {
+                state.stream.next().await
             }
-        });
+        } else {
+            // Subsequent chunks - no timeout
+            state.stream.next().await
+        };
         
-        Box::pin(first_stream.chain(rest_stream)) as Pin<Box<dyn Stream<Item = Result<Vec<u8>, std::io::Error>> + Send>>
-    } else if stream_ended {
-        // Stream ended immediately
-        finalize_stream(&initial_state);
-        Box::pin(futures::stream::empty()) as Pin<Box<dyn Stream<Item = Result<Vec<u8>, std::io::Error>> + Send>>
-    } else {
-        // No first chunk data but stream didn't end - shouldn't happen
-        Box::pin(futures::stream::empty()) as Pin<Box<dyn Stream<Item = Result<Vec<u8>, std::io::Error>> + Send>>
-    };
+        match chunk_result {
+            Some(Ok(bytes)) => {
+                state.first_chunk_received = true;
+                let output = process_chunk(&mut state, bytes);
+                Some((Ok(output), state))
+            }
+            Some(Err(e)) => {
+                tracing::error!("Stream error: {}", e);
+                let error_event = json!({
+                    "error": {
+                        "message": e.to_string(),
+                        "type": "stream_error",
+                        "code": "provider_error"
+                    }
+                });
+                let error_message = format!(
+                    "event: error\ndata: {}\n\ndata: [DONE]\n\n",
+                    error_event
+                );
+                
+                let terminated_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
+                    Box::pin(futures::stream::empty());
+                state.stream = terminated_stream;
+                state.first_chunk_received = true;
+                
+                Some((Ok(error_message.into_bytes()), state))
+            }
+            None => {
+                finalize_stream(&state);
+                None
+            }
+        }
+    });
 
     let body = Body::from_stream(byte_stream);
 
+    // Return response IMMEDIATELY - connection established before first token arrives
     Ok(AxumResponse::builder()
         .status(200)
         .header("Content-Type", "text/event-stream")
@@ -584,6 +580,7 @@ mod tests {
             "gpt-3.5-turbo".to_string(),
             "test-provider".to_string(),
             "test-key".to_string(),
+            Some(30), // ttft_timeout_secs
         );
         
         assert_eq!(state.input_tokens, 100);
@@ -591,5 +588,7 @@ mod tests {
         assert_eq!(state.usage_found, false);
         assert!(state.provider_first_token_time.is_none());
         assert_eq!(state.api_key_name, "test-key");
+        assert_eq!(state.ttft_timeout_secs, Some(30));
+        assert_eq!(state.first_chunk_received, false);
     }
 }
