@@ -9,6 +9,7 @@ use crate::api::streaming::{
 };
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
+use crate::core::langfuse::{get_langfuse_service, GenerationData};
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
@@ -21,6 +22,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use chrono::Utc;
 use prometheus::{Encoder, TextEncoder};
 use serde_json::json;
 use std::collections::HashSet;
@@ -273,7 +275,70 @@ pub async fn chat_completions(
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
+        // Extract client metadata from headers for Langfuse tracing
+        let mut client_metadata = std::collections::HashMap::new();
+        let user_agent = headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+        if let Some(ref ua) = user_agent {
+            client_metadata.insert("user_agent".to_string(), ua.clone());
+        }
+        if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            client_metadata.insert("x_forwarded_for".to_string(), forwarded_for.to_string());
+        }
+        if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            client_metadata.insert("x_real_ip".to_string(), real_ip.to_string());
+        }
+        if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
+            client_metadata.insert("origin".to_string(), origin.to_string());
+        }
+        if let Some(referer) = headers.get("referer").and_then(|v| v.to_str().ok()) {
+            client_metadata.insert("referer".to_string(), referer.to_string());
+        }
+
+        // Build tags for Langfuse (credential, user-agent will be added after provider selection)
+        let mut tags = vec![
+            "endpoint:/v1/chat/completions".to_string(),
+            format!("credential:{}", api_key_name),
+        ];
+        if let Some(ref ua) = user_agent {
+            // Truncate user-agent for tag (tags should be short)
+            let ua_short = if ua.len() > 50 { &ua[..50] } else { ua.as_str() };
+            tags.push(format!("user_agent:{}", ua_short));
+        }
+
+        // Initialize Langfuse tracing (provider tag will be added via update_trace_provider)
+        let langfuse = get_langfuse_service();
+        let trace_id = if let Ok(service) = langfuse.read() {
+            service.create_trace(
+                &request_id,
+                &api_key_name,
+                "/v1/chat/completions",
+                tags,
+                client_metadata,
+            )
+        } else {
+            None
+        };
+
+        // Initialize generation data for Langfuse
+        let mut generation_data = GenerationData {
+            trace_id: trace_id.clone().unwrap_or_default(),
+            request_id: request_id.clone(),
+            credential_name: api_key_name.clone(),
+            endpoint: "/v1/chat/completions".to_string(),
+            start_time: Utc::now(),
+            ..Default::default()
+        };
+
         if !payload.is_object() {
+            // Record error in Langfuse
+            generation_data.is_error = true;
+            generation_data.error_message = Some("Request body must be a JSON object".to_string());
+            generation_data.end_time = Some(Utc::now());
+            if trace_id.is_some() {
+                if let Ok(service) = langfuse.read() {
+                    service.trace_generation(generation_data);
+                }
+            }
             return Err(AppError::BadRequest(
                 "Request body must be a JSON object".to_string(),
             ));
@@ -292,6 +357,37 @@ pub async fn chat_completions(
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
 
+        // Capture input data for Langfuse
+        generation_data.original_model = model_label.clone();
+        generation_data.input_messages = payload
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|arr| arr.to_vec())
+            .unwrap_or_default();
+        generation_data.is_streaming = payload
+            .get("stream")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false);
+
+        // Capture model parameters for Langfuse
+        let param_keys = [
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "stop",
+            "n",
+            "logprobs",
+        ];
+        for key in param_keys {
+            if let Some(val) = payload.get(key) {
+                generation_data
+                    .model_parameters
+                    .insert(key.to_string(), val.clone());
+            }
+        }
+
         // Get fresh provider service from DynamicConfig
         let provider_service = state.get_provider_service();
         
@@ -308,9 +404,41 @@ pub async fn chat_completions(
                     model = %model_label,
                     "Provider selection failed - no available provider for model"
                 );
+                // Record error in Langfuse
+                generation_data.is_error = true;
+                generation_data.error_message = Some(err.clone());
+                generation_data.end_time = Some(Utc::now());
+                if trace_id.is_some() {
+                    if let Ok(service) = langfuse.read() {
+                        service.trace_generation(generation_data);
+                    }
+                }
                 return Err(AppError::BadRequest(err));
             }
         };
+
+        // Capture provider info for Langfuse
+        generation_data.provider_key = provider.name.clone();
+        generation_data.provider_type = "openai".to_string(); // Default provider type
+        generation_data.provider_api_base = provider.api_base.clone();
+        let mapped_model = provider
+            .model_mapping
+            .get(&model_label)
+            .cloned()
+            .unwrap_or_else(|| model_label.clone());
+        generation_data.mapped_model = mapped_model.clone();
+
+        // Update trace with provider info (so trace metadata includes provider)
+        if let Some(ref tid) = trace_id {
+            if let Ok(service) = langfuse.read() {
+                service.update_trace_provider(
+                    tid,
+                    &provider.name,
+                    &provider.api_base,
+                    &model_label,
+                );
+            }
+        }
 
         // Map model if needed (use effective_model for mapping lookup)
         if let Some(eff_model) = effective_model.as_ref() {
@@ -362,7 +490,16 @@ pub async fn chat_completions(
                             
                             // Create a response builder that will be used for all error cases
                             // This ensures model, provider, and api_key_name are always set for metrics
-                            let create_error_response = |status: StatusCode, message: String| -> Response {
+                            let create_error_response = |status: StatusCode, message: String, gen_data: &mut GenerationData| -> Response {
+                                // Record error in Langfuse
+                                gen_data.is_error = true;
+                                gen_data.error_message = Some(message.clone());
+                                gen_data.end_time = Some(Utc::now());
+                                if trace_id.is_some() {
+                                    if let Ok(service) = langfuse.read() {
+                                        service.trace_generation(gen_data.clone());
+                                    }
+                                }
                                 build_error_response(status, message, &model_label, &provider.name, &api_key_name)
                             };
 
@@ -394,6 +531,7 @@ pub async fn chat_completions(
                                     return Ok(create_error_response(
                                         status,
                                         format!("Upstream request failed: {}", e),
+                                        &mut generation_data,
                                     ));
                                 }
                             };
@@ -445,6 +583,22 @@ pub async fn chat_completions(
                                     "Backend API returned error status"
                                 );
 
+                                // Record error in Langfuse
+                                let error_message = error_body
+                                    .get("error")
+                                    .and_then(|e| e.get("message"))
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or(&format!("HTTP {}", status))
+                                    .to_string();
+                                generation_data.is_error = true;
+                                generation_data.error_message = Some(error_message);
+                                generation_data.end_time = Some(Utc::now());
+                                if trace_id.is_some() {
+                                    if let Ok(service) = langfuse.read() {
+                                        service.trace_generation(generation_data.clone());
+                                    }
+                                }
+
                                 // Faithfully return the backend's status code and error body
                                 let mut response = Json(error_body).into_response();
                                 *response.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -455,14 +609,21 @@ pub async fn chat_completions(
                             }
 
                             let mut final_response = if is_stream {
-                                // For streaming, response is already checked for errors above
-                                // Pass input tokens for fallback calculation and TTFT timeout
+                                // For streaming, pass generation_data to create_sse_stream
+                                // Only pass if trace_id is Some (Langfuse enabled and sampled)
+                                let langfuse_data = if trace_id.is_some() {
+                                    Some(generation_data)
+                                } else {
+                                    None
+                                };
+                                
                                 match create_sse_stream(
                                     response,
                                     model_label.clone(),
                                     provider.name.clone(),
                                     prompt_tokens_for_fallback,
                                     state.config.ttft_timeout_secs,
+                                    langfuse_data,
                                 )
                                 .await
                                 {
@@ -474,9 +635,14 @@ pub async fn chat_completions(
                                             error = %e,
                                             "Streaming error"
                                         );
-                                        return Ok(create_error_response(
+                                        // Note: generation_data was moved into create_sse_stream
+                                        // so we can't record error here - it's handled inside the stream
+                                        return Ok(build_error_response(
                                             StatusCode::GATEWAY_TIMEOUT,
                                             e.to_string(),
+                                            &model_label,
+                                            &provider.name,
+                                            &api_key_name,
                                         ));
                                     }
                                 }
@@ -493,14 +659,43 @@ pub async fn chat_completions(
                                         return Ok(create_error_response(
                                             StatusCode::BAD_GATEWAY,
                                             format!("Invalid JSON from provider: {}", e),
+                                            &mut generation_data,
                                         ));
                                     }
                                 };
+
+                                // Capture output for Langfuse
+                                if let Some(choices) = response_data.get("choices").and_then(|c| c.as_array()) {
+                                    if let Some(first_choice) = choices.first() {
+                                        generation_data.output_content = first_choice
+                                            .get("message")
+                                            .and_then(|m| m.get("content"))
+                                            .and_then(|c| c.as_str())
+                                            .map(|s| s.to_string());
+                                        generation_data.finish_reason = first_choice
+                                            .get("finish_reason")
+                                            .and_then(|r| r.as_str())
+                                            .map(|s| s.to_string());
+                                    }
+                                }
 
                                 // Record token usage (api_key_name read from context inside record_token_usage)
                                 if let Some(usage_obj) = response_data.get("usage") {
                                     if let Ok(usage) = serde_json::from_value::<Usage>(usage_obj.clone()) {
                                         record_token_usage(&usage, &model_label, &provider.name);
+                                        
+                                        // Capture usage for Langfuse
+                                        generation_data.prompt_tokens = usage.prompt_tokens;
+                                        generation_data.completion_tokens = usage.completion_tokens;
+                                        generation_data.total_tokens = usage.total_tokens;
+                                    }
+                                }
+
+                                // Record successful generation in Langfuse
+                                generation_data.end_time = Some(Utc::now());
+                                if trace_id.is_some() {
+                                    if let Ok(service) = langfuse.read() {
+                                        service.trace_generation(generation_data);
                                     }
                                 }
 

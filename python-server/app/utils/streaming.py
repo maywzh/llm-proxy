@@ -3,7 +3,8 @@
 import asyncio
 import json
 import time
-from typing import AsyncIterator, Optional, Dict, Any
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, AsyncIterator, Optional, Dict, Any
 
 import httpx
 import tiktoken
@@ -18,6 +19,9 @@ from app.core.logging import (
     get_logger,
     get_api_key_name,
 )
+
+if TYPE_CHECKING:
+    from app.services.langfuse_service import GenerationData
 
 
 def count_tokens(text: str, model: str) -> int:
@@ -99,6 +103,7 @@ async def stream_response(
     provider_name: str,
     request_data: Optional[Dict[str, Any]] = None,
     ttft_timeout_secs: Optional[int] = None,
+    generation_data: Optional["GenerationData"] = None,
 ) -> AsyncIterator[bytes]:
     """Stream response from provider with model rewriting and token tracking
 
@@ -108,9 +113,15 @@ async def stream_response(
         provider_name: Provider name for metrics
         request_data: Original request data for fallback token counting
         ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
+        generation_data: Optional Langfuse generation data for tracing
     """
     logger = get_logger()
     api_key_name = get_api_key_name()
+
+    # Import langfuse service here to avoid circular imports
+    from app.services.langfuse_service import get_langfuse_service
+
+    langfuse_service = get_langfuse_service()
 
     # Calculate input tokens for fallback
     input_tokens = 0
@@ -130,6 +141,10 @@ async def stream_response(
     start_time = time.time()
     provider_first_token_time: Optional[float] = None
     token_count = 0
+
+    # Track accumulated output for Langfuse
+    accumulated_output: list[str] = []
+    finish_reason: Optional[str] = None
 
     try:
         # Set provider context for logging
@@ -172,6 +187,10 @@ async def stream_response(
                     provider=provider_name,
                 ).observe(provider_ttft)
                 logger.debug(f"Provider TTFT: {provider_ttft:.3f}s")
+
+                # Capture TTFT for Langfuse
+                if generation_data:
+                    generation_data.ttft_time = datetime.now(timezone.utc)
 
             # Try to extract usage from provider (preferred method)
             # Only process complete lines to avoid parsing incomplete JSON
@@ -217,6 +236,19 @@ async def stream_response(
                                         ).inc(usage["total_tokens"])
 
                                     usage_found = True
+
+                                    # Capture usage for Langfuse
+                                    if generation_data:
+                                        generation_data.prompt_tokens = usage.get(
+                                            "prompt_tokens", 0
+                                        )
+                                        generation_data.completion_tokens = usage.get(
+                                            "completion_tokens", 0
+                                        )
+                                        generation_data.total_tokens = usage.get(
+                                            "total_tokens", 0
+                                        )
+
                                     logger.debug(
                                         f"Token usage from provider - "
                                         f"model={model_name} provider={provider_name} key={api_key_name} "
@@ -250,7 +282,7 @@ async def stream_response(
                 except Exception as e:
                     logger.debug(f"Failed to count tokens from content: {e}")
 
-            # Count tokens in this chunk for TPS calculation
+            # Count tokens in this chunk for TPS calculation and accumulate output for Langfuse
             try:
                 lines = chunk_str.split("\n")
                 for line in lines:
@@ -265,6 +297,12 @@ async def stream_response(
                                     token_count += count_tokens(
                                         content, model_for_counting
                                     )
+                                    # Accumulate output for Langfuse
+                                    if generation_data:
+                                        accumulated_output.append(content)
+                                # Capture finish_reason for Langfuse
+                                if choice.get("finish_reason"):
+                                    finish_reason = choice.get("finish_reason")
             except Exception as e:
                 logger.debug(f"Failed to count tokens for TPS: {e}")
 
@@ -296,6 +334,12 @@ async def stream_response(
                 api_key_name=api_key_name,
             ).inc(total_tokens)
 
+            # Capture fallback usage for Langfuse
+            if generation_data:
+                generation_data.prompt_tokens = input_tokens
+                generation_data.completion_tokens = output_tokens
+                generation_data.total_tokens = total_tokens
+
             logger.info(
                 f"Token usage calculated (fallback) - "
                 f"model={model_name} provider={provider_name} key={api_key_name} "
@@ -316,7 +360,21 @@ async def stream_response(
                         provider=provider_name,
                     ).observe(provider_tps)
                     logger.debug(f"Provider TPS: {provider_tps:.2f} tokens/s")
+
+        # Finalize Langfuse generation data
+        if generation_data:
+            generation_data.output_content = "".join(accumulated_output)
+            generation_data.finish_reason = finish_reason
+            generation_data.end_time = datetime.now(timezone.utc)
+            langfuse_service.trace_generation(generation_data)
+
     except TTFTTimeoutError:
+        # Record error in Langfuse
+        if generation_data:
+            generation_data.is_error = True
+            generation_data.error_message = f"TTFT timeout: first token not received within {ttft_timeout_secs} seconds"
+            generation_data.end_time = datetime.now(timezone.utc)
+            langfuse_service.trace_generation(generation_data)
         raise
     except httpx.RemoteProtocolError as e:
         # Handle connection closed by remote server during streaming
@@ -324,6 +382,17 @@ async def stream_response(
             f"Remote protocol error during streaming from provider {provider_name}: {str(e)} - "
             f"Provider closed connection unexpectedly"
         )
+
+        # Record error in Langfuse
+        if generation_data:
+            generation_data.is_error = True
+            generation_data.error_message = (
+                f"Provider {provider_name} closed connection unexpectedly"
+            )
+            generation_data.output_content = "".join(accumulated_output)
+            generation_data.end_time = datetime.now(timezone.utc)
+            langfuse_service.trace_generation(generation_data)
+
         # Send error event to client using SSE format
         error_message = f"Provider {provider_name} closed connection unexpectedly"
         error_event = json.dumps(
@@ -342,6 +411,15 @@ async def stream_response(
         logger.exception(
             f"Unexpected error during streaming from provider {provider_name}"
         )
+
+        # Record error in Langfuse
+        if generation_data:
+            generation_data.is_error = True
+            generation_data.error_message = error_detail
+            generation_data.output_content = "".join(accumulated_output)
+            generation_data.end_time = datetime.now(timezone.utc)
+            langfuse_service.trace_generation(generation_data)
+
         # Send error event to client using SSE format
         error_event = json.dumps(
             {
@@ -364,6 +442,7 @@ def create_streaming_response(
     provider_name: str,
     request_data: Optional[Dict[str, Any]] = None,
     ttft_timeout_secs: Optional[int] = None,
+    generation_data: Optional["GenerationData"] = None,
 ) -> StreamingResponse:
     """Create streaming response with proper cleanup
 
@@ -373,10 +452,16 @@ def create_streaming_response(
         provider_name: Provider name for metrics
         request_data: Original request data for fallback token counting
         ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
+        generation_data: Optional Langfuse generation data for tracing
     """
     return StreamingResponse(
         stream_response(
-            response, original_model, provider_name, request_data, ttft_timeout_secs
+            response,
+            original_model,
+            provider_name,
+            request_data,
+            ttft_timeout_secs,
+            generation_data,
         ),
         media_type="text/event-stream",
     )

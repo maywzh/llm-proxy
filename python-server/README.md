@@ -40,6 +40,7 @@ High-performance LLM API proxy service built with FastAPI, supporting weighted l
 - ✅ **Rate Limiting** - Optional per-key rate limiting
 - ✅ **Dynamic Configuration** - PostgreSQL-based hot-reload configuration
 - ✅ **Async Processing** - Full async architecture with FastAPI + httpx
+- ✅ **Langfuse Integration** - Optional LLM observability and tracing
 
 ## 🔧 Tech Stack
 
@@ -370,6 +371,52 @@ curl -X POST http://localhost:18000/admin/v1/credentials \
 - **Production Keys**: Set reasonable rate limits to prevent abuse
 - **Development/Test Keys**: Can disable rate limiting for easier debugging
 - **Special Purpose Keys**: Configure flexibly based on actual needs
+
+## 🔍 Langfuse Integration
+
+LLM Proxy supports optional [Langfuse](https://langfuse.com) integration for LLM observability and tracing.
+
+### Features
+
+- **Request Tracing**: Captures provider info, request/response data, token usage
+- **TTFT Tracking**: Time to First Token metrics for streaming requests
+- **Sampling Support**: Configurable sampling rate for high-traffic scenarios
+- **Background Batching**: Minimal latency impact with async batching
+
+### Configuration
+
+Set the following environment variables to enable Langfuse:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LANGFUSE_ENABLED` | Enable Langfuse tracing | `false` |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key (required when enabled) | - |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key (required when enabled) | - |
+| `LANGFUSE_HOST` | Langfuse server URL | `https://cloud.langfuse.com` |
+| `LANGFUSE_SAMPLE_RATE` | Sampling rate (0.0-1.0) | `1.0` |
+| `LANGFUSE_FLUSH_INTERVAL` | Flush interval in seconds | `5` |
+| `LANGFUSE_DEBUG` | Enable debug logging | `false` |
+
+### Enabling Langfuse
+
+1. Sign up at [Langfuse](https://langfuse.com) and create a project
+2. Get your public and secret keys from the project settings
+3. Set environment variables:
+
+```bash
+export LANGFUSE_ENABLED=true
+export LANGFUSE_PUBLIC_KEY=pk-lf-...
+export LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+1. Restart the server
+
+Traces will appear in your Langfuse dashboard with:
+- Provider information (which provider handled the request)
+- Model mapping (original vs mapped model names)
+- Token usage (prompt, completion, total)
+- Timing metrics (duration, TTFT for streaming)
+- Error details (if request failed)
 
 ## 📊 Monitoring
 

@@ -5,11 +5,13 @@
 
 use crate::api::models::Usage;
 use crate::core::error::AppError;
+use crate::core::langfuse::{get_langfuse_service, GenerationData};
 use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
 use axum::body::Body;
 use axum::response::Response as AxumResponse;
 use bytes::Bytes;
+use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
 use reqwest::Response;
 use serde_json::{json, Value};
@@ -64,6 +66,12 @@ struct StreamState {
     ttft_timeout_secs: Option<u64>,
     /// Whether the first chunk has been received
     first_chunk_received: bool,
+    /// Langfuse generation data (None if Langfuse disabled or not sampled)
+    generation_data: Option<GenerationData>,
+    /// Accumulated output content for Langfuse
+    accumulated_output: Vec<String>,
+    /// Finish reason from the stream
+    finish_reason: Option<String>,
 }
 
 impl StreamState {
@@ -74,6 +82,7 @@ impl StreamState {
         provider_name: String,
         api_key_name: String,
         ttft_timeout_secs: Option<u64>,
+        generation_data: Option<GenerationData>,
     ) -> Self {
         Self {
             stream: Box::pin(stream),
@@ -87,6 +96,9 @@ impl StreamState {
             api_key_name,
             ttft_timeout_secs,
             first_chunk_received: false,
+            generation_data,
+            accumulated_output: Vec::new(),
+            finish_reason: None,
         }
     }
 }
@@ -163,12 +175,14 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
 /// * `provider_name` - Name of the provider for metrics
 /// * `input_tokens` - Optional input token count for fallback calculation
 /// * `ttft_timeout_secs` - Optional TTFT timeout in seconds
+/// * `generation_data` - Optional Langfuse generation data for tracing
 pub async fn create_sse_stream(
     response: Response,
     original_model: String,
     provider_name: String,
     input_tokens: Option<usize>,
     ttft_timeout_secs: Option<u64>,
+    generation_data: Option<GenerationData>,
 ) -> Result<AxumResponse, AppError> {
     let stream = response.bytes_stream();
     
@@ -184,6 +198,7 @@ pub async fn create_sse_stream(
         provider_name,
         api_key_name,
         ttft_timeout_secs,
+        generation_data,
     );
 
     // Create the byte stream using unfold - TTFT timeout handled inside
@@ -317,34 +332,62 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                     if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
                         record_token_usage(&usage, &state.original_model, &state.provider_name, &state.api_key_name);
                         state.usage_found = true;
+                        
+                        // Capture usage for Langfuse
+                        if let Some(ref mut gen_data) = state.generation_data {
+                            gen_data.prompt_tokens = usage.prompt_tokens;
+                            gen_data.completion_tokens = usage.completion_tokens;
+                            gen_data.total_tokens = usage.total_tokens;
+                        }
                     }
                 }
             }
             
-            // Token counting - direct state modification, no locks!
-            if !state.usage_found {
-                let contents = extract_stream_text(&json_obj);
-                if !contents.is_empty() {
-                    let now = Instant::now();
+            // Extract content and finish_reason for token counting and Langfuse
+            let contents = extract_stream_text(&json_obj);
+            
+            // Capture finish_reason for Langfuse
+            if let Some(choices) = json_obj.get("choices").and_then(|c| c.as_array()) {
+                for choice in choices {
+                    if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+                        state.finish_reason = Some(reason.to_string());
+                    }
+                }
+            }
+            
+            if !contents.is_empty() {
+                let now = Instant::now();
+                
+                // Record provider TTFT
+                if state.provider_first_token_time.is_none() {
+                    state.provider_first_token_time = Some(now);
+                    let provider_ttft = (now - state.start_time).as_secs_f64();
+                    let metrics = get_metrics();
+                    metrics.ttft.with_label_values(&["provider", &state.original_model, &state.provider_name]).observe(provider_ttft);
                     
-                    // Record provider TTFT
-                    if state.provider_first_token_time.is_none() {
-                        state.provider_first_token_time = Some(now);
-                        let provider_ttft = (now - state.start_time).as_secs_f64();
-                        let metrics = get_metrics();
-                        metrics.ttft.with_label_values(&["provider", &state.original_model, &state.provider_name]).observe(provider_ttft);
-                        
-                        tracing::debug!(
-                            "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
-                            state.original_model,
-                            state.provider_name,
-                            provider_ttft
-                        );
+                    tracing::debug!(
+                        "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
+                        state.original_model,
+                        state.provider_name,
+                        provider_ttft
+                    );
+                    
+                    // Capture TTFT for Langfuse
+                    if let Some(ref mut gen_data) = state.generation_data {
+                        gen_data.ttft_time = Some(Utc::now());
+                    }
+                }
+                
+                // Accumulate tokens and output content
+                for content in contents {
+                    // Token counting for fallback (only if usage not found)
+                    if !state.usage_found {
+                        state.output_tokens += count_tokens(&content, &state.original_model);
                     }
                     
-                    // Accumulate tokens - simple addition, no atomics!
-                    for content in contents {
-                        state.output_tokens += count_tokens(&content, &state.original_model);
+                    // Accumulate output for Langfuse
+                    if state.generation_data.is_some() {
+                        state.accumulated_output.push(content);
                     }
                 }
             }
@@ -367,6 +410,7 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
 
 /// Finalize stream and record metrics
 fn finalize_stream(state: &StreamState) {
+    // Record fallback token usage if provider didn't send usage
     if !state.usage_found && state.output_tokens > 0 {
         record_fallback_token_usage(
             state.input_tokens,
@@ -375,32 +419,54 @@ fn finalize_stream(state: &StreamState) {
             &state.provider_name,
             &state.api_key_name,
         );
+    }
+    
+    // Calculate and record TPS
+    let total_duration = state.start_time.elapsed().as_secs_f64();
+    if total_duration > 0.0 && state.output_tokens > 0 {
+        let metrics = get_metrics();
         
-        // Calculate and record TPS
-        let total_duration = state.start_time.elapsed().as_secs_f64();
-        if total_duration > 0.0 {
-            let metrics = get_metrics();
-            
-            // Provider TPS
-            if let Some(provider_first_time) = state.provider_first_token_time {
-                let provider_duration = provider_first_time.elapsed().as_secs_f64();
-                if provider_duration > 0.0 {
-                    let provider_tps = state.output_tokens as f64 / provider_duration;
-                    metrics
-                        .tokens_per_second
-                        .with_label_values(&["provider", &state.original_model, &state.provider_name])
-                        .observe(provider_tps);
-                    
-                    tracing::info!(
-                        "Provider TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
-                        state.original_model,
-                        state.provider_name,
-                        state.output_tokens,
-                        provider_duration,
-                        provider_tps
-                    );
-                }
+        // Provider TPS
+        if let Some(provider_first_time) = state.provider_first_token_time {
+            let provider_duration = provider_first_time.elapsed().as_secs_f64();
+            if provider_duration > 0.0 {
+                let provider_tps = state.output_tokens as f64 / provider_duration;
+                metrics
+                    .tokens_per_second
+                    .with_label_values(&["provider", &state.original_model, &state.provider_name])
+                    .observe(provider_tps);
+                
+                tracing::info!(
+                    "Provider TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
+                    state.original_model,
+                    state.provider_name,
+                    state.output_tokens,
+                    provider_duration,
+                    provider_tps
+                );
             }
+        }
+    }
+    
+    // Record Langfuse generation
+    if let Some(ref gen_data) = state.generation_data {
+        let mut final_gen_data = gen_data.clone();
+        
+        // Set output content from accumulated output
+        final_gen_data.output_content = Some(state.accumulated_output.join(""));
+        final_gen_data.finish_reason = state.finish_reason.clone();
+        final_gen_data.end_time = Some(Utc::now());
+        
+        // Set token usage (from provider or fallback)
+        if !state.usage_found {
+            final_gen_data.prompt_tokens = state.input_tokens as u32;
+            final_gen_data.completion_tokens = state.output_tokens as u32;
+            final_gen_data.total_tokens = (state.input_tokens + state.output_tokens) as u32;
+        }
+        
+        // Send to Langfuse (non-blocking)
+        if let Ok(service) = get_langfuse_service().read() {
+            service.trace_generation(final_gen_data);
         }
     }
 }
@@ -581,14 +647,47 @@ mod tests {
             "test-provider".to_string(),
             "test-key".to_string(),
             Some(30), // ttft_timeout_secs
+            None,     // generation_data (Langfuse disabled)
         );
         
         assert_eq!(state.input_tokens, 100);
         assert_eq!(state.output_tokens, 0);
-        assert_eq!(state.usage_found, false);
+        assert!(!state.usage_found);
         assert!(state.provider_first_token_time.is_none());
         assert_eq!(state.api_key_name, "test-key");
         assert_eq!(state.ttft_timeout_secs, Some(30));
-        assert_eq!(state.first_chunk_received, false);
+        assert!(!state.first_chunk_received);
+        assert!(state.generation_data.is_none());
+        assert!(state.accumulated_output.is_empty());
+        assert!(state.finish_reason.is_none());
+    }
+
+    #[test]
+    fn test_stream_state_with_langfuse() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        
+        let gen_data = GenerationData {
+            trace_id: "test-trace-id".to_string(),
+            request_id: "test-request-id".to_string(),
+            credential_name: "test-credential".to_string(),
+            endpoint: "/v1/chat/completions".to_string(),
+            ..Default::default()
+        };
+        
+        let state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            "test-provider".to_string(),
+            "test-key".to_string(),
+            Some(30),
+            Some(gen_data),
+        );
+        
+        assert!(state.generation_data.is_some());
+        let gen = state.generation_data.as_ref().unwrap();
+        assert_eq!(gen.trace_id, "test-trace-id");
+        assert_eq!(gen.request_id, "test-request-id");
     }
 }

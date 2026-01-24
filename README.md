@@ -48,6 +48,7 @@ Both implementations expose identical endpoints (`/v1/chat/completions`, `/v1/co
 - 📈 **Grafana Dashboards** - Pre-configured visualization panels
 - 💊 **Health Checks** - Basic and detailed health check endpoints
 - 📝 **Request Tracing** - Detailed request/response logging
+- 🔍 **Langfuse Integration** - Optional LLM observability and tracing
 
 ### Configuration Management
 - 🗄️ **Dynamic Config** - PostgreSQL-based runtime configuration
@@ -303,6 +304,18 @@ verify_ssl: false
 | `PORT` | Service port | No | 18000 |
 | `PROVIDER_SUFFIX` | Model name prefix filter | No | - |
 | `VERIFY_SSL` | Verify provider SSL certificates | No | true |
+
+### Langfuse Observability (Optional)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LANGFUSE_ENABLED` | Enable Langfuse tracing | `false` |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key (required when enabled) | - |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key (required when enabled) | - |
+| `LANGFUSE_HOST` | Langfuse server URL | `https://cloud.langfuse.com` |
+| `LANGFUSE_SAMPLE_RATE` | Sampling rate (0.0-1.0) | `1.0` |
+| `LANGFUSE_FLUSH_INTERVAL` | Flush interval in seconds | `5` |
+| `LANGFUSE_DEBUG` | Enable debug logging | `false` |
 
 ### Model Name Prefix Feature
 
