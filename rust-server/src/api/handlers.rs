@@ -9,7 +9,7 @@ use crate::api::streaming::{
 };
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
-use crate::core::langfuse::{get_langfuse_service, GenerationData};
+use crate::core::langfuse::{get_langfuse_service, GenerationData, extract_client_metadata, build_langfuse_tags};
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
@@ -277,35 +277,16 @@ pub async fn chat_completions(
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
-        // Extract client metadata from headers for Langfuse tracing
-        let mut client_metadata = std::collections::HashMap::new();
-        let user_agent = headers.get("user-agent").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-        if let Some(ref ua) = user_agent {
-            client_metadata.insert("user_agent".to_string(), ua.clone());
-        }
-        if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            client_metadata.insert("x_forwarded_for".to_string(), forwarded_for.to_string());
-        }
-        if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-            client_metadata.insert("x_real_ip".to_string(), real_ip.to_string());
-        }
-        if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
-            client_metadata.insert("origin".to_string(), origin.to_string());
-        }
-        if let Some(referer) = headers.get("referer").and_then(|v| v.to_str().ok()) {
-            client_metadata.insert("referer".to_string(), referer.to_string());
-        }
+        // Extract client metadata from headers for Langfuse tracing using shared helper
+        let client_metadata = extract_client_metadata(&headers);
+        let user_agent = client_metadata.get("user_agent").cloned();
 
-        // Build tags for Langfuse (credential, user-agent will be added after provider selection)
-        let mut tags = vec![
-            "endpoint:/v1/chat/completions".to_string(),
-            format!("credential:{}", api_key_name),
-        ];
-        if let Some(ref ua) = user_agent {
-            // Truncate user-agent for tag (tags should be short)
-            let ua_short = if ua.len() > 50 { &ua[..50] } else { ua.as_str() };
-            tags.push(format!("user_agent:{}", ua_short));
-        }
+        // Build tags for Langfuse using shared helper
+        let tags = build_langfuse_tags(
+            "/v1/chat/completions",
+            &api_key_name,
+            user_agent.as_deref(),
+        );
 
         // Initialize Langfuse tracing (provider tag will be added via update_trace_provider)
         let langfuse = get_langfuse_service();
@@ -442,13 +423,15 @@ pub async fn chat_completions(
             }
         }
 
-        // Map model if needed (use effective_model for mapping lookup)
+        // Map model if needed (use effective_model for mapping lookup, supports wildcard patterns)
         if let Some(eff_model) = effective_model.as_ref() {
-            if let Some(mapped) = provider.model_mapping.get(eff_model) {
+            let mapped = provider.get_mapped_model(eff_model);
+            if mapped != *eff_model {
+                // Pattern or exact match found, use mapped model
                 if let Some(obj) = payload.as_object_mut() {
                     obj.insert(
                         "model".to_string(),
-                        serde_json::Value::String(mapped.clone()),
+                        serde_json::Value::String(mapped),
                     );
                 }
             } else if original_model.as_ref() != effective_model.as_ref() {

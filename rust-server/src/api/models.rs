@@ -3,9 +3,141 @@
 //! This module defines all data structures used in the API, including
 //! chat completion requests/responses, health checks, and model listings.
 
+use lazy_static::lazy_static;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::RwLock;
 use utoipa::ToSchema;
+
+lazy_static! {
+    /// Cache for compiled regex patterns
+    static ref PATTERN_CACHE: RwLock<HashMap<String, Regex>> = RwLock::new(HashMap::new());
+}
+
+/// Check if a model mapping key contains wildcard/regex patterns.
+///
+/// Supports:
+/// - Regex patterns: .* .+ [abc] etc.
+/// - Simple wildcards: * (converted to .*)
+///
+/// Note: A single dot (.) in model names like "gpt-3.5-turbo" is NOT considered a pattern.
+/// Only regex-specific patterns like .* .+ or metacharacters like [, (, |, etc. are detected.
+pub fn is_pattern(key: &str) -> bool {
+    // Check for regex-specific patterns (not just a single dot)
+    // .* or .+ are regex patterns
+    if key.contains(".*") || key.contains(".+") {
+        return true;
+    }
+    // Check for other regex metacharacters (excluding dot which is common in model names)
+    if key.contains('[')
+        || key.contains('(')
+        || key.contains('|')
+        || key.contains('^')
+        || key.contains('$')
+        || key.contains('\\')
+    {
+        return true;
+    }
+    // Simple wildcard: * without preceding dot
+    if key.contains('*') && !key.contains(".*") {
+        return true;
+    }
+    false
+}
+
+/// Compile a pattern string to regex, caching the result.
+///
+/// Converts simple wildcards (*) to regex (.*) if needed.
+fn compile_pattern(pattern: &str) -> Option<Regex> {
+    // Check cache first
+    {
+        let cache = PATTERN_CACHE.read().ok()?;
+        if let Some(regex) = cache.get(pattern) {
+            return Some(regex.clone());
+        }
+    }
+
+    // Build regex pattern
+    let mut regex_pattern = pattern.to_string();
+
+    // If pattern doesn't look like regex but has *, convert to regex
+    if regex_pattern.contains('*') && !regex_pattern.contains(".*") && !regex_pattern.contains(".+")
+    {
+        regex_pattern = regex_pattern.replace('*', ".*");
+    }
+
+    // Anchor the pattern to match the full string
+    if !regex_pattern.starts_with('^') {
+        regex_pattern = format!("^{}", regex_pattern);
+    }
+    if !regex_pattern.ends_with('$') {
+        regex_pattern = format!("{}$", regex_pattern);
+    }
+
+    // Compile and cache
+    match Regex::new(&regex_pattern) {
+        Ok(regex) => {
+            if let Ok(mut cache) = PATTERN_CACHE.write() {
+                cache.insert(pattern.to_string(), regex.clone());
+            }
+            Some(regex)
+        }
+        Err(_) => None,
+    }
+}
+
+/// Match a model name against model_mapping keys, supporting wildcards/regex.
+///
+/// Returns the mapped model name if found, None otherwise.
+/// Exact matches take priority over pattern matches.
+pub fn match_model_pattern(model: &str, model_mapping: &HashMap<String, String>) -> Option<String> {
+    // First, try exact match (highest priority)
+    if let Some(mapped) = model_mapping.get(model) {
+        return Some(mapped.clone());
+    }
+
+    // Then, try pattern matching
+    for (pattern, mapped_model) in model_mapping.iter() {
+        if is_pattern(pattern) {
+            if let Some(regex) = compile_pattern(pattern) {
+                if regex.is_match(model) {
+                    return Some(mapped_model.clone());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Check if a model matches any key in model_mapping (exact or pattern).
+pub fn model_matches_mapping(model: &str, model_mapping: &HashMap<String, String>) -> bool {
+    // First, try exact match
+    if model_mapping.contains_key(model) {
+        return true;
+    }
+
+    // Then, try pattern matching
+    for pattern in model_mapping.keys() {
+        if is_pattern(pattern) {
+            if let Some(regex) = compile_pattern(pattern) {
+                if regex.is_match(model) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Get the mapped model name for a given model.
+///
+/// Returns the mapped model name if found, otherwise the original model name.
+pub fn get_mapped_model(model: &str, model_mapping: &HashMap<String, String>) -> String {
+    match_model_pattern(model, model_mapping).unwrap_or_else(|| model.to_string())
+}
 
 /// Provider information for internal use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +147,18 @@ pub struct Provider {
     pub api_key: String,
     pub weight: u32,
     pub model_mapping: HashMap<String, String>,
+}
+
+impl Provider {
+    /// Check if this provider supports the given model (exact or pattern match).
+    pub fn supports_model(&self, model: &str) -> bool {
+        model_matches_mapping(model, &self.model_mapping)
+    }
+
+    /// Get the mapped model name for the given model.
+    pub fn get_mapped_model(&self, model: &str) -> String {
+        get_mapped_model(model, &self.model_mapping)
+    }
 }
 
 /// Chat completion request following OpenAI API format.
@@ -509,5 +653,95 @@ mod tests {
 
         let json = serde_json::to_string(&choice).unwrap();
         assert!(json.contains("\"finish_reason\":\"stop\""));
+    }
+
+    #[test]
+    fn test_wildcard_model_mapping_exact_match() {
+        let mut mapping = HashMap::new();
+        mapping.insert("gpt-4".to_string(), "gpt-4-exact".to_string());
+        mapping.insert("claude-opus-4-5-.*".to_string(), "claude-opus-mapped".to_string());
+
+        // Exact match should work
+        assert!(model_matches_mapping("gpt-4", &mapping));
+        assert_eq!(get_mapped_model("gpt-4", &mapping), "gpt-4-exact");
+    }
+
+    #[test]
+    fn test_wildcard_model_mapping_regex_pattern() {
+        let mut mapping = HashMap::new();
+        mapping.insert("claude-opus-4-5-.*".to_string(), "claude-opus-mapped".to_string());
+
+        // Regex pattern should match
+        assert!(model_matches_mapping("claude-opus-4-5-20240620", &mapping));
+        assert_eq!(
+            get_mapped_model("claude-opus-4-5-20240620", &mapping),
+            "claude-opus-mapped"
+        );
+
+        assert!(model_matches_mapping("claude-opus-4-5-latest", &mapping));
+        assert_eq!(
+            get_mapped_model("claude-opus-4-5-latest", &mapping),
+            "claude-opus-mapped"
+        );
+
+        // Non-matching should return original
+        assert!(!model_matches_mapping("claude-sonnet", &mapping));
+        assert_eq!(get_mapped_model("claude-sonnet", &mapping), "claude-sonnet");
+    }
+
+    #[test]
+    fn test_wildcard_model_mapping_simple_wildcard() {
+        let mut mapping = HashMap::new();
+        mapping.insert("gemini-*".to_string(), "gemini-mapped".to_string());
+
+        // Simple wildcard (*) should be converted to regex (.*)
+        assert!(model_matches_mapping("gemini-pro", &mapping));
+        assert_eq!(get_mapped_model("gemini-pro", &mapping), "gemini-mapped");
+
+        assert!(model_matches_mapping("gemini-ultra", &mapping));
+        assert_eq!(get_mapped_model("gemini-ultra", &mapping), "gemini-mapped");
+    }
+
+    #[test]
+    fn test_wildcard_model_mapping_exact_priority() {
+        let mut mapping = HashMap::new();
+        mapping.insert("claude-.*".to_string(), "claude-pattern".to_string());
+        mapping.insert("claude-opus".to_string(), "claude-opus-exact".to_string());
+
+        // Exact match should take priority over pattern
+        assert_eq!(get_mapped_model("claude-opus", &mapping), "claude-opus-exact");
+
+        // Pattern should match other claude models
+        assert_eq!(get_mapped_model("claude-sonnet", &mapping), "claude-pattern");
+    }
+
+    #[test]
+    fn test_provider_supports_model_with_patterns() {
+        let mut mapping = HashMap::new();
+        mapping.insert("gpt-4".to_string(), "gpt-4-mapped".to_string());
+        mapping.insert("claude-opus-4-5-.*".to_string(), "claude-mapped".to_string());
+
+        let provider = Provider {
+            name: "test".to_string(),
+            api_base: "http://test".to_string(),
+            api_key: "key".to_string(),
+            weight: 1,
+            model_mapping: mapping,
+        };
+
+        // Test exact match
+        assert!(provider.supports_model("gpt-4"));
+        assert_eq!(provider.get_mapped_model("gpt-4"), "gpt-4-mapped");
+
+        // Test pattern match
+        assert!(provider.supports_model("claude-opus-4-5-20240620"));
+        assert_eq!(
+            provider.get_mapped_model("claude-opus-4-5-20240620"),
+            "claude-mapped"
+        );
+
+        // Test non-matching
+        assert!(!provider.supports_model("gpt-3.5-turbo"));
+        assert_eq!(provider.get_mapped_model("gpt-3.5-turbo"), "gpt-3.5-turbo");
     }
 }

@@ -9,12 +9,132 @@ import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from app.core.langfuse_config import LangfuseConfig, get_langfuse_config
 from app.core.logging import get_logger
 
+if TYPE_CHECKING:
+    from starlette.requests import Request
+
 logger = get_logger()
+
+
+# ============================================================================
+# Helper Functions for Langfuse Tracing
+# ============================================================================
+
+
+def extract_client_metadata(request: "Request") -> Dict[str, str]:
+    """Extract client metadata from request headers for Langfuse tracing.
+
+    Args:
+        request: The FastAPI/Starlette request object
+
+    Returns:
+        Dictionary containing client metadata (user_agent, x_forwarded_for, etc.)
+    """
+    client_metadata = {}
+    user_agent = request.headers.get("user-agent")
+    if user_agent:
+        client_metadata["user_agent"] = user_agent
+    x_forwarded_for = request.headers.get("x-forwarded-for")
+    if x_forwarded_for:
+        client_metadata["x_forwarded_for"] = x_forwarded_for
+    x_real_ip = request.headers.get("x-real-ip")
+    if x_real_ip:
+        client_metadata["x_real_ip"] = x_real_ip
+    origin = request.headers.get("origin")
+    if origin:
+        client_metadata["origin"] = origin
+    referer = request.headers.get("referer")
+    if referer:
+        client_metadata["referer"] = referer
+    return client_metadata
+
+
+def build_langfuse_tags(
+    endpoint: str,
+    credential_name: str,
+    user_agent: Optional[str] = None,
+) -> List[str]:
+    """Build tags for Langfuse tracing.
+
+    Args:
+        endpoint: The API endpoint (e.g., "chat/completions", "messages")
+        credential_name: Name of the credential used
+        user_agent: Optional user-agent string (will be truncated to 50 chars)
+
+    Returns:
+        List of tags for Langfuse
+    """
+    tags = [
+        f"endpoint:{endpoint}",
+        f"credential:{credential_name}",
+    ]
+    if user_agent and isinstance(user_agent, str):
+        # Truncate user-agent for tag (tags should be short)
+        ua_short = user_agent[:50] if len(user_agent) > 50 else user_agent
+        tags.append(f"user_agent:{ua_short}")
+    return tags
+
+
+def init_langfuse_trace(
+    request: "Request",
+    endpoint: str,
+    generation_name: str = "chat-completion",
+) -> Tuple[Optional[str], "GenerationData", "LangfuseService"]:
+    """Initialize Langfuse tracing for a request.
+
+    This is a convenience function that extracts client metadata, builds tags,
+    creates a trace, and initializes generation data.
+
+    Args:
+        request: The FastAPI/Starlette request object
+        endpoint: The API endpoint (e.g., "/v1/chat/completions", "/v1/messages")
+        generation_name: Name for the generation span
+
+    Returns:
+        Tuple of (trace_id, generation_data, langfuse_service)
+    """
+    langfuse_service = get_langfuse_service()
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    credential_name = getattr(request.state, "credential_name", "anonymous")
+
+    # Extract client metadata from headers
+    client_metadata = extract_client_metadata(request)
+    user_agent = client_metadata.get("user_agent")
+
+    # Build tags
+    # Extract endpoint name for tag (e.g., "/v1/chat/completions" -> "chat/completions")
+    endpoint_tag = (
+        endpoint.lstrip("/v1/").replace("/", "_")
+        if endpoint.startswith("/v1/")
+        else endpoint
+    )
+    tags = build_langfuse_tags(endpoint_tag, credential_name, user_agent)
+
+    # Create trace
+    trace_id = langfuse_service.create_trace(
+        request_id=request_id,
+        credential_name=credential_name,
+        endpoint=endpoint,
+        tags=tags,
+        client_metadata=client_metadata,
+    )
+
+    # Initialize generation data
+    generation_data = GenerationData(
+        trace_id=trace_id or "",
+        name=generation_name,
+        request_id=request_id,
+        credential_name=credential_name,
+        endpoint=endpoint,
+        start_time=datetime.now(timezone.utc),
+    )
+
+    return trace_id, generation_data, langfuse_service
+
 
 # Langfuse client is imported conditionally to avoid import errors when disabled
 _langfuse_client: Optional[Any] = None

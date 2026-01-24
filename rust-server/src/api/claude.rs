@@ -10,7 +10,7 @@ use crate::api::claude_models::{
 use crate::api::handlers::AppState;
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
-use crate::core::langfuse::{get_langfuse_service, GenerationData};
+use crate::core::langfuse::{get_langfuse_service, GenerationData, extract_client_metadata, build_langfuse_tags};
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
 use crate::core::{AppError, Result};
@@ -159,20 +159,16 @@ pub async fn create_message(
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
-        // Extract client metadata from headers for Langfuse tracing
-        let mut client_metadata = std::collections::HashMap::new();
-        if let Some(ua) = headers.get("user-agent").and_then(|v| v.to_str().ok()) {
-            client_metadata.insert("user_agent".to_string(), ua.to_string());
-        }
-        if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            client_metadata.insert("x_forwarded_for".to_string(), forwarded_for.to_string());
-        }
+        // Extract client metadata from headers for Langfuse tracing using shared helper
+        let client_metadata = extract_client_metadata(&headers);
+        let user_agent = client_metadata.get("user_agent").cloned();
 
-        // Build tags for Langfuse
-        let tags = vec![
-            "endpoint:/v1/messages".to_string(),
-            format!("credential:{}", api_key_name),
-        ];
+        // Build tags for Langfuse using shared helper
+        let tags = build_langfuse_tags(
+            "/v1/messages",
+            &api_key_name,
+            user_agent.as_deref(),
+        );
 
         // Initialize Langfuse tracing
         let langfuse = get_langfuse_service();
@@ -248,12 +244,21 @@ pub async fn create_message(
         generation_data.provider_key = provider.name.clone();
         generation_data.provider_type = "openai".to_string();
         generation_data.provider_api_base = provider.api_base.clone();
-        let mapped_model = provider
-            .model_mapping
-            .get(&model_label)
-            .cloned()
-            .unwrap_or_else(|| model_label.clone());
+        // Use pattern-aware model mapping
+        let mapped_model = provider.get_mapped_model(&model_label);
         generation_data.mapped_model = mapped_model.clone();
+
+        // Update trace with provider info (so trace metadata includes provider)
+        if let Some(ref tid) = trace_id {
+            if let Ok(service) = langfuse.read() {
+                service.update_trace_provider(
+                    tid,
+                    &provider.name,
+                    &provider.api_base,
+                    &model_label,
+                );
+            }
+        }
 
         // Convert Claude request to OpenAI format
         let openai_request = claude_to_openai_request(
@@ -262,6 +267,21 @@ pub async fn create_message(
             state.config.min_tokens_limit,
             state.config.max_tokens_limit,
         );
+
+        // Capture input messages for Langfuse tracing
+        generation_data.input_messages = openai_request
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|arr| arr.to_vec())
+            .unwrap_or_default();
+
+        // Capture model parameters for Langfuse
+        let param_keys = ["temperature", "max_tokens", "top_p", "stop"];
+        for key in param_keys {
+            if let Some(val) = openai_request.get(key) {
+                generation_data.model_parameters.insert(key.to_string(), val.clone());
+            }
+        }
 
         let url = format!("{}/chat/completions", provider.api_base);
 
@@ -418,32 +438,113 @@ async fn handle_streaming_response(
     model_label: String,
     provider_name: String,
     api_key_name: String,
-    _generation_data: GenerationData,
-    _trace_id: Option<String>,
+    generation_data: GenerationData,
+    trace_id: Option<String>,
 ) -> Result<Response> {
     let stream = response.bytes_stream();
 
     // Convert OpenAI streaming to Claude streaming format
     let claude_stream = convert_openai_streaming_to_claude(Box::pin(stream), original_model);
 
-    // Map the stream to bytes
-    let byte_stream = claude_stream.map(move |event| {
-        Ok::<_, std::io::Error>(axum::body::Bytes::from(event))
-    });
+    // Wrap the stream to capture output for Langfuse
+    let model_label_clone = model_label.clone();
+    let provider_name_clone = provider_name.clone();
+    let api_key_name_clone = api_key_name.clone();
+    let trace_id_clone = trace_id.clone();
 
-    let body = Body::from_stream(byte_stream);
+    let langfuse_stream = {
+        let accumulated_output = String::new();
+        let finish_reason: Option<String> = None;
+        let usage_input_tokens: u32 = 0;
+        let usage_output_tokens: u32 = 0;
+        let first_token_received = false;
+
+        futures::stream::unfold(
+            (claude_stream, accumulated_output, finish_reason, usage_input_tokens, usage_output_tokens, first_token_received, generation_data, trace_id_clone),
+            move |(mut stream, mut accumulated_output, mut finish_reason, mut usage_input_tokens, mut usage_output_tokens, mut first_token_received, mut gen_data, trace_id)| {
+                async move {
+                    match stream.next().await {
+                        Some(event) => {
+                            // Track TTFT
+                            if !first_token_received && trace_id.is_some() {
+                                first_token_received = true;
+                                gen_data.ttft_time = Some(Utc::now());
+                            }
+
+                            // Parse event to extract output content and usage
+                            if event.starts_with("event: content_block_delta") {
+                                // Extract text from content_block_delta events
+                                for line in event.lines() {
+                                    if line.starts_with("data: ") {
+                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&line[6..]) {
+                                            if let Some(delta) = data.get("delta") {
+                                                if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
+                                                    if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                                        accumulated_output.push_str(text);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if event.starts_with("event: message_delta") {
+                                // Extract finish_reason and usage from message_delta events
+                                for line in event.lines() {
+                                    if line.starts_with("data: ") {
+                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&line[6..]) {
+                                            if let Some(delta) = data.get("delta") {
+                                                if let Some(reason) = delta.get("stop_reason").and_then(|r| r.as_str()) {
+                                                    finish_reason = Some(reason.to_string());
+                                                }
+                                            }
+                                            if let Some(usage) = data.get("usage") {
+                                                if let Some(input) = usage.get("input_tokens").and_then(|t| t.as_u64()) {
+                                                    usage_input_tokens = input as u32;
+                                                }
+                                                if let Some(output) = usage.get("output_tokens").and_then(|t| t.as_u64()) {
+                                                    usage_output_tokens = output as u32;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if event.starts_with("event: message_stop") {
+                                // Stream is ending, record Langfuse generation
+                                if trace_id.is_some() {
+                                    gen_data.output_content = Some(accumulated_output.clone());
+                                    gen_data.finish_reason = finish_reason.clone();
+                                    gen_data.prompt_tokens = usage_input_tokens;
+                                    gen_data.completion_tokens = usage_output_tokens;
+                                    gen_data.total_tokens = usage_input_tokens + usage_output_tokens;
+                                    gen_data.end_time = Some(Utc::now());
+                                    if let Ok(service) = get_langfuse_service().read() {
+                                        service.trace_generation(gen_data.clone());
+                                    }
+                                }
+                            }
+
+                            Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(event)), (stream, accumulated_output, finish_reason, usage_input_tokens, usage_output_tokens, first_token_received, gen_data, trace_id)))
+                        }
+                        None => None,
+                    }
+                }
+            },
+        )
+    };
+
+    let body = Body::from_stream(langfuse_stream);
 
     // Record metrics
     let metrics = get_metrics();
     metrics
         .request_count
-        .with_label_values(&["POST", "/v1/messages", &model_label, &provider_name, "200", &api_key_name])
+        .with_label_values(&["POST", "/v1/messages", &model_label_clone, &provider_name_clone, "200", &api_key_name_clone])
         .inc();
 
     tracing::debug!(
-        model = %model_label,
-        provider = %provider_name,
-        api_key_name = %api_key_name,
+        model = %model_label_clone,
+        provider = %provider_name_clone,
+        api_key_name = %api_key_name_clone,
         "Claude streaming response started"
     );
 

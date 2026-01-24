@@ -269,7 +269,11 @@ providers:
     api_key: "${API_KEY_1}"
     weight: 2  # 权重值,越大分配的请求越多
     model_mapping:
+      # 精确匹配
       "claude-4.5-sonnet": "actual-provider-model"
+      # 支持通配符/正则表达式模式:
+      "claude-opus-4-5-.*": "claude-opus-mapped"  # 正则表达式模式
+      "gemini-*": "gemini-pro"                     # 简单通配符 (* -> .*)
 
 # Master Key 配置
 master_keys:

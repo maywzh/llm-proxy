@@ -29,6 +29,7 @@ pub use error::{AppError, Result};
 pub use langfuse::{
     get_langfuse_service, init_langfuse_service, shutdown_langfuse_service,
     GenerationData, LangfuseConfig, LangfuseService,
+    extract_client_metadata, build_langfuse_tags,
 };
 pub use logging::{get_provider_context, PROVIDER_CONTEXT};
 pub use metrics::{get_metrics, init_metrics, Metrics};

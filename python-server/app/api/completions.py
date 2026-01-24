@@ -7,7 +7,7 @@ import uuid
 
 import httpx
 from fastapi import APIRouter, Request, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
 
@@ -16,6 +16,8 @@ from app.services.provider_service import ProviderService
 from app.services.langfuse_service import (
     get_langfuse_service,
     GenerationData,
+    extract_client_metadata,
+    build_langfuse_tags,
 )
 from app.utils.streaming import create_streaming_response, rewrite_model_in_response
 from app.core.config import get_config, get_env_config
@@ -105,32 +107,11 @@ async def proxy_completion_request(
     credential_name = getattr(request.state, "credential_name", "anonymous")
 
     # Extract client metadata from headers for Langfuse tracing
-    client_metadata = {}
-    user_agent = request.headers.get("user-agent")
-    if user_agent:
-        client_metadata["user_agent"] = user_agent
-    x_forwarded_for = request.headers.get("x-forwarded-for")
-    if x_forwarded_for:
-        client_metadata["x_forwarded_for"] = x_forwarded_for
-    x_real_ip = request.headers.get("x-real-ip")
-    if x_real_ip:
-        client_metadata["x_real_ip"] = x_real_ip
-    origin = request.headers.get("origin")
-    if origin:
-        client_metadata["origin"] = origin
-    referer = request.headers.get("referer")
-    if referer:
-        client_metadata["referer"] = referer
+    client_metadata = extract_client_metadata(request)
+    user_agent = client_metadata.get("user_agent")
 
     # Build tags for Langfuse (credential, user-agent)
-    tags = [
-        f"endpoint:{endpoint}",
-        f"credential:{credential_name}",
-    ]
-    if user_agent:
-        # Truncate user-agent for tag (tags should be short)
-        ua_short = user_agent[:50] if len(user_agent) > 50 else user_agent
-        tags.append(f"user_agent:{ua_short}")
+    tags = build_langfuse_tags(endpoint, credential_name, user_agent)
 
     # Create trace (returns None if disabled or not sampled)
     trace_id = langfuse_service.create_trace(
@@ -212,8 +193,9 @@ async def proxy_completion_request(
     # Capture provider info for Langfuse
     generation_data.provider_key = provider.name
     generation_data.provider_api_base = provider.api_base
+    # Use pattern-aware model mapping
     mapped_model = (
-        provider.model_mapping.get(effective_model, effective_model)
+        provider.get_mapped_model(effective_model)
         if provider.model_mapping
         else effective_model
     )
@@ -233,8 +215,8 @@ async def proxy_completion_request(
     request.state.provider = provider.name
 
     if "model" in data and provider.model_mapping:
-        # Use effective_model for model_mapping lookup
-        data["model"] = provider.model_mapping.get(effective_model, effective_model)
+        # Use effective_model for model_mapping lookup (supports wildcard patterns)
+        data["model"] = provider.get_mapped_model(effective_model)
 
     headers = {
         "Authorization": f"Bearer {provider.api_key}",
@@ -326,17 +308,28 @@ async def proxy_completion_request(
 
                 # Record error in Langfuse
                 generation_data.is_error = True
-                generation_data.error_message = (
-                    error_body.get("error", {}).get("message", "")
-                    or f"HTTP {response.status_code}"
-                )
+                # Handle both {"error": "string"} and {"error": {"message": "string"}} formats
+                error_field = error_body.get("error", {})
+                if isinstance(error_field, str):
+                    generation_data.error_message = error_field
+                elif isinstance(error_field, dict):
+                    generation_data.error_message = error_field.get("message", "")
+                else:
+                    generation_data.error_message = f"HTTP {response.status_code}"
+
+                if not generation_data.error_message:
+                    generation_data.error_message = f"HTTP {response.status_code}"
+
                 generation_data.end_time = datetime.now(timezone.utc)
                 if trace_id:
                     langfuse_service.trace_generation(generation_data)
 
                 # Faithfully return the backend's status code and error body
-                error_response = JSONResponse(
-                    content=error_body, status_code=response.status_code
+                # Use Response instead of JSONResponse to avoid double serialization
+                error_response = Response(
+                    content=json.dumps(error_body),
+                    status_code=response.status_code,
+                    media_type="application/json"
                 )
                 return _attach_response_metadata(
                     error_response, request.state.model, provider.name
