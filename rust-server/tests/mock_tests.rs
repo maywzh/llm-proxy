@@ -54,6 +54,8 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
         ttft_timeout_secs: None,
         credentials: vec![],
         provider_suffix: None,
+        min_tokens_limit: 100,
+        max_tokens_limit: 4096,
     };
 
     let provider_service = ProviderService::new(config.clone());

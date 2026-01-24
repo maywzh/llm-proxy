@@ -108,6 +108,8 @@ fn create_test_config_no_auth() -> AppConfig {
         ttft_timeout_secs: None,
         credentials: vec![],
         provider_suffix: None,
+        min_tokens_limit: 100,
+        max_tokens_limit: 4096,
     }
 }
 
