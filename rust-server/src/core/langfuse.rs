@@ -104,6 +104,67 @@ impl LangfuseConfig {
 }
 
 // ============================================================================
+// Helper Functions for Langfuse Tracing
+// ============================================================================
+
+/// Extract client metadata from HTTP headers for Langfuse tracing.
+///
+/// # Arguments
+/// * `headers` - The HTTP headers from the request
+///
+/// # Returns
+/// HashMap containing client metadata (user_agent, x_forwarded_for, etc.)
+pub fn extract_client_metadata(headers: &axum::http::HeaderMap) -> HashMap<String, String> {
+    let mut client_metadata = HashMap::new();
+    
+    if let Some(ua) = headers.get("user-agent").and_then(|v| v.to_str().ok()) {
+        client_metadata.insert("user_agent".to_string(), ua.to_string());
+    }
+    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        client_metadata.insert("x_forwarded_for".to_string(), forwarded_for.to_string());
+    }
+    if let Some(real_ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        client_metadata.insert("x_real_ip".to_string(), real_ip.to_string());
+    }
+    if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
+        client_metadata.insert("origin".to_string(), origin.to_string());
+    }
+    if let Some(referer) = headers.get("referer").and_then(|v| v.to_str().ok()) {
+        client_metadata.insert("referer".to_string(), referer.to_string());
+    }
+    
+    client_metadata
+}
+
+/// Build tags for Langfuse tracing.
+///
+/// # Arguments
+/// * `endpoint` - The API endpoint (e.g., "chat/completions", "messages")
+/// * `credential_name` - Name of the credential used
+/// * `user_agent` - Optional user-agent string (will be truncated to 50 chars)
+///
+/// # Returns
+/// Vector of tags for Langfuse
+pub fn build_langfuse_tags(
+    endpoint: &str,
+    credential_name: &str,
+    user_agent: Option<&str>,
+) -> Vec<String> {
+    let mut tags = vec![
+        format!("endpoint:{}", endpoint),
+        format!("credential:{}", credential_name),
+    ];
+    
+    if let Some(ua) = user_agent {
+        // Truncate user-agent for tag (tags should be short)
+        let ua_short = if ua.len() > 50 { &ua[..50] } else { ua };
+        tags.push(format!("user_agent:{}", ua_short));
+    }
+    
+    tags
+}
+
+// ============================================================================
 // Data Models
 // ============================================================================
 

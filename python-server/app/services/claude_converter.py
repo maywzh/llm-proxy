@@ -13,6 +13,7 @@ from app.core.claude_constants import ClaudeConstants
 from app.core.config import get_env_config
 from app.core.logging import get_logger
 from app.models.claude import ClaudeMessage, ClaudeMessagesRequest
+from app.models.provider import get_mapped_model
 
 logger = get_logger()
 
@@ -30,10 +31,10 @@ def claude_to_openai_request(
     Returns:
         OpenAI-compatible request dict
     """
-    # Map model using provider's model_mapping if available
+    # Map model using provider's model_mapping if available (supports wildcard patterns)
     openai_model = claude_request.model
-    if model_mapping and claude_request.model in model_mapping:
-        openai_model = model_mapping[claude_request.model]
+    if model_mapping:
+        openai_model = get_mapped_model(claude_request.model, model_mapping)
 
     # Convert messages
     openai_messages: List[Dict[str, Any]] = []

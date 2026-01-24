@@ -16,7 +16,12 @@ from starlette.background import BackgroundTask
 
 from app.api.dependencies import verify_auth, get_provider_svc
 from app.services.provider_service import ProviderService
-from app.services.langfuse_service import get_langfuse_service, GenerationData
+from app.services.langfuse_service import (
+    get_langfuse_service,
+    GenerationData,
+    extract_client_metadata,
+    build_langfuse_tags,
+)
 from app.services.claude_converter import (
     claude_to_openai_request,
     openai_to_claude_response,
@@ -71,13 +76,20 @@ async def create_message(
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     credential_name = getattr(request.state, "credential_name", "anonymous")
 
-    # Create trace
+    # Extract client metadata from headers for Langfuse tracing
+    client_metadata = extract_client_metadata(request)
+    user_agent = client_metadata.get("user_agent")
+
+    # Build tags for Langfuse (credential, user-agent)
+    tags = build_langfuse_tags("messages", credential_name, user_agent)
+
+    # Create trace (returns None if disabled or not sampled)
     trace_id = langfuse_service.create_trace(
         request_id=request_id,
         credential_name=credential_name,
         endpoint="/v1/messages",
-        tags=[f"endpoint:messages", f"credential:{credential_name}"],
-        client_metadata={},
+        tags=tags,
+        client_metadata=client_metadata,
     )
 
     # Initialize generation data
@@ -112,6 +124,15 @@ async def create_message(
         generation_data.provider_key = provider.name
         generation_data.provider_api_base = provider.api_base
         generation_data.original_model = claude_request.model
+
+        # Update trace with provider info (so trace metadata includes provider)
+        if trace_id:
+            langfuse_service.update_trace_provider(
+                trace_id=trace_id,
+                provider_key=provider.name,
+                provider_api_base=provider.api_base,
+                model=claude_request.model,
+            )
 
         # Convert Claude request to OpenAI format
         openai_request = claude_to_openai_request(
@@ -252,12 +273,79 @@ async def _handle_streaming_request(
             status_code=response.status_code,
         )
 
+    # Track accumulated output for Langfuse
+    accumulated_output: list[str] = []
+    finish_reason: str | None = None
+    usage_data: dict = {}
+    first_token_received = False
+
     async def stream_generator():
-        async for event in convert_openai_streaming_to_claude(
-            response.aiter_bytes(),
-            claude_request.model,
-        ):
-            yield event.encode("utf-8")
+        nonlocal accumulated_output, finish_reason, usage_data, first_token_received
+
+        try:
+            async for event in convert_openai_streaming_to_claude(
+                response.aiter_bytes(),
+                claude_request.model,
+            ):
+                # Track TTFT
+                if not first_token_received and trace_id:
+                    first_token_received = True
+                    generation_data.ttft_time = datetime.now(timezone.utc)
+
+                # Parse event to extract output content and usage
+                if event.startswith("event: content_block_delta"):
+                    try:
+                        # Find the data line
+                        lines = event.split("\n")
+                        for line in lines:
+                            if line.startswith("data: "):
+                                data = json.loads(line[6:])
+                                delta = data.get("delta", {})
+                                if delta.get("type") == "text_delta":
+                                    accumulated_output.append(delta.get("text", ""))
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+                elif event.startswith("event: message_delta"):
+                    try:
+                        lines = event.split("\n")
+                        for line in lines:
+                            if line.startswith("data: "):
+                                data = json.loads(line[6:])
+                                delta = data.get("delta", {})
+                                if delta.get("stop_reason"):
+                                    finish_reason = delta.get("stop_reason")
+                                if data.get("usage"):
+                                    usage_data = data.get("usage", {})
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+
+                yield event.encode("utf-8")
+
+            # Record successful generation in Langfuse after streaming completes
+            if trace_id:
+                generation_data.output_content = "".join(accumulated_output)
+                generation_data.finish_reason = finish_reason
+                if usage_data:
+                    generation_data.prompt_tokens = usage_data.get("input_tokens", 0)
+                    generation_data.completion_tokens = usage_data.get(
+                        "output_tokens", 0
+                    )
+                    generation_data.total_tokens = (
+                        generation_data.prompt_tokens
+                        + generation_data.completion_tokens
+                    )
+                generation_data.end_time = datetime.now(timezone.utc)
+                langfuse_service.trace_generation(generation_data)
+
+        except Exception as e:
+            # Record error in Langfuse
+            if trace_id:
+                generation_data.is_error = True
+                generation_data.error_message = str(e)
+                generation_data.output_content = "".join(accumulated_output)
+                generation_data.end_time = datetime.now(timezone.utc)
+                langfuse_service.trace_generation(generation_data)
+            raise
 
     streaming_response = StreamingResponse(
         stream_generator(),

@@ -3,7 +3,7 @@
 import random
 from typing import Optional
 
-from app.models.provider import Provider
+from app.models.provider import Provider, _is_pattern
 from app.core.config import get_config
 
 
@@ -65,12 +65,12 @@ class ProviderService:
         if model is None:
             return random.choices(self._providers, weights=self._weights, k=1)[0]
 
-        # Filter providers that have the requested model
+        # Filter providers that have the requested model (supports wildcard patterns)
         available_providers = []
         available_weights = []
 
         for provider, weight in zip(self._providers, self._weights):
-            if model in provider.model_mapping:
+            if provider.supports_model(model):
                 available_providers.append(provider)
                 available_weights.append(weight)
 
@@ -93,12 +93,19 @@ class ProviderService:
         return self._weights
 
     def get_all_models(self) -> set[str]:
-        """Get all unique model names from all providers"""
+        """Get all unique model names from all providers.
+
+        Note: Wildcard/regex patterns are filtered out from the result.
+        Only exact model names are returned for /v1/models compatibility.
+        """
         if not self._initialized:
             self.initialize()
         models = set()
         for provider in self._providers:
-            models.update(provider.model_mapping.keys())
+            for key in provider.model_mapping.keys():
+                # Filter out wildcard/regex patterns
+                if not _is_pattern(key):
+                    models.add(key)
         return models
 
 

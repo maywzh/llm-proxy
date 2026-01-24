@@ -8,6 +8,7 @@ use crate::api::claude_models::{
     ClaudeMessage, ClaudeMessageContent, ClaudeMessagesRequest, ClaudeResponse,
     ClaudeSystemPrompt, ClaudeTool, ClaudeUsage,
 };
+use crate::api::models::get_mapped_model;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use serde_json::{json, Value};
@@ -37,10 +38,9 @@ pub fn claude_to_openai_request(
     min_tokens_limit: u32,
     max_tokens_limit: u32,
 ) -> Value {
-    // Map model using provider's model_mapping if available
+    // Map model using provider's model_mapping if available (supports wildcard patterns)
     let openai_model = model_mapping
-        .and_then(|m| m.get(&claude_request.model))
-        .cloned()
+        .map(|m| get_mapped_model(&claude_request.model, m))
         .unwrap_or_else(|| claude_request.model.clone());
 
     // Convert messages
