@@ -1,0 +1,670 @@
+//! Claude API compatible endpoints.
+//!
+//! This module provides Claude Messages API compatibility by converting
+//! Claude format requests to OpenAI format, proxying to providers,
+//! and converting responses back to Claude format.
+
+use crate::api::claude_models::{
+    ClaudeErrorResponse, ClaudeMessagesRequest, ClaudeTokenCountRequest, ClaudeTokenCountResponse,
+};
+use crate::api::handlers::AppState;
+use crate::core::config::CredentialConfig;
+use crate::core::database::hash_key;
+use crate::core::langfuse::{get_langfuse_service, GenerationData};
+use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
+use crate::core::metrics::get_metrics;
+use crate::core::{AppError, Result};
+use crate::services::claude_converter::{
+    claude_to_openai_request, convert_openai_streaming_to_claude, openai_to_claude_response,
+};
+use crate::with_request_context;
+use axum::{
+    body::Body,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
+};
+use chrono::Utc;
+use futures::StreamExt;
+use serde_json::json;
+use std::sync::Arc;
+
+// ============================================================================
+// Authentication
+// ============================================================================
+
+/// Verify API key authentication and check rate limits for Claude API.
+fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<CredentialConfig>> {
+    // Extract the provided key from Authorization header
+    // Claude API uses "x-api-key" header, but we also support "Authorization: Bearer"
+    let provided_key = headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            headers.get("authorization").and_then(|auth_header| {
+                auth_header.to_str().ok().and_then(|auth_str| {
+                    if auth_str.starts_with("Bearer ") {
+                        Some(&auth_str[7..])
+                    } else {
+                        None
+                    }
+                })
+            })
+        });
+
+    // Get credentials from DynamicConfig if available
+    let credentials = state.get_credentials();
+
+    // Check if any authentication is required
+    if credentials.is_empty() {
+        return Ok(None);
+    }
+
+    let provided_key = provided_key.ok_or(AppError::Unauthorized)?;
+
+    // Hash the provided key for comparison with stored hashes
+    let provided_key_hash = hash_key(provided_key);
+
+    // Check against credentials configuration
+    for credential_config in credentials {
+        if credential_config.enabled && credential_config.credential_key == provided_key_hash {
+            // Check rate limit for this credential using the hash
+            state
+                .rate_limiter
+                .check_rate_limit(&credential_config.credential_key)?;
+
+            tracing::debug!(
+                credential_name = %credential_config.name,
+                "Request authenticated with credential"
+            );
+            return Ok(Some(credential_config.clone()));
+        }
+    }
+
+    Err(AppError::Unauthorized)
+}
+
+/// Get the key name from an optional CredentialConfig
+fn get_key_name(key_config: &Option<CredentialConfig>) -> String {
+    key_config
+        .as_ref()
+        .map(|k| k.name.clone())
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
+/// Strip the provider suffix from model name if configured.
+fn strip_provider_suffix(model: &str, provider_suffix: Option<&str>) -> String {
+    match provider_suffix {
+        Some(suffix) if !suffix.is_empty() => {
+            let prefix = format!("{}/", suffix);
+            if model.starts_with(&prefix) {
+                model[prefix.len()..].to_string()
+            } else {
+                model.to_string()
+            }
+        }
+        _ => model.to_string(),
+    }
+}
+
+// ============================================================================
+// Error Response Builder
+// ============================================================================
+
+/// Build a Claude-formatted error response.
+fn build_claude_error_response(status: StatusCode, error_type: &str, message: &str) -> Response {
+    let error = ClaudeErrorResponse::new(error_type, message);
+    let mut response = Json(error).into_response();
+    *response.status_mut() = status;
+    response
+}
+
+// ============================================================================
+// Handlers
+// ============================================================================
+
+/// Claude Messages API endpoint.
+///
+/// Converts Claude API requests to OpenAI format, proxies to provider,
+/// and converts response back to Claude format.
+///
+/// Supports both streaming and non-streaming modes.
+#[utoipa::path(
+    post,
+    path = "/v1/messages",
+    tag = "claude",
+    request_body = ClaudeMessagesRequest,
+    responses(
+        (status = 200, description = "Claude message response"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 429, description = "Rate limit exceeded"),
+        (status = 502, description = "Bad gateway - upstream error"),
+        (status = 504, description = "Gateway timeout")
+    ),
+    security(
+        ("api_key" = []),
+        ("bearer_auth" = [])
+    )
+)]
+#[tracing::instrument(skip(state, headers, claude_request))]
+pub async fn create_message(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(claude_request): Json<ClaudeMessagesRequest>,
+) -> Result<Response> {
+    let request_id = generate_request_id();
+    let key_config = verify_auth(&headers, &state)?;
+    let api_key_name = get_key_name(&key_config);
+
+    with_request_context!(request_id.clone(), api_key_name.clone(), async move {
+        // Extract client metadata from headers for Langfuse tracing
+        let mut client_metadata = std::collections::HashMap::new();
+        if let Some(ua) = headers.get("user-agent").and_then(|v| v.to_str().ok()) {
+            client_metadata.insert("user_agent".to_string(), ua.to_string());
+        }
+        if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            client_metadata.insert("x_forwarded_for".to_string(), forwarded_for.to_string());
+        }
+
+        // Build tags for Langfuse
+        let tags = vec![
+            "endpoint:/v1/messages".to_string(),
+            format!("credential:{}", api_key_name),
+        ];
+
+        // Initialize Langfuse tracing
+        let langfuse = get_langfuse_service();
+        let trace_id = if let Ok(service) = langfuse.read() {
+            service.create_trace(
+                &request_id,
+                &api_key_name,
+                "/v1/messages",
+                tags,
+                client_metadata,
+            )
+        } else {
+            None
+        };
+
+        // Initialize generation data for Langfuse
+        let mut generation_data = GenerationData {
+            trace_id: trace_id.clone().unwrap_or_default(),
+            request_id: request_id.clone(),
+            credential_name: api_key_name.clone(),
+            endpoint: "/v1/messages".to_string(),
+            start_time: Utc::now(),
+            ..Default::default()
+        };
+
+        tracing::debug!(
+            request_id = %request_id,
+            model = %claude_request.model,
+            stream = claude_request.stream,
+            "Processing Claude request"
+        );
+
+        // Strip provider suffix if configured
+        let effective_model =
+            strip_provider_suffix(&claude_request.model, state.config.provider_suffix.as_deref());
+        let model_label = effective_model.clone();
+
+        // Capture input data for Langfuse
+        generation_data.original_model = model_label.clone();
+        generation_data.is_streaming = claude_request.stream;
+
+        // Get fresh provider service from DynamicConfig
+        let provider_service = state.get_provider_service();
+
+        // Select provider based on the effective model
+        let provider = match provider_service.get_next_provider(Some(&effective_model)) {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %err,
+                    model = %model_label,
+                    "Provider selection failed - no available provider for model"
+                );
+                // Record error in Langfuse
+                generation_data.is_error = true;
+                generation_data.error_message = Some(err.clone());
+                generation_data.end_time = Some(Utc::now());
+                if trace_id.is_some() {
+                    if let Ok(service) = langfuse.read() {
+                        service.trace_generation(generation_data);
+                    }
+                }
+                return Ok(build_claude_error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    &err,
+                ));
+            }
+        };
+
+        // Capture provider info for Langfuse
+        generation_data.provider_key = provider.name.clone();
+        generation_data.provider_type = "openai".to_string();
+        generation_data.provider_api_base = provider.api_base.clone();
+        let mapped_model = provider
+            .model_mapping
+            .get(&model_label)
+            .cloned()
+            .unwrap_or_else(|| model_label.clone());
+        generation_data.mapped_model = mapped_model.clone();
+
+        // Convert Claude request to OpenAI format
+        let openai_request = claude_to_openai_request(
+            &claude_request,
+            Some(&provider.model_mapping),
+            state.config.min_tokens_limit,
+            state.config.max_tokens_limit,
+        );
+
+        let url = format!("{}/chat/completions", provider.api_base);
+
+        // Execute request within provider context scope
+        PROVIDER_CONTEXT
+            .scope(provider.name.clone(), async move {
+                tracing::debug!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    model = %model_label,
+                    stream = claude_request.stream,
+                    "Processing Claude completion request"
+                );
+
+                // Get api_key_name from context for use in closures
+                let api_key_name = get_api_key_name();
+
+                let response = match state
+                    .http_client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", provider.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&openai_request)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        tracing::error!(
+                            request_id = %request_id,
+                            provider = %provider.name,
+                            url = %url,
+                            model = %model_label,
+                            error = %e,
+                            is_timeout = e.is_timeout(),
+                            is_connect = e.is_connect(),
+                            "HTTP request failed to provider"
+                        );
+
+                        // Record error in Langfuse
+                        generation_data.is_error = true;
+                        generation_data.error_message =
+                            Some(format!("Upstream request failed: {}", e));
+                        generation_data.end_time = Some(Utc::now());
+                        if trace_id.is_some() {
+                            if let Ok(service) = langfuse.read() {
+                                service.trace_generation(generation_data);
+                            }
+                        }
+
+                        let (status, error_type) = if e.is_timeout() {
+                            (StatusCode::GATEWAY_TIMEOUT, "timeout_error")
+                        } else {
+                            (StatusCode::BAD_GATEWAY, "api_error")
+                        };
+                        return Ok(build_claude_error_response(
+                            status,
+                            error_type,
+                            &format!("Upstream request failed: {}", e),
+                        ));
+                    }
+                };
+
+                let status = response.status();
+                tracing::debug!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    url = %url,
+                    status = %status,
+                    method = "POST",
+                    "HTTP request completed"
+                );
+
+                // Check if backend API returned an error status code
+                if status.is_client_error() || status.is_server_error() {
+                    let error_body = match response.bytes().await {
+                        Ok(bytes) => {
+                            match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                Ok(body) => body,
+                                Err(_) => {
+                                    let text = String::from_utf8_lossy(&bytes).to_string();
+                                    json!({"error": {"message": text}})
+                                }
+                            }
+                        }
+                        Err(_) => json!({"error": {"message": format!("HTTP {}", status)}}),
+                    };
+
+                    tracing::error!(
+                        request_id = %request_id,
+                        provider = %provider.name,
+                        status = %status,
+                        "Backend API returned error status"
+                    );
+
+                    // Record error in Langfuse
+                    let error_message = error_body
+                        .get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|m| m.as_str())
+                        .unwrap_or(&format!("HTTP {}", status))
+                        .to_string();
+                    generation_data.is_error = true;
+                    generation_data.error_message = Some(error_message.clone());
+                    generation_data.end_time = Some(Utc::now());
+                    if trace_id.is_some() {
+                        if let Ok(service) = langfuse.read() {
+                            service.trace_generation(generation_data);
+                        }
+                    }
+
+                    return Ok(build_claude_error_response(
+                        StatusCode::from_u16(status.as_u16())
+                            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                        "api_error",
+                        &error_message,
+                    ));
+                }
+
+                if claude_request.stream {
+                    // Handle streaming response
+                    handle_streaming_response(
+                        response,
+                        claude_request.model.clone(),
+                        model_label,
+                        provider.name.clone(),
+                        api_key_name,
+                        generation_data,
+                        trace_id,
+                    )
+                    .await
+                } else {
+                    // Handle non-streaming response
+                    handle_non_streaming_response(
+                        response,
+                        claude_request.model.clone(),
+                        model_label,
+                        provider.name.clone(),
+                        api_key_name,
+                        generation_data,
+                        trace_id,
+                    )
+                    .await
+                }
+            })
+            .await
+    })
+}
+
+/// Handle streaming Claude response.
+async fn handle_streaming_response(
+    response: reqwest::Response,
+    original_model: String,
+    model_label: String,
+    provider_name: String,
+    api_key_name: String,
+    _generation_data: GenerationData,
+    _trace_id: Option<String>,
+) -> Result<Response> {
+    let stream = response.bytes_stream();
+
+    // Convert OpenAI streaming to Claude streaming format
+    let claude_stream = convert_openai_streaming_to_claude(Box::pin(stream), original_model);
+
+    // Map the stream to bytes
+    let byte_stream = claude_stream.map(move |event| {
+        Ok::<_, std::io::Error>(axum::body::Bytes::from(event))
+    });
+
+    let body = Body::from_stream(byte_stream);
+
+    // Record metrics
+    let metrics = get_metrics();
+    metrics
+        .request_count
+        .with_label_values(&["POST", "/v1/messages", &model_label, &provider_name, "200", &api_key_name])
+        .inc();
+
+    tracing::debug!(
+        model = %model_label,
+        provider = %provider_name,
+        api_key_name = %api_key_name,
+        "Claude streaming response started"
+    );
+
+    Ok(Response::builder()
+        .status(200)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(body)
+        .unwrap())
+}
+
+/// Handle non-streaming Claude response.
+async fn handle_non_streaming_response(
+    response: reqwest::Response,
+    original_model: String,
+    model_label: String,
+    provider_name: String,
+    api_key_name: String,
+    mut generation_data: GenerationData,
+    trace_id: Option<String>,
+) -> Result<Response> {
+    let response_data: serde_json::Value = match response.json().await {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::error!(
+                provider = %provider_name,
+                error = %e,
+                "Failed to parse provider response JSON"
+            );
+            return Ok(build_claude_error_response(
+                StatusCode::BAD_GATEWAY,
+                "api_error",
+                &format!("Invalid JSON from provider: {}", e),
+            ));
+        }
+    };
+
+    // Convert OpenAI response to Claude format
+    let claude_response = match openai_to_claude_response(&response_data, &original_model) {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::error!(
+                provider = %provider_name,
+                error = %e,
+                "Failed to convert OpenAI response to Claude format"
+            );
+            return Ok(build_claude_error_response(
+                StatusCode::BAD_GATEWAY,
+                "api_error",
+                &format!("Failed to convert response: {}", e),
+            ));
+        }
+    };
+
+    // Capture usage for Langfuse and metrics
+    if let Some(usage_obj) = response_data.get("usage") {
+        if let (Some(prompt_tokens), Some(completion_tokens)) = (
+            usage_obj.get("prompt_tokens").and_then(|t| t.as_u64()),
+            usage_obj.get("completion_tokens").and_then(|t| t.as_u64()),
+        ) {
+            generation_data.prompt_tokens = prompt_tokens as u32;
+            generation_data.completion_tokens = completion_tokens as u32;
+            generation_data.total_tokens = (prompt_tokens + completion_tokens) as u32;
+
+            // Record token metrics
+            let metrics = get_metrics();
+            metrics
+                .token_usage
+                .with_label_values(&[&model_label, &provider_name, "prompt", &api_key_name])
+                .inc_by(prompt_tokens);
+            metrics
+                .token_usage
+                .with_label_values(&[&model_label, &provider_name, "completion", &api_key_name])
+                .inc_by(completion_tokens);
+            metrics
+                .token_usage
+                .with_label_values(&[&model_label, &provider_name, "total", &api_key_name])
+                .inc_by(prompt_tokens + completion_tokens);
+        }
+    }
+
+    // Record successful generation in Langfuse
+    generation_data.end_time = Some(Utc::now());
+    if trace_id.is_some() {
+        if let Ok(service) = get_langfuse_service().read() {
+            service.trace_generation(generation_data);
+        }
+    }
+
+    // Record request metrics
+    let metrics = get_metrics();
+    metrics
+        .request_count
+        .with_label_values(&["POST", "/v1/messages", &model_label, &provider_name, "200", &api_key_name])
+        .inc();
+
+    tracing::debug!(
+        model = %model_label,
+        provider = %provider_name,
+        api_key_name = %api_key_name,
+        "Claude non-streaming response completed"
+    );
+
+    Ok(Json(claude_response).into_response())
+}
+
+/// Claude token counting endpoint.
+///
+/// Provides a rough estimation of token count for the given messages.
+/// Uses a simple character-based estimation (4 characters per token).
+#[utoipa::path(
+    post,
+    path = "/v1/messages/count_tokens",
+    tag = "claude",
+    request_body = ClaudeTokenCountRequest,
+    responses(
+        (status = 200, description = "Token count response", body = ClaudeTokenCountResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized")
+    ),
+    security(
+        ("api_key" = []),
+        ("bearer_auth" = [])
+    )
+)]
+#[tracing::instrument(skip(state, headers, claude_request))]
+pub async fn count_tokens(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(claude_request): Json<ClaudeTokenCountRequest>,
+) -> Result<Json<ClaudeTokenCountResponse>> {
+    let request_id = generate_request_id();
+    let _key_config = verify_auth(&headers, &state)?;
+
+    REQUEST_ID
+        .scope(request_id.clone(), async move {
+            let mut total_chars = 0;
+
+            // Count system message characters
+            if let Some(ref system) = claude_request.system {
+                match system {
+                    crate::api::claude_models::ClaudeSystemPrompt::Text(text) => {
+                        total_chars += text.len();
+                    }
+                    crate::api::claude_models::ClaudeSystemPrompt::Blocks(blocks) => {
+                        for block in blocks {
+                            total_chars += block.text.len();
+                        }
+                    }
+                }
+            }
+
+            // Count message characters
+            for msg in &claude_request.messages {
+                match &msg.content {
+                    crate::api::claude_models::ClaudeMessageContent::Text(text) => {
+                        total_chars += text.len();
+                    }
+                    crate::api::claude_models::ClaudeMessageContent::Blocks(blocks) => {
+                        for block in blocks {
+                            if let crate::api::claude_models::ClaudeContentBlock::Text(text_block) =
+                                block
+                            {
+                                total_chars += text_block.text.len();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Rough estimation: 4 characters per token
+            let estimated_tokens = std::cmp::max(1, total_chars / 4) as i32;
+
+            Ok(Json(ClaudeTokenCountResponse {
+                input_tokens: estimated_tokens,
+            }))
+        })
+        .await
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_provider_suffix_with_matching_prefix() {
+        assert_eq!(
+            strip_provider_suffix("Proxy/claude-3-opus", Some("Proxy")),
+            "claude-3-opus"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_without_prefix() {
+        assert_eq!(
+            strip_provider_suffix("claude-3-opus", Some("Proxy")),
+            "claude-3-opus"
+        );
+    }
+
+    #[test]
+    fn test_strip_provider_suffix_no_suffix_configured() {
+        assert_eq!(
+            strip_provider_suffix("Proxy/claude-3-opus", None),
+            "Proxy/claude-3-opus"
+        );
+    }
+
+    #[test]
+    fn test_build_claude_error_response() {
+        let response = build_claude_error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "Test error",
+        );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}

@@ -38,9 +38,17 @@ def get_rate_limiter() -> Optional[RateLimiter]:
 
 def verify_credential_key(
     authorization: Optional[str] = None,
+    x_api_key: Optional[str] = None,
 ) -> Tuple[bool, Optional[CredentialConfig]]:
     """
-    Verify the credential API key and check rate limits
+    Verify the credential API key and check rate limits.
+
+    Supports both Claude API style (x-api-key header) and OpenAI style
+    (Authorization: Bearer header). x-api-key takes precedence.
+
+    Args:
+        authorization: The Authorization header value (e.g., "Bearer sk-xxx")
+        x_api_key: The x-api-key header value (Claude API style)
 
     Returns:
         Tuple[bool, Optional[CredentialConfig]]: (is_valid, credential_config)
@@ -52,8 +60,11 @@ def verify_credential_key(
     """
     config = get_config()
 
+    # x-api-key takes precedence over Authorization: Bearer
     provided_key = None
-    if authorization and authorization.startswith("Bearer "):
+    if x_api_key:
+        provided_key = x_api_key
+    elif authorization and authorization.startswith("Bearer "):
         provided_key = authorization[7:]
 
     if not config.credentials:

@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
-from app.api.router import api_router, metrics_router, admin_router
+from app.api.router import api_router, metrics_router, admin_router, claude_router
 from app.services.provider_service import get_provider_service
 from app.services.langfuse_service import (
     init_langfuse_service,
@@ -209,6 +209,7 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
     app.include_router(metrics_router)
     app.include_router(admin_router)
+    app.include_router(claude_router)
 
     @app.get("/health")
     async def health_check():

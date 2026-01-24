@@ -179,7 +179,7 @@ def clear_config_cache():
 @pytest.fixture
 def app_with_config(test_config, monkeypatch):
     """Create a FastAPI app with test configuration (no database)"""
-    from app.api.router import api_router, metrics_router, admin_router
+    from app.api.router import api_router, metrics_router, admin_router, claude_router
     from app.core.middleware import MetricsMiddleware
     from app.core import config as config_module
     from app.core import security as security_module
@@ -218,6 +218,7 @@ def app_with_config(test_config, monkeypatch):
     app = FastAPI(lifespan=test_lifespan)
     app.add_middleware(MetricsMiddleware)
     app.include_router(api_router)
+    app.include_router(claude_router)
     app.include_router(metrics_router)
     app.include_router(admin_router)
 

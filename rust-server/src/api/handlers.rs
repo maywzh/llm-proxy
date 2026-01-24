@@ -118,6 +118,8 @@ impl AppState {
             ttft_timeout_secs: self.config.ttft_timeout_secs,
             credentials: credentials.clone(),
             provider_suffix: self.config.provider_suffix.clone(),
+            min_tokens_limit: self.config.min_tokens_limit,
+            max_tokens_limit: self.config.max_tokens_limit,
         };
 
         CachedProviderService {

@@ -11,10 +11,13 @@ use axum::{
 };
 use llm_proxy_rust::{
     admin_router, combined_openapi,
-    api::{chat_completions, completions, list_models, metrics_handler, AdminState, AppState},
+    api::{
+        chat_completions, claude_count_tokens, claude_create_message, completions, list_models,
+        metrics_handler, AdminState, AppState,
+    },
     core::{
-        admin_logging_middleware, init_metrics, init_langfuse_service,
-        AppConfig, Database, DatabaseConfig, DynamicConfig, MetricsMiddleware, RateLimiter, RuntimeConfig,
+        admin_logging_middleware, init_langfuse_service, init_metrics, AppConfig, Database,
+        DatabaseConfig, DynamicConfig, MetricsMiddleware, RateLimiter, RuntimeConfig,
     },
     services::ProviderService,
 };
@@ -140,6 +143,8 @@ async fn async_main() -> Result<()> {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Starting LLM API Proxy on {}", addr);
+    tracing::info!("OpenAI API: /v1/chat/completions, /v1/completions, /v1/models");
+    tracing::info!("Claude API: /v1/messages, /v1/messages/count_tokens");
     tracing::info!("Admin API: /admin/v1/*");
     tracing::info!("Swagger UI: /swagger-ui");
     tracing::info!("Metrics endpoint: /metrics");
@@ -203,9 +208,13 @@ fn build_router(
 
     // Build API routes with AppState
     let api_routes = Router::new()
+        // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/completions", post(completions))
         .route("/v1/models", get(list_models))
+        // Claude-compatible endpoints
+        .route("/v1/messages", post(claude_create_message))
+        .route("/v1/messages/count_tokens", post(claude_count_tokens))
         .layer(axum::middleware::from_fn(MetricsMiddleware::track_metrics))
         .with_state(state);
 
@@ -265,6 +274,8 @@ fn convert_runtime_to_app_config(
         ttft_timeout_secs: base.ttft_timeout_secs,
         credentials,
         provider_suffix: base.provider_suffix.clone(),
+        min_tokens_limit: base.min_tokens_limit,
+        max_tokens_limit: base.max_tokens_limit,
     }
 }
 

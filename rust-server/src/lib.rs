@@ -35,9 +35,13 @@ pub mod core;
 pub mod services;
 
 // Re-export commonly used types for convenience
-pub use api::{admin_router, combined_openapi, AdminApiDoc, AdminState, AppState, ChatCompletionRequest, ChatCompletionResponse, V1ApiDoc};
+pub use api::{
+    admin_router, combined_openapi, claude_count_tokens, claude_create_message, AdminApiDoc,
+    AdminState, AppState, ChatCompletionRequest, ChatCompletionResponse, ClaudeMessagesRequest,
+    ClaudeResponse, V1ApiDoc,
+};
 pub use core::{
     admin_logging_middleware, AppConfig, AppError, Database, DatabaseConfig, DynamicConfig,
     Result, RuntimeConfig,
 };
-pub use services::ProviderService;
+pub use services::{claude_to_openai_request, openai_to_claude_response, ProviderService};
