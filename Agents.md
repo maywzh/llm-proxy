@@ -255,6 +255,15 @@ Full CRUD operations for providers and credentials:
   - `/health` - Basic health check
   - `/health/detailed` - Detailed health with provider status
 
+### Langfuse Integration (Optional)
+
+- **LLM Observability**: Optional tracing and analytics
+  - Python: [`LangfuseService`](python-server/app/services/langfuse_service.py)
+  - Captures provider info, request/response data, token usage
+  - TTFT (Time to First Token) tracking for streaming
+  - Sampling support for high-traffic scenarios
+  - Background batching for minimal latency impact
+
 ---
 
 ## 5. Database Schema
@@ -345,6 +354,18 @@ erDiagram
 | `REQUEST_TIMEOUT_SECS` | Request timeout | No (default: 300) |
 | `TTFT_TIMEOUT_SECS` | Time to first token timeout | No |
 | `PROVIDER_SUFFIX` | Optional prefix for model names. When set, model names like `{PROVIDER_SUFFIX}/{model}` are treated as `{model}` | No |
+
+### Langfuse Observability (Optional)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LANGFUSE_ENABLED` | Enable Langfuse tracing | `false` |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key (required when enabled) | - |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key (required when enabled) | - |
+| `LANGFUSE_HOST` | Langfuse server URL | `https://cloud.langfuse.com` |
+| `LANGFUSE_SAMPLE_RATE` | Sampling rate (0.0-1.0) | `1.0` |
+| `LANGFUSE_FLUSH_INTERVAL` | Flush interval in seconds | `5` |
+| `LANGFUSE_DEBUG` | Enable debug logging | `false` |
 
 ### Docker
 

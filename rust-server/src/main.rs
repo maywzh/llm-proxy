@@ -13,8 +13,8 @@ use llm_proxy_rust::{
     admin_router, combined_openapi,
     api::{chat_completions, completions, list_models, metrics_handler, AdminState, AppState},
     core::{
-        admin_logging_middleware, init_metrics, AppConfig, Database, DatabaseConfig,
-        DynamicConfig, MetricsMiddleware, RateLimiter, RuntimeConfig,
+        admin_logging_middleware, init_metrics, init_langfuse_service,
+        AppConfig, Database, DatabaseConfig, DynamicConfig, MetricsMiddleware, RateLimiter, RuntimeConfig,
     },
     services::ProviderService,
 };
@@ -71,6 +71,9 @@ async fn async_main() -> Result<()> {
 
     // Initialize metrics
     init_metrics();
+
+    // Initialize Langfuse service (optional, fails gracefully if not configured)
+    init_langfuse_service(None);
 
     // Get required environment variables
     let db_url = std::env::var("DB_URL")
