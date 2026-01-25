@@ -43,13 +43,10 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<Credentia
         .and_then(|v| v.to_str().ok())
         .or_else(|| {
             headers.get("authorization").and_then(|auth_header| {
-                auth_header.to_str().ok().and_then(|auth_str| {
-                    if auth_str.starts_with("Bearer ") {
-                        Some(&auth_str[7..])
-                    } else {
-                        None
-                    }
-                })
+                auth_header
+                    .to_str()
+                    .ok()
+                    .and_then(|auth_str| auth_str.strip_prefix("Bearer "))
             })
         });
 
@@ -474,8 +471,8 @@ async fn handle_streaming_response(
                             if event.starts_with("event: content_block_delta") {
                                 // Extract text from content_block_delta events
                                 for line in event.lines() {
-                                    if line.starts_with("data: ") {
-                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&line[6..]) {
+                                    if let Some(data_str) = line.strip_prefix("data: ") {
+                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(data_str) {
                                             if let Some(delta) = data.get("delta") {
                                                 if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
                                                     if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
@@ -489,8 +486,8 @@ async fn handle_streaming_response(
                             } else if event.starts_with("event: message_delta") {
                                 // Extract finish_reason and usage from message_delta events
                                 for line in event.lines() {
-                                    if line.starts_with("data: ") {
-                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&line[6..]) {
+                                    if let Some(data_str) = line.strip_prefix("data: ") {
+                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(data_str) {
                                             if let Some(delta) = data.get("delta") {
                                                 if let Some(reason) = delta.get("stop_reason").and_then(|r| r.as_str()) {
                                                     finish_reason = Some(reason.to_string());
