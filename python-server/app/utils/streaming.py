@@ -19,6 +19,7 @@ from app.core.logging import (
     get_logger,
     get_api_key_name,
 )
+from app.utils.gemini3 import log_gemini_response_signatures
 
 if TYPE_CHECKING:
     from app.services.langfuse_service import GenerationData
@@ -207,6 +208,8 @@ async def stream_response(
 
                             try:
                                 json_obj = json.loads(json_str)
+                                # Log Gemini 3 response signatures for debugging
+                                log_gemini_response_signatures(json_obj, provider_name)
                                 if "usage" in json_obj and json_obj["usage"]:
                                     usage = json_obj["usage"]
                                     model_name = original_model or "unknown"
