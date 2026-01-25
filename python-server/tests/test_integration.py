@@ -549,3 +549,30 @@ class TestModelMapping:
         assert response.status_code == 200
         data = response.json()
         assert data["model"] == "gpt-4"  # Should be rewritten to original
+
+
+@pytest.mark.integration
+class TestEventLoggingEndpoint:
+    """Test Claude Code telemetry placeholder endpoint"""
+
+    def test_event_logging_returns_ok(self, app_client):
+        """Test that event_logging endpoint returns 200 OK"""
+        response = app_client.post(
+            "/api/event_logging/batch",
+            json={},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+
+    def test_event_logging_accepts_any_payload(self, app_client):
+        """Test that event_logging endpoint accepts any JSON payload"""
+        response = app_client.post(
+            "/api/event_logging/batch",
+            json={"events": [{"type": "test", "data": {"key": "value"}}]},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
