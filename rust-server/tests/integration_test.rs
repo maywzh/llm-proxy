@@ -10,7 +10,8 @@
 use axum::{
     body::Body,
     http::{Request, StatusCode},
-    Router,
+    response::IntoResponse,
+    Json, Router,
 };
 use llm_proxy_rust::{
     api::{
@@ -24,6 +25,11 @@ use llm_proxy_rust::{
 use std::sync::Arc;
 use tower::ServiceExt;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
+
+/// Placeholder handler for Claude Code telemetry endpoint
+async fn event_logging_placeholder() -> impl IntoResponse {
+    Json(serde_json::json!({ "status": "ok" }))
+}
 
 /// Create a test application with the given config
 fn create_test_app(config: AppConfig) -> Router {
@@ -59,6 +65,10 @@ fn create_test_app(config: AppConfig) -> Router {
         .route("/v1/completions", axum::routing::post(completions))
         .route("/v1/models", axum::routing::get(list_models))
         .route("/metrics", axum::routing::get(metrics_handler))
+        .route(
+            "/api/event_logging/batch",
+            axum::routing::post(event_logging_placeholder),
+        )
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(
@@ -202,19 +212,18 @@ async fn test_metrics_endpoint() {
     let text = String::from_utf8(body.to_vec()).unwrap();
 
     // Check for Prometheus metrics format
-    // Metrics should be present after making at least one request
+    // After the middleware change, non-LLM requests (like /v1/models) don't record
+    // request_count/duration metrics (only LLM requests with provider set).
+    // The active_requests gauge is always recorded for all endpoints.
     assert!(
-        text.contains("llm_proxy_requests_total") || text.contains("# HELP llm_proxy_requests_total"),
-        "Expected metrics to contain llm_proxy_requests_total, got: {}",
+        text.contains("llm_proxy_active_requests"),
+        "Expected metrics to contain llm_proxy_active_requests, got: {}",
         text
     );
+    // Verify it's valid Prometheus format with HELP/TYPE
     assert!(
-        text.contains("llm_proxy_request_duration_seconds") || text.contains("# HELP llm_proxy_request_duration_seconds"),
-        "Expected metrics to contain llm_proxy_request_duration_seconds"
-    );
-    assert!(
-        text.contains("llm_proxy_active_requests") || text.contains("# HELP llm_proxy_active_requests"),
-        "Expected metrics to contain llm_proxy_active_requests"
+        text.contains("# HELP") && text.contains("# TYPE"),
+        "Expected Prometheus format with HELP and TYPE comments"
     );
 }
 
@@ -456,4 +465,30 @@ async fn test_invalid_json_request() {
 
     // Axum's Json extractor returns 400 Bad Request for invalid JSON
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_event_logging_endpoint() {
+    let app = create_test_app(create_test_config_no_auth());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/event_logging/batch")
+                .method("POST")
+                .header("Content-Type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["status"], "ok");
 }
