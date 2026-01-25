@@ -173,19 +173,12 @@ impl AppState {
 /// Returns the full CredentialConfig for the authenticated credential, or None if no auth required.
 fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<CredentialConfig>> {
     // Extract the provided key from Authorization header
-    let provided_key = if let Some(auth_header) = headers.get("authorization") {
-        if let Ok(auth_str) = auth_header.to_str() {
-            if auth_str.starts_with("Bearer ") {
-                Some(&auth_str[7..])
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let provided_key = headers.get("authorization").and_then(|auth_header| {
+        auth_header
+            .to_str()
+            .ok()
+            .and_then(|auth_str| auth_str.strip_prefix("Bearer "))
+    });
 
     // Get credentials from DynamicConfig if available
     let credentials = state.get_credentials();
@@ -629,6 +622,7 @@ async fn handle_backend_error(
 /// * `generation_data` - Generation data for Langfuse (consumed)
 /// * `trace_id` - Optional trace ID for Langfuse
 /// * `api_key_name` - API key name for error responses
+#[allow(clippy::too_many_arguments)]
 async fn handle_streaming_response(
     response: reqwest::Response,
     model_label: String,

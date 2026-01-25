@@ -115,12 +115,12 @@ impl MetricsMiddleware {
         // Record metrics
         metrics
             .request_count
-            .with_label_values(&[&method, &endpoint, &model, &provider, &status_code, &api_key_name])
+            .with_label_values(&[&method, &endpoint, model, provider, &status_code, api_key_name])
             .inc();
 
         metrics
             .request_duration
-            .with_label_values(&[&method, &endpoint, &model, &provider, &api_key_name])
+            .with_label_values(&[&method, &endpoint, model, provider, api_key_name])
             .observe(duration);
 
         // Log request - only show model, provider, and key for /v1/chat/completions
