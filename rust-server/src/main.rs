@@ -63,14 +63,30 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
 }
 
 async fn async_main() -> Result<()> {
+    // Check if NO_COLOR environment variable is set (for file logging without ANSI codes)
+    let no_color = std::env::var("NO_COLOR").is_ok();
+    
     // Initialize logging with local timezone (respects TZ environment variable)
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,llm_proxy_rust=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer().with_timer(LocalTime))
-        .init();
+    // Default filter: info level for most crates, debug for llm_proxy_rust,
+    // and warn level for hyper/reqwest (to hide verbose chunked header logs from debug output)
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,llm_proxy_rust=debug,hyper=warn,reqwest=warn".into());
+    
+    if no_color {
+        // Disable ANSI colors for file logging
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer()
+                .with_timer(LocalTime)
+                .with_ansi(false))
+            .init();
+    } else {
+        // Enable ANSI colors for terminal
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().with_timer(LocalTime))
+            .init();
+    }
 
     // Initialize metrics
     init_metrics();
