@@ -751,6 +751,35 @@ async fn handle_non_streaming_response(
         };
     }
 
+    // Log response info: DEBUG shows summary, TRACE shows full response with size
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let request_id = crate::core::logging::get_request_id();
+        let finish_reason = response_data.get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|choice| choice.get("finish_reason"))
+            .and_then(|r| r.as_str())
+            .unwrap_or("unknown");
+
+        tracing::debug!(
+            request_id = %request_id,
+            provider = %provider_name,
+            model = %model_label,
+            finish_reason = %finish_reason,
+            "Chat completion response received"
+        );
+
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let response_json = serde_json::to_string_pretty(&response_data).unwrap_or_default();
+            tracing::trace!(
+                request_id = %request_id,
+                response_bytes = response_json.len(),
+                response_body = %response_json,
+                "Full response payload"
+            );
+        }
+    }
+
     let rewritten = rewrite_model_in_response(response_data, model_label);
     Ok(Json(rewritten).into_response())
 }
@@ -892,13 +921,32 @@ pub async fn chat_completions(
 
         PROVIDER_CONTEXT
             .scope(provider.name.clone(), async move {
-                tracing::debug!(
-                    request_id = %request_id,
-                    provider = %provider.name,
-                    model = %model_label,
-                    stream = is_stream,
-                    "Processing chat completion request"
-                );
+                // Log request info: DEBUG shows summary, TRACE shows full payload with size
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    let messages_count = payload.get("messages")
+                        .and_then(|m| m.as_array())
+                        .map(|arr| arr.len())
+                        .unwrap_or(0);
+
+                    tracing::debug!(
+                        request_id = %request_id,
+                        provider = %provider.name,
+                        model = %model_label,
+                        stream = is_stream,
+                        messages_count = messages_count,
+                        "Processing chat completion request"
+                    );
+
+                    if tracing::enabled!(tracing::Level::TRACE) {
+                        let payload_json = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                        tracing::trace!(
+                            request_id = %request_id,
+                            payload_bytes = payload_json.len(),
+                            request_body = %payload_json,
+                            "Full request payload"
+                        );
+                    }
+                }
 
                 let api_key_name = get_api_key_name();
 
