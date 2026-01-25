@@ -62,6 +62,107 @@ fn convert_provider(p: &crate::core::database::ProviderEntity) -> crate::core::c
     }
 }
 
+// ============================================================================
+// Gemini 3 Thought Signature Support
+// ============================================================================
+
+/// Check if provider name indicates Gemini 3 (for thought_signature handling)
+fn is_gemini3_provider_name(name: &str) -> bool {
+    let name_lower = name.to_lowercase();
+    name_lower.contains("gemini-3")
+        || name_lower.contains("gemini3")
+        || name_lower.contains("gemini_3")
+}
+
+/// Log thought_signature presence in response for debugging (pass-through, no modification)
+fn log_gemini_response_signatures(response: &serde_json::Value, provider_name: &str) {
+    if !is_gemini3_provider_name(provider_name) {
+        return;
+    }
+
+    if let Some(choices) = response.get("choices").and_then(|c| c.as_array()) {
+        for choice in choices {
+            if let Some(message) = choice.get("message") {
+                check_and_log_signatures(message, "message");
+            }
+            if let Some(delta) = choice.get("delta") {
+                check_and_log_signatures(delta, "delta");
+            }
+        }
+    }
+}
+
+fn check_and_log_signatures(content: &serde_json::Value, location: &str) {
+    if let Some(sig) = content
+        .get("extra_content")
+        .and_then(|e| e.get("google"))
+        .and_then(|g| g.get("thought_signature"))
+    {
+        tracing::debug!(
+            location,
+            sig_len = sig.as_str().map(|s| s.len()).unwrap_or(0),
+            "Found thought_signature in {}.extra_content",
+            location
+        );
+    }
+
+    if let Some(tool_calls) = content.get("tool_calls").and_then(|t| t.as_array()) {
+        let sig_count = tool_calls
+            .iter()
+            .filter(|tc| {
+                tc.get("extra_content")
+                    .and_then(|e| e.get("google"))
+                    .and_then(|g| g.get("thought_signature"))
+                    .is_some()
+            })
+            .count();
+
+        if sig_count > 0 {
+            tracing::debug!(
+                location,
+                sig_count,
+                "Found {} thought_signatures in {}.tool_calls",
+                sig_count,
+                location
+            );
+        }
+    }
+}
+
+/// Log thought_signature presence in request for debugging (pass-through, no modification)
+fn log_gemini_request_signatures(payload: &serde_json::Value, provider_name: &str) {
+    if !is_gemini3_provider_name(provider_name) {
+        return;
+    }
+
+    if let Some(messages) = payload.get("messages").and_then(|m| m.as_array()) {
+        for message in messages {
+            if let Some(tool_calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
+                let signatures_count = tool_calls
+                    .iter()
+                    .filter(|tc| {
+                        tc.get("extra_content")
+                            .and_then(|e| e.get("google"))
+                            .and_then(|g| g.get("thought_signature"))
+                            .is_some()
+                    })
+                    .count();
+
+                if signatures_count > 0 {
+                    tracing::debug!(
+                        signatures_count,
+                        "Gemini 3 request contains thought_signatures in extra_content (pass-through)"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// AppState
+// ============================================================================
+
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
@@ -780,6 +881,9 @@ async fn handle_non_streaming_response(
         }
     }
 
+    // Log Gemini 3 thought_signature presence in response (pass-through debugging)
+    log_gemini_response_signatures(&response_data, provider_name);
+
     let rewritten = rewrite_model_in_response(response_data, model_label);
     Ok(Json(rewritten).into_response())
 }
@@ -947,6 +1051,9 @@ pub async fn chat_completions(
                         );
                     }
                 }
+
+                // Log Gemini 3 thought_signature presence in request (pass-through debugging)
+                log_gemini_request_signatures(&payload, &provider.name);
 
                 let api_key_name = get_api_key_name();
 
