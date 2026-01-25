@@ -219,6 +219,7 @@ struct StreamingState {
 }
 
 /// State for tracking tool calls during streaming.
+#[derive(Default)]
 struct ToolCallState {
     id: Option<String>,
     name: Option<String>,
@@ -226,19 +227,6 @@ struct ToolCallState {
     json_sent: bool,
     claude_index: Option<i32>,
     started: bool,
-}
-
-impl Default for ToolCallState {
-    fn default() -> Self {
-        Self {
-            id: None,
-            name: None,
-            args_buffer: String::new(),
-            json_sent: false,
-            claude_index: None,
-            started: false,
-        }
-    }
 }
 
 /// Convert OpenAI streaming response to Claude streaming format.
@@ -255,7 +243,7 @@ pub fn convert_openai_streaming_to_claude(
     openai_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     original_model: String,
 ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
-    let message_id = format!("msg_{}", Uuid::new_v4().simple().to_string()[..24].to_string());
+    let message_id = format!("msg_{}", &Uuid::new_v4().simple().to_string()[..24]);
 
     let state = StreamingState {
         message_id: message_id.clone(),
@@ -336,8 +324,7 @@ pub fn convert_openai_streaming_to_claude(
                             continue;
                         }
                         
-                        if line.starts_with("data: ") {
-                            let chunk_data = &line[6..];
+                        if let Some(chunk_data) = line.strip_prefix("data: ") {
                             if chunk_data.trim() == "[DONE]" {
                                 // Stream is done - generate final events and mark as done
                                 stream_done = true;
@@ -528,9 +515,7 @@ fn process_tool_call_delta(tool_call_deltas: &[Value], state: &mut StreamingStat
         let tc_index = tc_delta.get("index").and_then(|i| i.as_i64()).unwrap_or(0) as i32;
 
         // Initialize tool call tracking by index if not exists
-        if !state.current_tool_calls.contains_key(&tc_index) {
-            state.current_tool_calls.insert(tc_index, ToolCallState::default());
-        }
+        state.current_tool_calls.entry(tc_index).or_default();
 
         let tool_call = state.current_tool_calls.get_mut(&tc_index).unwrap();
 

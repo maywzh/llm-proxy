@@ -16,10 +16,13 @@ use std::sync::Arc;
 use crate::core::config::RateLimitConfig;
 use crate::core::error::AppError;
 
+/// Type alias for the rate limiter instance
+type RateLimiterInstance = Arc<GovernorRateLimiter<NotKeyed, InMemoryState, DefaultClock>>;
+
 /// Rate limiter for managing per-key request limits.
 pub struct RateLimiter {
     /// Map of key -> rate limiter instance
-    limiters: Arc<DashMap<String, Arc<GovernorRateLimiter<NotKeyed, InMemoryState, DefaultClock>>>>,
+    limiters: Arc<DashMap<String, RateLimiterInstance>>,
 }
 
 impl RateLimiter {
@@ -60,9 +63,9 @@ impl RateLimiter {
         if let Some(limiter) = self.limiters.get(key) {
             match limiter.check() {
                 Ok(_) => Ok(()),
-                Err(_) => Err(AppError::RateLimitExceeded(format!(
-                    "Rate limit exceeded for key"
-                ))),
+                Err(_) => Err(AppError::RateLimitExceeded(
+                    "Rate limit exceeded for key".to_string(),
+                )),
             }
         } else {
             // No rate limit configured for this key

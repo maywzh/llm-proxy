@@ -391,12 +391,13 @@ enum LangfuseEvent {
         /// Additional tags to add (e.g., provider tag)
         tags: Vec<String>,
     },
-    Generation(GenerationData),
+    Generation(Box<GenerationData>),
     Flush,
     Shutdown,
 }
 
 /// Langfuse service for creating and managing traces.
+#[derive(Clone)]
 pub struct LangfuseService {
     config: LangfuseConfig,
     sender: Option<mpsc::Sender<LangfuseEvent>>,
@@ -547,7 +548,7 @@ impl LangfuseService {
         }
 
         if let Some(sender) = &self.sender {
-            if let Err(e) = sender.try_send(LangfuseEvent::Generation(data)) {
+            if let Err(e) = sender.try_send(LangfuseEvent::Generation(Box::new(data))) {
                 tracing::warn!("Failed to send generation event: {}", e);
             }
         }
@@ -713,7 +714,7 @@ async fn send_batch(
     batch: &mut Vec<IngestionEvent>,
     debug: bool,
 ) {
-    let events: Vec<IngestionEvent> = batch.drain(..).collect();
+    let events: Vec<IngestionEvent> = std::mem::take(batch);
     let count = events.len();
 
     let payload = IngestionBatch { batch: events };
@@ -841,7 +842,14 @@ pub fn init_langfuse_service(config: Option<LangfuseConfig>) {
 
 /// Shutdown the global Langfuse service.
 pub async fn shutdown_langfuse_service() {
-    if let Ok(service) = LANGFUSE_SERVICE.read() {
+    let service_clone = {
+        if let Ok(service) = LANGFUSE_SERVICE.read() {
+            Some(service.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(service) = service_clone {
         service.shutdown().await;
     }
 }

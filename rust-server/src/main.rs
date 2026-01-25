@@ -304,7 +304,7 @@ async fn health_handler() -> impl IntoResponse {
 fn detect_cpu_limit() -> Option<usize> {
     // Try cgroup v2 first
     if let Ok(max) = std::fs::read_to_string("/sys/fs/cgroup/cpu.max") {
-        let parts: Vec<&str> = max.trim().split_whitespace().collect();
+        let parts: Vec<&str> = max.split_whitespace().collect();
         if parts.len() == 2 {
             if let (Ok(quota), Ok(period)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
                 if quota > 0 {
