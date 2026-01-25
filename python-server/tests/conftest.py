@@ -229,6 +229,10 @@ def app_with_config(test_config, monkeypatch):
             "providers": len(config_with_auth.providers),
         }
 
+    @app.post("/api/event_logging/batch")
+    async def event_logging_placeholder():
+        return {"status": "ok"}
+
     return app
 
 

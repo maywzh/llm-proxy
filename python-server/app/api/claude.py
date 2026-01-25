@@ -27,6 +27,7 @@ from app.services.claude_converter import (
     openai_to_claude_response,
     convert_openai_streaming_to_claude,
 )
+from app.utils.streaming import count_tokens as tiktoken_count
 from app.models.claude import ClaudeMessagesRequest, ClaudeTokenCountRequest
 from app.core.http_client import get_http_client
 from app.core.metrics import TOKEN_USAGE
@@ -452,34 +453,43 @@ async def count_tokens(
 ):
     """Claude token counting endpoint.
 
-    Provides a rough estimation of token count for the given messages.
-    Uses a simple character-based estimation (4 characters per token).
+    Provides accurate token count for the given messages using tiktoken.
     """
     try:
-        total_chars = 0
+        model = claude_request.model
+        total_tokens = 0
 
-        # Count system message characters
+        # Count system message tokens
         if claude_request.system:
             if isinstance(claude_request.system, str):
-                total_chars += len(claude_request.system)
+                total_tokens += tiktoken_count(claude_request.system, model)
             elif isinstance(claude_request.system, list):
                 for block in claude_request.system:
                     if hasattr(block, "text"):
-                        total_chars += len(block.text)
+                        total_tokens += tiktoken_count(block.text, model)
 
-        # Count message characters
+        # Count message tokens
         for msg in claude_request.messages:
+            # Count role tokens
+            total_tokens += tiktoken_count(msg.role, model)
+
             if msg.content is None:
                 continue
             elif isinstance(msg.content, str):
-                total_chars += len(msg.content)
+                total_tokens += tiktoken_count(msg.content, model)
             elif isinstance(msg.content, list):
                 for block in msg.content:
                     if hasattr(block, "text") and block.text is not None:
-                        total_chars += len(block.text)
+                        total_tokens += tiktoken_count(block.text, model)
 
-        # Rough estimation: 4 characters per token
-        estimated_tokens = max(1, total_chars // 4)
+            # Format overhead per message (same as streaming.py)
+            total_tokens += 4
+
+        # Conversation format overhead
+        total_tokens += 2
+
+        # Ensure at least 1 token
+        estimated_tokens = max(1, total_tokens)
 
         return {"input_tokens": estimated_tokens}
 

@@ -225,6 +225,8 @@ fn build_router(
         .merge(api_routes)
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
+        // Placeholder for Claude Code telemetry (returns 200 to suppress 404 noise)
+        .route("/api/event_logging/batch", post(event_logging_placeholder))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
 }
@@ -295,6 +297,16 @@ fn create_http_client(config: &AppConfig) -> reqwest::Client {
 
 /// Health check endpoint
 async fn health_handler() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok"
+    }))
+}
+
+/// Placeholder for Claude Code telemetry endpoint
+/// This endpoint is called by Claude Code CLI for usage telemetry.
+/// We return 200 OK to suppress 404 errors in logs.
+async fn event_logging_placeholder() -> impl IntoResponse {
+    tracing::debug!("POST /api/event_logging/batch - telemetry request ignored");
     Json(serde_json::json!({
         "status": "ok"
     }))

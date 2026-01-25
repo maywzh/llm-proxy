@@ -221,6 +221,16 @@ def create_app() -> FastAPI:
             "credentials_count": len(config.credentials),
         }
 
+    @app.post("/api/event_logging/batch")
+    async def event_logging_placeholder():
+        """Placeholder for Claude Code telemetry endpoint.
+
+        This endpoint is called by Claude Code CLI for usage telemetry.
+        We return 200 OK to suppress 404 errors in logs.
+        """
+        logger.debug("POST /api/event_logging/batch - telemetry request ignored")
+        return {"status": "ok"}
+
     return app
 
 

@@ -13,10 +13,12 @@ use crate::core::database::hash_key;
 use crate::core::langfuse::{get_langfuse_service, GenerationData, extract_client_metadata, build_langfuse_tags};
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
+use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
 use crate::core::{AppError, Result};
 use crate::services::claude_converter::{
     claude_to_openai_request, convert_openai_streaming_to_claude, openai_to_claude_response,
 };
+use crate::api::streaming::count_tokens as tiktoken_count;
 use crate::with_request_context;
 use axum::{
     body::Body,
@@ -108,11 +110,30 @@ fn strip_provider_suffix(model: &str, provider_suffix: Option<&str>) -> String {
 // Error Response Builder
 // ============================================================================
 
-/// Build a Claude-formatted error response.
-fn build_claude_error_response(status: StatusCode, error_type: &str, message: &str) -> Response {
+/// Build a Claude-formatted error response with optional extensions.
+fn build_claude_error_response(
+    status: StatusCode,
+    error_type: &str,
+    message: &str,
+    model: Option<&str>,
+    provider: Option<&str>,
+    api_key_name: Option<&str>,
+) -> Response {
     let error = ClaudeErrorResponse::new(error_type, message);
     let mut response = Json(error).into_response();
     *response.status_mut() = status;
+
+    // Add extensions for middleware metrics tracking
+    if let Some(m) = model {
+        response.extensions_mut().insert(ModelName(m.to_string()));
+    }
+    if let Some(p) = provider {
+        response.extensions_mut().insert(ProviderName(p.to_string()));
+    }
+    if let Some(k) = api_key_name {
+        response.extensions_mut().insert(ApiKeyName(k.to_string()));
+    }
+
     response
 }
 
@@ -232,6 +253,9 @@ pub async fn create_message(
                     StatusCode::BAD_REQUEST,
                     "invalid_request_error",
                     &err,
+                    Some(&model_label),
+                    None, // No provider available
+                    Some(&api_key_name),
                 ));
             }
         };
@@ -337,6 +361,9 @@ pub async fn create_message(
                             status,
                             error_type,
                             &format!("Upstream request failed: {}", e),
+                            Some(&model_label),
+                            Some(&provider.name),
+                            Some(&api_key_name),
                         ));
                     }
                 };
@@ -394,6 +421,9 @@ pub async fn create_message(
                             .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                         "api_error",
                         &error_message,
+                        Some(&model_label),
+                        Some(&provider.name),
+                        Some(&api_key_name),
                     ));
                 }
 
@@ -530,12 +560,7 @@ async fn handle_streaming_response(
 
     let body = Body::from_stream(langfuse_stream);
 
-    // Record metrics
-    let metrics = get_metrics();
-    metrics
-        .request_count
-        .with_label_values(&["POST", "/v1/messages", &model_label_clone, &provider_name_clone, "200", &api_key_name_clone])
-        .inc();
+    // Note: Metrics are recorded by middleware via response extensions
 
     tracing::debug!(
         model = %model_label_clone,
@@ -544,14 +569,21 @@ async fn handle_streaming_response(
         "Claude streaming response started"
     );
 
-    Ok(Response::builder()
+    let mut response = Response::builder()
         .status(200)
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
         .header("Connection", "keep-alive")
         .header("Access-Control-Allow-Origin", "*")
         .body(body)
-        .unwrap())
+        .unwrap();
+
+    // Add extensions for middleware metrics tracking
+    response.extensions_mut().insert(ModelName(model_label_clone));
+    response.extensions_mut().insert(ProviderName(provider_name_clone));
+    response.extensions_mut().insert(ApiKeyName(api_key_name_clone));
+
+    Ok(response)
 }
 
 /// Handle non-streaming Claude response.
@@ -576,6 +608,9 @@ async fn handle_non_streaming_response(
                 StatusCode::BAD_GATEWAY,
                 "api_error",
                 &format!("Invalid JSON from provider: {}", e),
+                Some(&model_label),
+                Some(&provider_name),
+                Some(&api_key_name),
             ));
         }
     };
@@ -593,6 +628,9 @@ async fn handle_non_streaming_response(
                 StatusCode::BAD_GATEWAY,
                 "api_error",
                 &format!("Failed to convert response: {}", e),
+                Some(&model_label),
+                Some(&provider_name),
+                Some(&api_key_name),
             ));
         }
     };
@@ -632,12 +670,7 @@ async fn handle_non_streaming_response(
         }
     }
 
-    // Record request metrics
-    let metrics = get_metrics();
-    metrics
-        .request_count
-        .with_label_values(&["POST", "/v1/messages", &model_label, &provider_name, "200", &api_key_name])
-        .inc();
+    // Note: Request count metrics are recorded by middleware via response extensions
 
     tracing::debug!(
         model = %model_label,
@@ -646,13 +679,17 @@ async fn handle_non_streaming_response(
         "Claude non-streaming response completed"
     );
 
-    Ok(Json(claude_response).into_response())
+    let mut response = Json(claude_response).into_response();
+    response.extensions_mut().insert(ModelName(model_label));
+    response.extensions_mut().insert(ProviderName(provider_name));
+    response.extensions_mut().insert(ApiKeyName(api_key_name));
+
+    Ok(response)
 }
 
 /// Claude token counting endpoint.
 ///
-/// Provides a rough estimation of token count for the given messages.
-/// Uses a simple character-based estimation (4 characters per token).
+/// Provides accurate token count for the given messages using tiktoken.
 #[utoipa::path(
     post,
     path = "/v1/messages/count_tokens",
@@ -679,42 +716,52 @@ pub async fn count_tokens(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let mut total_chars = 0;
+            let model = &claude_request.model;
+            let mut total_tokens = 0;
 
-            // Count system message characters
+            // Count system message tokens
             if let Some(ref system) = claude_request.system {
                 match system {
                     crate::api::claude_models::ClaudeSystemPrompt::Text(text) => {
-                        total_chars += text.len();
+                        total_tokens += tiktoken_count(text, model);
                     }
                     crate::api::claude_models::ClaudeSystemPrompt::Blocks(blocks) => {
                         for block in blocks {
-                            total_chars += block.text.len();
+                            total_tokens += tiktoken_count(&block.text, model);
                         }
                     }
                 }
             }
 
-            // Count message characters
+            // Count message tokens
             for msg in &claude_request.messages {
+                // Count role tokens
+                total_tokens += tiktoken_count(&msg.role, model);
+
                 match &msg.content {
                     crate::api::claude_models::ClaudeMessageContent::Text(text) => {
-                        total_chars += text.len();
+                        total_tokens += tiktoken_count(text, model);
                     }
                     crate::api::claude_models::ClaudeMessageContent::Blocks(blocks) => {
                         for block in blocks {
                             if let crate::api::claude_models::ClaudeContentBlock::Text(text_block) =
                                 block
                             {
-                                total_chars += text_block.text.len();
+                                total_tokens += tiktoken_count(&text_block.text, model);
                             }
                         }
                     }
                 }
+
+                // Format overhead per message (same as streaming.rs)
+                total_tokens += 4;
             }
 
-            // Rough estimation: 4 characters per token
-            let estimated_tokens = std::cmp::max(1, total_chars / 4) as i32;
+            // Conversation format overhead
+            total_tokens += 2;
+
+            // Ensure at least 1 token
+            let estimated_tokens = std::cmp::max(1, total_tokens) as i32;
 
             Ok(Json(ClaudeTokenCountResponse {
                 input_tokens: estimated_tokens,
@@ -761,7 +808,13 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
             "Test error",
+            Some("test-model"),
+            Some("test-provider"),
+            Some("test-key"),
         );
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(response.extensions().get::<ModelName>().is_some());
+        assert!(response.extensions().get::<ProviderName>().is_some());
+        assert!(response.extensions().get::<ApiKeyName>().is_some());
     }
 }

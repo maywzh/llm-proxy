@@ -112,19 +112,22 @@ impl MetricsMiddleware {
             .map(|k| k.0.as_str())
             .unwrap_or("anonymous");
 
-        // Record metrics
-        metrics
-            .request_count
-            .with_label_values(&[&method, &endpoint, model, provider, &status_code, api_key_name])
-            .inc();
+        // Record metrics only for LLM requests (where provider is set)
+        // Skip non-LLM endpoints like /api/event_logging, /debug/pprof, /v1/models, etc.
+        if provider != "unknown" {
+            metrics
+                .request_count
+                .with_label_values(&[&method, &endpoint, model, provider, &status_code, api_key_name])
+                .inc();
 
-        metrics
-            .request_duration
-            .with_label_values(&[&method, &endpoint, model, provider, api_key_name])
-            .observe(duration);
+            metrics
+                .request_duration
+                .with_label_values(&[&method, &endpoint, model, provider, api_key_name])
+                .observe(duration);
+        }
 
-        // Log request - only show model, provider, and key for /v1/chat/completions
-        if endpoint == "/v1/chat/completions" {
+        // Log request - show model, provider, and key for LLM endpoints
+        if endpoint == "/v1/chat/completions" || endpoint == "/v1/messages" {
             tracing::info!(
                 "{} {} - model={} provider={} key={} status={} duration={:.3}s",
                 method,
@@ -163,6 +166,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
         middleware,
+        response::Response,
         routing::get,
         Router,
     };
@@ -257,13 +261,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_middleware_records_duration() {
+    async fn test_middleware_records_duration_for_llm_requests() {
         init_metrics();
         let metrics = get_metrics();
 
-        async fn handler() -> &'static str {
+        async fn handler() -> Response<Body> {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-            "ok"
+            let mut response = Response::new(Body::from("ok"));
+            response.extensions_mut().insert(ModelName("gpt-4".to_string()));
+            response.extensions_mut().insert(ProviderName("openai".to_string()));
+            response.extensions_mut().insert(ApiKeyName("test-key".to_string()));
+            response
         }
 
         let app = Router::new()
@@ -276,35 +284,34 @@ mod tests {
 
         let metric = metrics
             .request_duration
-            .with_label_values(&["GET", "/test", "unknown", "unknown", "anonymous"]);
+            .with_label_values(&["GET", "/test", "gpt-4", "openai", "test-key"]);
 
         assert!(metric.get_sample_count() > 0);
     }
 
     #[tokio::test]
-    async fn test_middleware_records_status_code() {
+    async fn test_middleware_skips_metrics_for_non_llm_requests() {
         init_metrics();
         let metrics = get_metrics();
 
-        async fn handler() -> StatusCode {
-            StatusCode::NOT_FOUND
+        async fn handler() -> &'static str {
+            "ok"
         }
 
         let app = Router::new()
-            .route("/test", get(handler))
+            .route("/test-non-llm", get(handler))
             .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
 
-        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let request = Request::builder().uri("/test-non-llm").body(Body::empty()).unwrap();
 
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let _response = app.oneshot(request).await.unwrap();
 
-        let count = metrics
-            .request_count
-            .with_label_values(&["GET", "/test", "unknown", "unknown", "404", "anonymous"])
-            .get();
+        // Metrics with "unknown" provider should not be recorded
+        let metric = metrics
+            .request_duration
+            .with_label_values(&["GET", "/test-non-llm", "unknown", "unknown", "anonymous"]);
 
-        assert!(count > 0);
+        assert_eq!(metric.get_sample_count(), 0);
     }
 
     #[tokio::test]
