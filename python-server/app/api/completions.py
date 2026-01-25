@@ -22,6 +22,7 @@ from app.services.langfuse_service import (
     LangfuseService,
 )
 from app.utils.streaming import create_streaming_response, rewrite_model_in_response
+from app.utils.gemini3 import log_gemini_request_signatures, log_gemini_response_signatures
 from app.core.config import get_config, get_env_config
 from app.core.exceptions import TTFTTimeoutError
 from app.core.http_client import get_http_client
@@ -538,6 +539,9 @@ async def _handle_non_streaming_request(
 
     response_data = response.json()
 
+    # Log Gemini 3 response signatures for debugging (pass-through, no modification)
+    log_gemini_response_signatures(response_data, provider.name)
+
     # Capture output for Langfuse
     if "choices" in response_data and response_data["choices"]:
         choice = response_data["choices"][0]
@@ -707,6 +711,9 @@ async def proxy_completion_request(
     try:
         # Set provider context for logging
         set_provider_context(provider.name)
+
+        # Log Gemini 3 request signatures for debugging (pass-through, no modification)
+        log_gemini_request_signatures(data, provider.name)
 
         if data.get("stream", False):
             return await _handle_streaming_request(
