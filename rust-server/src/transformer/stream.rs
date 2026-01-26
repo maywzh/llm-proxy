@@ -1,0 +1,1128 @@
+//! Streaming utilities for protocol conversion.
+//!
+//! This module provides utilities for handling SSE (Server-Sent Events) streams
+//! and converting between different streaming formats.
+
+use super::UnifiedStreamChunk;
+
+// ============================================================================
+// SSE Parser
+// ============================================================================
+
+/// SSE event parsed from stream.
+#[derive(Debug, Clone)]
+pub struct SseEvent {
+    pub event: Option<String>,
+    pub data: Option<String>,
+    pub id: Option<String>,
+    pub retry: Option<u64>,
+}
+
+impl Default for SseEvent {
+    fn default() -> Self {
+        SseEvent {
+            event: None,
+            data: None,
+            id: None,
+            retry: None,
+        }
+    }
+}
+
+/// SSE parser state.
+pub struct SseParser {
+    buffer: String,
+}
+
+impl SseParser {
+    /// Create a new SSE parser.
+    pub fn new() -> Self {
+        SseParser {
+            buffer: String::new(),
+        }
+    }
+
+    /// Parse incoming bytes and return complete events.
+    pub fn parse(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
+        let chunk_str = match std::str::from_utf8(chunk) {
+            Ok(s) => s,
+            Err(_) => return vec![],
+        };
+
+        self.buffer.push_str(chunk_str);
+
+        let mut events = vec![];
+        let mut current_event = SseEvent::default();
+
+        // Split by double newlines (event boundaries)
+        while let Some(pos) = self.buffer.find("\n\n") {
+            let event_block = self.buffer[..pos].to_string();
+            self.buffer = self.buffer[pos + 2..].to_string();
+
+            for line in event_block.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+
+                if line.starts_with(':') {
+                    // Comment, ignore
+                    continue;
+                }
+
+                if let Some((field, value)) = line.split_once(':') {
+                    let value = value.strip_prefix(' ').unwrap_or(value);
+                    match field {
+                        "event" => current_event.event = Some(value.to_string()),
+                        "data" => {
+                            if let Some(ref mut data) = current_event.data {
+                                data.push('\n');
+                                data.push_str(value);
+                            } else {
+                                current_event.data = Some(value.to_string());
+                            }
+                        }
+                        "id" => current_event.id = Some(value.to_string()),
+                        "retry" => current_event.retry = value.parse().ok(),
+                        _ => {}
+                    }
+                } else if let Some(value) = line.strip_prefix("data:") {
+                    let value = value.strip_prefix(' ').unwrap_or(value);
+                    if let Some(ref mut data) = current_event.data {
+                        data.push('\n');
+                        data.push_str(value);
+                    } else {
+                        current_event.data = Some(value.to_string());
+                    }
+                }
+            }
+
+            if current_event.data.is_some() || current_event.event.is_some() {
+                events.push(current_event);
+                current_event = SseEvent::default();
+            }
+        }
+
+        events
+    }
+
+    /// Get remaining buffer content.
+    pub fn remaining(&self) -> &str {
+        &self.buffer
+    }
+
+    /// Clear the buffer.
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
+}
+
+impl Default for SseParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// SSE Serializer
+// ============================================================================
+
+/// Format an SSE event for transmission.
+pub fn format_sse_event(event: Option<&str>, data: &str) -> String {
+    let mut output = String::new();
+
+    if let Some(event_name) = event {
+        output.push_str("event: ");
+        output.push_str(event_name);
+        output.push('\n');
+    }
+
+    for line in data.lines() {
+        output.push_str("data: ");
+        output.push_str(line);
+        output.push('\n');
+    }
+
+    output.push('\n');
+    output
+}
+
+/// Format a simple data-only SSE event.
+pub fn format_sse_data(data: &str) -> String {
+    format!("data: {}\n\n", data)
+}
+
+/// Format the SSE done marker.
+pub fn format_sse_done() -> String {
+    "data: [DONE]\n\n".to_string()
+}
+
+// ============================================================================
+// Cross-Protocol Stream State
+// ============================================================================
+
+/// Cached tool information for synthesizing content_block_start.
+#[derive(Debug, Clone)]
+pub struct ToolInfo {
+    /// Tool call ID
+    pub id: String,
+    /// Tool name
+    pub name: String,
+}
+
+/// State tracker for cross-protocol streaming transformation.
+///
+/// When transforming streams between protocols (e.g., OpenAI → Anthropic),
+/// we need to track state to properly emit all required events in the target
+/// protocol's format.
+///
+/// For example, Anthropic requires:
+/// - `message_start` at the beginning
+/// - `content_block_start` before each content block
+/// - `content_block_stop` after each content block
+/// - `message_delta` with stop_reason
+/// - `message_stop` at the end
+///
+/// OpenAI doesn't have these events, so we need to synthesize them.
+#[derive(Debug, Clone)]
+pub struct CrossProtocolStreamState {
+    /// Whether message_start has been emitted
+    pub message_started: bool,
+    /// Whether ping has been emitted after message_start
+    pub ping_emitted: bool,
+    /// Current content block index
+    pub current_block_index: usize,
+    /// Set of content block indices that have been started
+    pub started_blocks: std::collections::HashSet<usize>,
+    /// Set of content block indices that have been stopped
+    pub stopped_blocks: std::collections::HashSet<usize>,
+    /// Whether message_delta with stop_reason has been emitted
+    pub message_delta_emitted: bool,
+    /// Whether message_stop has been emitted
+    pub message_stopped: bool,
+    /// Model name for synthetic events
+    pub model: String,
+    /// Message ID for synthetic events
+    pub message_id: String,
+    /// Accumulated usage for final message_delta
+    pub usage: Option<super::UnifiedUsage>,
+    /// Accumulated stop_reason for final message_delta
+    pub stop_reason: Option<super::StopReason>,
+    /// Cached tool information for synthesizing content_block_start
+    pub tool_info_cache: std::collections::HashMap<usize, ToolInfo>,
+}
+
+impl Default for CrossProtocolStreamState {
+    fn default() -> Self {
+        Self {
+            message_started: false,
+            ping_emitted: false,
+            current_block_index: 0,
+            started_blocks: std::collections::HashSet::new(),
+            stopped_blocks: std::collections::HashSet::new(),
+            message_delta_emitted: false,
+            message_stopped: false,
+            model: String::new(),
+            message_id: format!(
+                "msg_{}",
+                uuid::Uuid::new_v4().to_string().replace("-", "")[..24].to_string()
+            ),
+            usage: None,
+            stop_reason: None,
+            tool_info_cache: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl CrossProtocolStreamState {
+    /// Create a new stream state with model name.
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Process unified chunks and emit additional synthetic events as needed.
+    ///
+    /// This method takes unified chunks from the source protocol and returns
+    /// a complete sequence of chunks that includes all events required by
+    /// the target protocol.
+    pub fn process_chunks(&mut self, chunks: Vec<UnifiedStreamChunk>) -> Vec<UnifiedStreamChunk> {
+        let mut result = Vec::new();
+
+        for chunk in chunks {
+            // Cache tool information from content blocks for later use
+            self.cache_tool_info(&chunk);
+
+            // Emit message_start if not yet emitted and we have content
+            if !self.message_started && self.should_emit_message_start(&chunk) {
+                result.push(self.create_message_start());
+                self.message_started = true;
+                // Emit ping event after message_start for Anthropic compatibility
+                if !self.ping_emitted {
+                    result.push(UnifiedStreamChunk::ping());
+                    self.ping_emitted = true;
+                }
+            }
+
+            match chunk.chunk_type {
+                super::ChunkType::MessageStart => {
+                    // Already have a message_start from source, use it
+                    if !self.message_started {
+                        if let Some(ref msg) = chunk.message {
+                            self.model = msg.model.clone();
+                            self.message_id = msg.id.clone();
+                        }
+                        self.message_started = true;
+                        result.push(chunk);
+                        // Emit ping event after message_start for Anthropic compatibility
+                        if !self.ping_emitted {
+                            result.push(UnifiedStreamChunk::ping());
+                            self.ping_emitted = true;
+                        }
+                    }
+                }
+                super::ChunkType::ContentBlockStart => {
+                    let index = chunk.index;
+                    if !self.started_blocks.contains(&index) {
+                        self.started_blocks.insert(index);
+                        self.current_block_index = index;
+                    }
+                    result.push(chunk);
+                }
+                super::ChunkType::ContentBlockDelta => {
+                    let index = chunk.index;
+
+                    // Emit content_block_start if not yet emitted for this index
+                    if !self.started_blocks.contains(&index) {
+                        result.push(self.create_content_block_start(index, &chunk));
+                        self.started_blocks.insert(index);
+                        self.current_block_index = index;
+                    }
+
+                    result.push(chunk);
+                }
+                super::ChunkType::ContentBlockStop => {
+                    let index = chunk.index;
+                    if !self.stopped_blocks.contains(&index) {
+                        self.stopped_blocks.insert(index);
+                    }
+                    result.push(chunk);
+                }
+                super::ChunkType::MessageDelta => {
+                    // Close any open content blocks before message_delta
+                    for idx in self.started_blocks.iter() {
+                        if !self.stopped_blocks.contains(idx) {
+                            result.push(UnifiedStreamChunk::content_block_stop(*idx));
+                            self.stopped_blocks.insert(*idx);
+                        }
+                    }
+
+                    // Accumulate usage from this chunk (only if non-zero)
+                    if let Some(ref usage) = chunk.usage {
+                        if usage.input_tokens > 0 || usage.output_tokens > 0 {
+                            // Update accumulated usage with non-zero values
+                            self.usage = Some(usage.clone());
+                        }
+                    }
+
+                    // Create a new chunk with accumulated usage
+                    let mut output_chunk = chunk.clone();
+                    if let Some(ref accumulated_usage) = self.usage {
+                        // Use accumulated usage if we have it
+                        output_chunk.usage = Some(accumulated_usage.clone());
+                    }
+
+                    self.message_delta_emitted = true;
+                    result.push(output_chunk);
+                }
+                super::ChunkType::MessageStop => {
+                    // Ensure all content blocks are closed
+                    for idx in self.started_blocks.clone().iter() {
+                        if !self.stopped_blocks.contains(idx) {
+                            result.push(UnifiedStreamChunk::content_block_stop(*idx));
+                            self.stopped_blocks.insert(*idx);
+                        }
+                    }
+
+                    self.message_stopped = true;
+                    result.push(chunk);
+                }
+                super::ChunkType::Ping => {
+                    result.push(chunk);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Cache tool information from content blocks for later synthesizing.
+    fn cache_tool_info(&mut self, chunk: &UnifiedStreamChunk) {
+        // Cache tool info from ContentBlockStart
+        if chunk.chunk_type == super::ChunkType::ContentBlockStart {
+            if let Some(ref content_block) = chunk.content_block {
+                if let super::UnifiedContent::ToolUse { id, name, .. } = content_block {
+                    self.tool_info_cache.insert(
+                        chunk.index,
+                        ToolInfo {
+                            id: id.clone(),
+                            name: name.clone(),
+                        },
+                    );
+                }
+            }
+        }
+
+        // Also cache from ToolInputDelta if it contains tool info
+        if chunk.chunk_type == super::ChunkType::ContentBlockDelta {
+            if let Some(ref delta) = chunk.delta {
+                if let super::UnifiedContent::ToolInputDelta {
+                    index: tool_idx, ..
+                } = delta
+                {
+                    // If we have a tool index, it might help correlate tool calls
+                    // Store the index mapping for potential future use
+                    if *tool_idx > 0 && !self.tool_info_cache.contains_key(&chunk.index) {
+                        // We don't have full info yet, but mark that this index is a tool
+                        // The actual info might come from a previous ContentBlockStart
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if we should emit a synthetic message_start.
+    fn should_emit_message_start(&self, chunk: &UnifiedStreamChunk) -> bool {
+        matches!(
+            chunk.chunk_type,
+            super::ChunkType::ContentBlockStart
+                | super::ChunkType::ContentBlockDelta
+                | super::ChunkType::MessageDelta
+        )
+    }
+
+    /// Create a synthetic message_start event.
+    fn create_message_start(&self) -> UnifiedStreamChunk {
+        let message = super::UnifiedResponse {
+            id: self.message_id.clone(),
+            model: self.model.clone(),
+            content: vec![],
+            stop_reason: None,
+            usage: super::UnifiedUsage::default(),
+            tool_calls: vec![],
+        };
+        UnifiedStreamChunk::message_start(message)
+    }
+
+    /// Create a synthetic content_block_start event.
+    fn create_content_block_start(
+        &self,
+        index: usize,
+        delta_chunk: &UnifiedStreamChunk,
+    ) -> UnifiedStreamChunk {
+        // First, try to use cached tool info for this index
+        if let Some(tool_info) = self.tool_info_cache.get(&index) {
+            return UnifiedStreamChunk::content_block_start(
+                index,
+                super::UnifiedContent::tool_use(
+                    &tool_info.id,
+                    &tool_info.name,
+                    serde_json::json!({}),
+                ),
+            );
+        }
+
+        // Determine content type from the delta
+        let content_block = if let Some(ref delta) = delta_chunk.delta {
+            match delta {
+                super::UnifiedContent::Text { .. } => super::UnifiedContent::text(""),
+                super::UnifiedContent::ToolInputDelta { .. } => {
+                    // For tool input delta without cached info, generate placeholder
+                    // This is a fallback when we didn't receive a ContentBlockStart
+                    super::UnifiedContent::tool_use(
+                        format!(
+                            "toolu_{}",
+                            uuid::Uuid::new_v4().to_string().replace("-", "")[..24].to_string()
+                        ),
+                        "unknown_tool",
+                        serde_json::json!({}),
+                    )
+                }
+                super::UnifiedContent::Thinking { .. } => super::UnifiedContent::thinking("", None),
+                _ => super::UnifiedContent::text(""),
+            }
+        } else {
+            super::UnifiedContent::text("")
+        };
+
+        UnifiedStreamChunk::content_block_start(index, content_block)
+    }
+
+    /// Finalize the stream, emitting any missing closing events.
+    pub fn finalize(&mut self) -> Vec<UnifiedStreamChunk> {
+        let mut result = Vec::new();
+
+        // Close any open content blocks
+        for idx in self.started_blocks.clone().iter() {
+            if !self.stopped_blocks.contains(idx) {
+                result.push(UnifiedStreamChunk::content_block_stop(*idx));
+                self.stopped_blocks.insert(*idx);
+            }
+        }
+
+        // Emit message_delta if not yet emitted
+        if !self.message_delta_emitted && self.message_started {
+            result.push(UnifiedStreamChunk::message_delta(
+                super::StopReason::EndTurn,
+                self.usage.clone().unwrap_or_default(),
+            ));
+            self.message_delta_emitted = true;
+        }
+
+        // Emit message_stop if not yet emitted
+        if !self.message_stopped && self.message_started {
+            result.push(UnifiedStreamChunk::message_stop());
+            self.message_stopped = true;
+        }
+
+        result
+    }
+}
+
+// ============================================================================
+// Chunk Accumulator
+// ============================================================================
+
+/// Accumulates streaming chunks for final response assembly.
+#[derive(Debug, Default)]
+#[allow(dead_code)]
+pub struct ChunkAccumulator {
+    content: Vec<String>,
+    tool_calls: Vec<serde_json::Value>,
+    usage: Option<super::UnifiedUsage>,
+    stop_reason: Option<super::StopReason>,
+    message_id: Option<String>,
+    model: Option<String>,
+}
+
+impl ChunkAccumulator {
+    /// Create a new chunk accumulator.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a unified stream chunk.
+    pub fn add_chunk(&mut self, chunk: &UnifiedStreamChunk) {
+        match chunk.chunk_type {
+            super::ChunkType::MessageStart => {
+                if let Some(ref message) = chunk.message {
+                    self.message_id = Some(message.id.clone());
+                    self.model = Some(message.model.clone());
+                }
+            }
+            super::ChunkType::ContentBlockDelta => {
+                if let Some(ref delta) = chunk.delta {
+                    if let Some(text) = delta.as_text() {
+                        self.content.push(text.to_string());
+                    }
+                }
+            }
+            super::ChunkType::MessageDelta => {
+                if let Some(ref usage) = chunk.usage {
+                    self.usage = Some(usage.clone());
+                }
+                if let Some(ref reason) = chunk.stop_reason {
+                    self.stop_reason = Some(reason.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Get accumulated text content.
+    pub fn text_content(&self) -> String {
+        self.content.join("")
+    }
+
+    /// Get usage statistics.
+    pub fn usage(&self) -> Option<&super::UnifiedUsage> {
+        self.usage.as_ref()
+    }
+
+    /// Get stop reason.
+    pub fn stop_reason(&self) -> Option<&super::StopReason> {
+        self.stop_reason.as_ref()
+    }
+
+    /// Get message ID.
+    pub fn message_id(&self) -> Option<&str> {
+        self.message_id.as_deref()
+    }
+
+    /// Get model name.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    /// Build a unified response from accumulated chunks.
+    pub fn build_response(&self) -> super::UnifiedResponse {
+        super::UnifiedResponse {
+            id: self
+                .message_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            model: self.model.clone().unwrap_or_else(|| "unknown".to_string()),
+            content: vec![super::UnifiedContent::text(self.text_content())],
+            stop_reason: self.stop_reason.clone(),
+            usage: self.usage.clone().unwrap_or_default(),
+            tool_calls: vec![],
+        }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sse_parser_simple() {
+        let mut parser = SseParser::new();
+        let events = parser.parse(b"data: hello\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_sse_parser_with_event() {
+        let mut parser = SseParser::new();
+        let events = parser.parse(b"event: message\ndata: hello\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, Some("message".to_string()));
+        assert_eq!(events[0].data, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_sse_parser_multiline_data() {
+        let mut parser = SseParser::new();
+        let events = parser.parse(b"data: line1\ndata: line2\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, Some("line1\nline2".to_string()));
+    }
+
+    #[test]
+    fn test_sse_parser_multiple_events() {
+        let mut parser = SseParser::new();
+        let events = parser.parse(b"data: first\n\ndata: second\n\n");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].data, Some("first".to_string()));
+        assert_eq!(events[1].data, Some("second".to_string()));
+    }
+
+    #[test]
+    fn test_sse_parser_partial() {
+        let mut parser = SseParser::new();
+
+        // First chunk - incomplete
+        let events = parser.parse(b"data: hel");
+        assert_eq!(events.len(), 0);
+
+        // Second chunk - completes the event
+        let events = parser.parse(b"lo\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_sse_parser_comment() {
+        let mut parser = SseParser::new();
+        let events = parser.parse(b": comment\ndata: hello\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_format_sse_event() {
+        let output = format_sse_event(Some("message"), "hello");
+        assert_eq!(output, "event: message\ndata: hello\n\n");
+    }
+
+    #[test]
+    fn test_format_sse_data() {
+        let output = format_sse_data("hello");
+        assert_eq!(output, "data: hello\n\n");
+    }
+
+    #[test]
+    fn test_format_sse_done() {
+        let output = format_sse_done();
+        assert_eq!(output, "data: [DONE]\n\n");
+    }
+
+    #[test]
+    fn test_chunk_accumulator() {
+        use super::super::{
+            ChunkType, StopReason, UnifiedContent, UnifiedStreamChunk, UnifiedUsage,
+        };
+
+        let mut acc = ChunkAccumulator::new();
+
+        // Add text deltas
+        acc.add_chunk(&UnifiedStreamChunk {
+            chunk_type: ChunkType::ContentBlockDelta,
+            index: 0,
+            delta: Some(UnifiedContent::text("Hello")),
+            usage: None,
+            stop_reason: None,
+            message: None,
+            content_block: None,
+        });
+
+        acc.add_chunk(&UnifiedStreamChunk {
+            chunk_type: ChunkType::ContentBlockDelta,
+            index: 0,
+            delta: Some(UnifiedContent::text(" World")),
+            usage: None,
+            stop_reason: None,
+            message: None,
+            content_block: None,
+        });
+
+        // Add message delta with usage
+        acc.add_chunk(&UnifiedStreamChunk {
+            chunk_type: ChunkType::MessageDelta,
+            index: 0,
+            delta: None,
+            usage: Some(UnifiedUsage::new(10, 5)),
+            stop_reason: Some(StopReason::EndTurn),
+            message: None,
+            content_block: None,
+        });
+
+        assert_eq!(acc.text_content(), "Hello World");
+        assert_eq!(acc.usage().unwrap().input_tokens, 10);
+        assert_eq!(acc.stop_reason(), Some(&StopReason::EndTurn));
+    }
+
+    // =========================================================================
+    // CrossProtocolStreamState Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cross_protocol_stream_state_new() {
+        let state = CrossProtocolStreamState::new("gpt-4");
+        assert_eq!(state.model, "gpt-4");
+        assert!(!state.message_started);
+        assert!(!state.ping_emitted);
+        assert!(!state.message_delta_emitted);
+        assert!(!state.message_stopped);
+        assert!(state.started_blocks.is_empty());
+        assert!(state.stopped_blocks.is_empty());
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_emits_message_start() {
+        use super::super::{ChunkType, UnifiedContent, UnifiedStreamChunk};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+
+        // Process a content delta without message_start
+        let chunks = vec![UnifiedStreamChunk::content_block_delta(
+            0,
+            UnifiedContent::text("Hello"),
+        )];
+
+        let result = state.process_chunks(chunks);
+
+        // Should emit message_start + ping before the delta
+        assert_eq!(result.len(), 4); // message_start + ping + content_block_start + delta
+        assert_eq!(result[0].chunk_type, ChunkType::MessageStart);
+        assert_eq!(result[1].chunk_type, ChunkType::Ping);
+        assert_eq!(result[2].chunk_type, ChunkType::ContentBlockStart);
+        assert_eq!(result[3].chunk_type, ChunkType::ContentBlockDelta);
+        assert!(state.message_started);
+        assert!(state.ping_emitted);
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_emits_content_block_start() {
+        use super::super::{ChunkType, UnifiedContent, UnifiedStreamChunk};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+        state.message_started = true; // Simulate message already started
+
+        // Process a content delta without content_block_start
+        let chunks = vec![UnifiedStreamChunk::content_block_delta(
+            0,
+            UnifiedContent::text("Hello"),
+        )];
+
+        let result = state.process_chunks(chunks);
+
+        // Should emit content_block_start before the delta
+        assert_eq!(result.len(), 2); // content_block_start + delta
+        assert_eq!(result[0].chunk_type, ChunkType::ContentBlockStart);
+        assert_eq!(result[1].chunk_type, ChunkType::ContentBlockDelta);
+        assert!(state.started_blocks.contains(&0));
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_emits_content_block_stop() {
+        use super::super::{ChunkType, StopReason, UnifiedStreamChunk, UnifiedUsage};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+        state.message_started = true;
+        state.started_blocks.insert(0);
+
+        // Process a message_delta (should close open content blocks)
+        let chunks = vec![UnifiedStreamChunk::message_delta(
+            StopReason::EndTurn,
+            UnifiedUsage::new(10, 5),
+        )];
+
+        let result = state.process_chunks(chunks);
+
+        // Should emit content_block_stop before message_delta
+        assert_eq!(result.len(), 2); // content_block_stop + message_delta
+        assert_eq!(result[0].chunk_type, ChunkType::ContentBlockStop);
+        assert_eq!(result[0].index, 0);
+        assert_eq!(result[1].chunk_type, ChunkType::MessageDelta);
+        assert!(state.stopped_blocks.contains(&0));
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_full_sequence() {
+        use super::super::{
+            ChunkType, StopReason, UnifiedContent, UnifiedStreamChunk, UnifiedUsage,
+        };
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+
+        // Simulate OpenAI streaming sequence (no message_start, no content_block_start/stop)
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("Hello")),
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text(" World")),
+            UnifiedStreamChunk::message_delta(StopReason::EndTurn, UnifiedUsage::new(10, 5)),
+            UnifiedStreamChunk::message_stop(),
+        ];
+
+        let result = state.process_chunks(chunks);
+
+        // Verify the complete Anthropic sequence (with ping after message_start)
+        let chunk_types: Vec<ChunkType> = result.iter().map(|c| c.chunk_type.clone()).collect();
+
+        assert_eq!(chunk_types[0], ChunkType::MessageStart);
+        assert_eq!(chunk_types[1], ChunkType::Ping);
+        assert_eq!(chunk_types[2], ChunkType::ContentBlockStart);
+        assert_eq!(chunk_types[3], ChunkType::ContentBlockDelta);
+        assert_eq!(chunk_types[4], ChunkType::ContentBlockDelta);
+        assert_eq!(chunk_types[5], ChunkType::ContentBlockStop);
+        assert_eq!(chunk_types[6], ChunkType::MessageDelta);
+        assert_eq!(chunk_types[7], ChunkType::MessageStop);
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_tool_use_sequence() {
+        use super::super::{
+            ChunkType, StopReason, UnifiedContent, UnifiedStreamChunk, UnifiedUsage,
+        };
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+
+        // Simulate OpenAI tool use streaming
+        let chunks = vec![
+            // Text content first
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("Let me check")),
+            // Tool use starts (OpenAI sends content_block_start for tool_use)
+            UnifiedStreamChunk::content_block_start(
+                1,
+                UnifiedContent::tool_use("call_123", "get_weather", serde_json::json!({})),
+            ),
+            // Tool input delta
+            UnifiedStreamChunk::content_block_delta(
+                1,
+                UnifiedContent::tool_input_delta(1, "{\"city\":\"NYC\"}"),
+            ),
+            // Finish
+            UnifiedStreamChunk::message_delta(StopReason::ToolUse, UnifiedUsage::new(20, 15)),
+            UnifiedStreamChunk::message_stop(),
+        ];
+
+        let result = state.process_chunks(chunks);
+
+        // Verify proper sequencing
+        let chunk_types: Vec<ChunkType> = result.iter().map(|c| c.chunk_type.clone()).collect();
+
+        // Should have: message_start, ping, content_block_start(0), delta(0), content_block_start(1), delta(1),
+        // content_block_stop(0), content_block_stop(1), message_delta, message_stop
+        assert!(chunk_types.contains(&ChunkType::MessageStart));
+        assert!(chunk_types.contains(&ChunkType::Ping));
+        assert_eq!(
+            chunk_types
+                .iter()
+                .filter(|t| **t == ChunkType::ContentBlockStart)
+                .count(),
+            2
+        );
+        assert_eq!(
+            chunk_types
+                .iter()
+                .filter(|t| **t == ChunkType::ContentBlockStop)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_finalize() {
+        use super::super::{ChunkType, UnifiedUsage};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+        state.message_started = true;
+        state.started_blocks.insert(0);
+        state.usage = Some(UnifiedUsage::new(10, 5));
+
+        // Finalize without message_delta or message_stop
+        let result = state.finalize();
+
+        // Should emit content_block_stop, message_delta, message_stop
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].chunk_type, ChunkType::ContentBlockStop);
+        assert_eq!(result[1].chunk_type, ChunkType::MessageDelta);
+        assert_eq!(result[2].chunk_type, ChunkType::MessageStop);
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_preserves_existing_events() {
+        use super::super::{ChunkType, UnifiedResponse, UnifiedStreamChunk, UnifiedUsage};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+
+        // If source already has message_start, use it
+        let message = UnifiedResponse {
+            id: "msg_existing".to_string(),
+            model: "claude-3".to_string(),
+            content: vec![],
+            stop_reason: None,
+            usage: UnifiedUsage::default(),
+            tool_calls: vec![],
+        };
+        let chunks = vec![UnifiedStreamChunk::message_start(message)];
+
+        let result = state.process_chunks(chunks);
+
+        // Should emit message_start + ping
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].chunk_type, ChunkType::MessageStart);
+        assert_eq!(result[1].chunk_type, ChunkType::Ping);
+        assert!(state.message_started);
+        assert!(state.ping_emitted);
+        assert_eq!(state.message_id, "msg_existing");
+        assert_eq!(state.model, "claude-3");
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_sequential_indices() {
+        use super::super::{ChunkType, UnifiedContent, UnifiedStreamChunk};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+        state.message_started = true;
+
+        // Process deltas with different indices
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("First")),
+            UnifiedStreamChunk::content_block_delta(1, UnifiedContent::text("Second")),
+            UnifiedStreamChunk::content_block_delta(2, UnifiedContent::text("Third")),
+        ];
+
+        let result = state.process_chunks(chunks);
+
+        // Each delta should have a content_block_start before it
+        // Total: 3 content_block_start + 3 delta = 6
+        assert_eq!(result.len(), 6);
+
+        // Verify indices are sequential
+        let indices: Vec<usize> = result
+            .iter()
+            .filter(|c| c.chunk_type == ChunkType::ContentBlockStart)
+            .map(|c| c.index)
+            .collect();
+        assert_eq!(indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_ping_event() {
+        use super::super::{ChunkType, UnifiedStreamChunk};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+
+        // Process a ping event directly
+        let chunks = vec![UnifiedStreamChunk::ping()];
+        let result = state.process_chunks(chunks);
+
+        // Ping should pass through
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].chunk_type, ChunkType::Ping);
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_ping_only_emitted_once() {
+        use super::super::{ChunkType, UnifiedContent, UnifiedStreamChunk};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+
+        // Process multiple content deltas
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("Hello")),
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text(" World")),
+        ];
+
+        let result = state.process_chunks(chunks);
+
+        // Count ping events - should only be one
+        let ping_count = result
+            .iter()
+            .filter(|c| c.chunk_type == ChunkType::Ping)
+            .count();
+        assert_eq!(ping_count, 1);
+        assert!(state.ping_emitted);
+    }
+
+    #[test]
+    fn test_unified_stream_chunk_ping() {
+        use super::super::{ChunkType, UnifiedStreamChunk};
+
+        let chunk = UnifiedStreamChunk::ping();
+        assert_eq!(chunk.chunk_type, ChunkType::Ping);
+        assert_eq!(chunk.index, 0);
+        assert!(chunk.delta.is_none());
+        assert!(chunk.usage.is_none());
+        assert!(chunk.stop_reason.is_none());
+        assert!(chunk.message.is_none());
+        assert!(chunk.content_block.is_none());
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_usage_accumulation() {
+        use super::super::{ChunkType, StopReason, UnifiedStreamChunk, UnifiedUsage};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+        state.message_started = true;
+        state.started_blocks.insert(0);
+        state.stopped_blocks.insert(0);
+
+        // Simulate OpenAI sending finish_reason first with zero usage
+        let chunks = vec![UnifiedStreamChunk::message_delta(
+            StopReason::EndTurn,
+            UnifiedUsage::new(0, 0),
+        )];
+
+        let result = state.process_chunks(chunks);
+
+        // First message_delta should have zero usage (no accumulated usage yet)
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].chunk_type, ChunkType::MessageDelta);
+        let usage = result[0].usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+
+        // Now simulate OpenAI sending usage in a separate chunk
+        let chunks = vec![UnifiedStreamChunk::message_delta(
+            StopReason::EndTurn,
+            UnifiedUsage::new(173, 23),
+        )];
+
+        let result = state.process_chunks(chunks);
+
+        // Second message_delta should have the actual usage
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].chunk_type, ChunkType::MessageDelta);
+        let usage = result[0].usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 173, "input_tokens should be 173");
+        assert_eq!(usage.output_tokens, 23, "output_tokens should be 23");
+
+        // Verify state accumulated the usage
+        assert!(state.usage.is_some());
+        let accumulated = state.usage.as_ref().unwrap();
+        assert_eq!(accumulated.input_tokens, 173);
+        assert_eq!(accumulated.output_tokens, 23);
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_usage_preserved_across_chunks() {
+        use super::super::{
+            ChunkType, StopReason, UnifiedContent, UnifiedStreamChunk, UnifiedUsage,
+        };
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+
+        // Simulate full OpenAI streaming sequence where usage comes in a separate chunk
+        // This is the actual scenario: OpenAI sends finish_reason in one chunk, usage in another
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("Hello")),
+            // First message_delta with finish_reason but no usage
+            UnifiedStreamChunk::message_delta(StopReason::EndTurn, UnifiedUsage::new(0, 0)),
+        ];
+
+        let result = state.process_chunks(chunks);
+
+        // Find the message_delta in the result
+        let message_delta = result
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::MessageDelta)
+            .unwrap();
+        // First message_delta has zero usage
+        assert_eq!(message_delta.usage.as_ref().unwrap().input_tokens, 0);
+
+        // Now process the usage-only chunk
+        let chunks = vec![UnifiedStreamChunk::message_delta(
+            StopReason::EndTurn,
+            UnifiedUsage::new(100, 50),
+        )];
+
+        let result = state.process_chunks(chunks);
+
+        // Second message_delta should have the actual usage
+        let message_delta = result
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::MessageDelta)
+            .unwrap();
+        assert_eq!(message_delta.usage.as_ref().unwrap().input_tokens, 100);
+        assert_eq!(message_delta.usage.as_ref().unwrap().output_tokens, 50);
+    }
+
+    #[test]
+    fn test_cross_protocol_stream_state_usage_not_overwritten_by_zero() {
+        use super::super::{StopReason, UnifiedStreamChunk, UnifiedUsage};
+
+        let mut state = CrossProtocolStreamState::new("gpt-4");
+        state.message_started = true;
+        state.started_blocks.insert(0);
+        state.stopped_blocks.insert(0);
+
+        // First, receive a message_delta with actual usage
+        let chunks = vec![UnifiedStreamChunk::message_delta(
+            StopReason::EndTurn,
+            UnifiedUsage::new(100, 50),
+        )];
+
+        let result = state.process_chunks(chunks);
+        assert_eq!(result[0].usage.as_ref().unwrap().input_tokens, 100);
+
+        // Then receive another message_delta with zero usage (shouldn't overwrite)
+        let chunks = vec![UnifiedStreamChunk::message_delta(
+            StopReason::EndTurn,
+            UnifiedUsage::new(0, 0),
+        )];
+
+        let result = state.process_chunks(chunks);
+
+        // Should still have the accumulated usage (100, 50), not (0, 0)
+        assert_eq!(result[0].usage.as_ref().unwrap().input_tokens, 100);
+        assert_eq!(result[0].usage.as_ref().unwrap().output_tokens, 50);
+    }
+}

@@ -4,9 +4,7 @@
 //! to providers with minimal token usage to verify their availability.
 
 use crate::api::health::{HealthStatus, ModelHealthStatus, ProviderHealthStatus};
-use crate::api::models::{
-    CheckProviderHealthResponse, ModelHealthResult, ProviderHealthSummary,
-};
+use crate::api::models::{CheckProviderHealthResponse, ModelHealthResult, ProviderHealthSummary};
 use crate::core::database::{Database, ProviderEntity};
 use chrono::Utc;
 use reqwest::Client;

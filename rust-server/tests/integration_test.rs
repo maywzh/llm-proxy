@@ -14,10 +14,7 @@ use axum::{
     Json, Router,
 };
 use llm_proxy_rust::{
-    api::{
-        chat_completions, completions, list_models, metrics_handler,
-        AppState,
-    },
+    api::{chat_completions, completions, list_models, metrics_handler, AppState},
     core::{init_metrics, AppConfig, MetricsMiddleware},
     services::ProviderService,
 };
@@ -39,7 +36,7 @@ fn create_test_app(config: AppConfig) -> Router {
 
     let provider_service = ProviderService::new(config.clone());
     let rate_limiter = Arc::new(RateLimiter::new());
-    
+
     // Create shared HTTP client for tests
     let http_client = reqwest::Client::builder()
         .danger_accept_invalid_certs(!config.verify_ssl)
@@ -48,7 +45,7 @@ fn create_test_app(config: AppConfig) -> Router {
         .pool_idle_timeout(std::time::Duration::from_secs(30))
         .build()
         .expect("Failed to build HTTP client");
-    
+
     let state = Arc::new(AppState::new(
         config,
         provider_service,
@@ -96,6 +93,7 @@ fn create_test_config_no_auth() -> AppConfig {
                     map.insert("gpt-3.5-turbo".to_string(), "test-gpt-3.5".to_string());
                     map
                 },
+                provider_type: "openai".to_string(),
             },
             ProviderConfig {
                 name: "TestProvider2".to_string(),
@@ -107,6 +105,7 @@ fn create_test_config_no_auth() -> AppConfig {
                     map.insert("claude-3".to_string(), "test-claude-3".to_string());
                     map
                 },
+                provider_type: "anthropic".to_string(),
             },
         ],
         server: ServerConfig {

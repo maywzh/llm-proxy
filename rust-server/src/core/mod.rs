@@ -8,10 +8,12 @@
 //! - HTTP middleware
 //! - Rate limiting
 //! - Langfuse observability
+//! - JSONL request/response logging
 
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod jsonl_logger;
 pub mod langfuse;
 pub mod logging;
 pub mod metrics;
@@ -21,15 +23,17 @@ pub mod rate_limiter;
 // Re-export commonly used types
 pub use config::{AppConfig, ProviderConfig, ServerConfig};
 pub use database::{
-    Database, DatabaseConfig, DynamicConfig, RuntimeConfig,
-    ProviderEntity, CredentialEntity, CreateProvider, UpdateProvider,
-    CreateCredential, UpdateCredential, hash_key, create_key_preview,
+    create_key_preview, hash_key, CreateCredential, CreateProvider, CredentialEntity, Database,
+    DatabaseConfig, DynamicConfig, ProviderEntity, RuntimeConfig, UpdateCredential, UpdateProvider,
 };
 pub use error::{AppError, Result};
+pub use jsonl_logger::{
+    get_jsonl_logger, init_jsonl_logger, log_request, log_response, log_streaming_response,
+    JsonlLogger, JsonlLoggerConfig, LogRecord, RequestRecord, ResponseRecord,
+};
 pub use langfuse::{
-    get_langfuse_service, init_langfuse_service, shutdown_langfuse_service,
-    GenerationData, LangfuseConfig, LangfuseService,
-    extract_client_metadata, build_langfuse_tags,
+    build_langfuse_tags, extract_client_metadata, get_langfuse_service, init_langfuse_service,
+    shutdown_langfuse_service, GenerationData, LangfuseConfig, LangfuseService,
 };
 pub use logging::{get_provider_context, PROVIDER_CONTEXT};
 pub use metrics::{get_metrics, init_metrics, Metrics};

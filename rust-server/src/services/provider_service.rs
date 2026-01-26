@@ -46,6 +46,7 @@ impl ProviderService {
     ///         api_key: "key".to_string(),
     ///         weight: 1,
     ///         model_mapping: HashMap::new(),
+    ///         provider_type: "openai".to_string(),
     ///     }],
     ///     server: ServerConfig::default(),
     ///     verify_ssl: true,
@@ -68,6 +69,7 @@ impl ProviderService {
                 api_key: p.api_key,
                 weight: p.weight,
                 model_mapping: p.model_mapping,
+                provider_type: p.provider_type,
             })
             .collect();
 
@@ -199,6 +201,7 @@ mod tests {
                         map.insert("model1".to_string(), "provider1-model1".to_string());
                         map
                     },
+                    provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
                     name: "Provider2".to_string(),
@@ -210,6 +213,7 @@ mod tests {
                         map.insert("model2".to_string(), "provider2-model2".to_string());
                         map
                     },
+                    provider_type: "openai".to_string(),
                 },
             ],
             server: ServerConfig::default(),
@@ -231,6 +235,7 @@ mod tests {
                 api_key: "key".to_string(),
                 weight: 1,
                 model_mapping: HashMap::new(),
+                provider_type: "openai".to_string(),
             }],
             server: ServerConfig::default(),
             verify_ssl: true,
@@ -577,9 +582,13 @@ mod tests {
                     weight: 1,
                     model_mapping: {
                         let mut map = HashMap::new();
-                        map.insert("claude-opus-4-5-.*".to_string(), "claude-opus-mapped".to_string());
+                        map.insert(
+                            "claude-opus-4-5-.*".to_string(),
+                            "claude-opus-mapped".to_string(),
+                        );
                         map
                     },
+                    provider_type: "anthropic".to_string(),
                 },
                 ProviderConfig {
                     name: "openai-provider".to_string(),
@@ -591,6 +600,7 @@ mod tests {
                         map.insert("gpt-4".to_string(), "gpt-4-turbo".to_string());
                         map
                     },
+                    provider_type: "openai".to_string(),
                 },
             ],
             server: ServerConfig::default(),
@@ -606,14 +616,24 @@ mod tests {
         let service = ProviderService::new(config);
 
         // Test regex pattern matching - should select claude-provider
-        let provider = service.get_next_provider(Some("claude-opus-4-5-20240620")).unwrap();
+        let provider = service
+            .get_next_provider(Some("claude-opus-4-5-20240620"))
+            .unwrap();
         assert_eq!(provider.name, "claude-provider");
-        assert_eq!(provider.get_mapped_model("claude-opus-4-5-20240620"), "claude-opus-mapped");
+        assert_eq!(
+            provider.get_mapped_model("claude-opus-4-5-20240620"),
+            "claude-opus-mapped"
+        );
 
         // Test another variant of the pattern
-        let provider = service.get_next_provider(Some("claude-opus-4-5-latest")).unwrap();
+        let provider = service
+            .get_next_provider(Some("claude-opus-4-5-latest"))
+            .unwrap();
         assert_eq!(provider.name, "claude-provider");
-        assert_eq!(provider.get_mapped_model("claude-opus-4-5-latest"), "claude-opus-mapped");
+        assert_eq!(
+            provider.get_mapped_model("claude-opus-4-5-latest"),
+            "claude-opus-mapped"
+        );
 
         // Test exact match - should select openai-provider
         let provider = service.get_next_provider(Some("gpt-4")).unwrap();
@@ -638,6 +658,7 @@ mod tests {
                     map.insert("gemini-*".to_string(), "gemini-pro".to_string());
                     map
                 },
+                provider_type: "openai".to_string(),
             }],
             server: ServerConfig::default(),
             verify_ssl: true,
@@ -679,6 +700,7 @@ mod tests {
                     map.insert("claude-opus".to_string(), "claude-opus-exact".to_string());
                     map
                 },
+                provider_type: "anthropic".to_string(),
             }],
             server: ServerConfig::default(),
             verify_ssl: true,
@@ -694,7 +716,10 @@ mod tests {
 
         // Exact match should take priority
         let provider = service.get_next_provider(Some("claude-opus")).unwrap();
-        assert_eq!(provider.get_mapped_model("claude-opus"), "claude-opus-exact");
+        assert_eq!(
+            provider.get_mapped_model("claude-opus"),
+            "claude-opus-exact"
+        );
 
         // Pattern should match other claude models
         let provider = service.get_next_provider(Some("claude-sonnet")).unwrap();
@@ -712,9 +737,13 @@ mod tests {
                     weight: 2,
                     model_mapping: {
                         let mut map = HashMap::new();
-                        map.insert("claude-opus-4-5-.*".to_string(), "provider1-claude".to_string());
+                        map.insert(
+                            "claude-opus-4-5-.*".to_string(),
+                            "provider1-claude".to_string(),
+                        );
                         map
                     },
+                    provider_type: "anthropic".to_string(),
                 },
                 ProviderConfig {
                     name: "provider2".to_string(),
@@ -723,9 +752,13 @@ mod tests {
                     weight: 1,
                     model_mapping: {
                         let mut map = HashMap::new();
-                        map.insert("claude-opus-4-5-.*".to_string(), "provider2-claude".to_string());
+                        map.insert(
+                            "claude-opus-4-5-.*".to_string(),
+                            "provider2-claude".to_string(),
+                        );
                         map
                     },
+                    provider_type: "anthropic".to_string(),
                 },
             ],
             server: ServerConfig::default(),
@@ -745,7 +778,9 @@ mod tests {
 
         // Both providers should be selected with weighted distribution
         for _ in 0..1000 {
-            let provider = service.get_next_provider(Some("claude-opus-4-5-20240620")).unwrap();
+            let provider = service
+                .get_next_provider(Some("claude-opus-4-5-20240620"))
+                .unwrap();
             if provider.name == "provider1" {
                 provider1_count += 1;
             } else {
@@ -773,10 +808,14 @@ mod tests {
                     model_mapping: {
                         let mut map = HashMap::new();
                         map.insert("gpt-4".to_string(), "gpt-4-turbo".to_string()); // Exact match
-                        map.insert("claude-opus-4-5-.*".to_string(), "claude-mapped".to_string()); // Regex pattern
+                        map.insert(
+                            "claude-opus-4-5-.*".to_string(),
+                            "claude-mapped".to_string(),
+                        ); // Regex pattern
                         map.insert("gemini-*".to_string(), "gemini-pro".to_string()); // Simple wildcard
                         map
                     },
+                    provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
                     name: "provider2".to_string(),
@@ -785,10 +824,14 @@ mod tests {
                     weight: 1,
                     model_mapping: {
                         let mut map = HashMap::new();
-                        map.insert("gpt-3.5-turbo".to_string(), "gpt-3.5-turbo-0125".to_string()); // Exact match
+                        map.insert(
+                            "gpt-3.5-turbo".to_string(),
+                            "gpt-3.5-turbo-0125".to_string(),
+                        ); // Exact match
                         map.insert("claude-.*".to_string(), "claude-default".to_string()); // Regex pattern
                         map
                     },
+                    provider_type: "openai".to_string(),
                 },
             ],
             server: ServerConfig::default(),

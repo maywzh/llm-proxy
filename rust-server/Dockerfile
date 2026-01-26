@@ -32,6 +32,7 @@ RUN mkdir -p .cargo && \
 COPY Cargo.toml Cargo.lock ./
 
 # Copy benches directory (needed by Cargo.toml)
+COPY benches ./benches
 
 # Copy source code
 COPY src ./src

@@ -1,0 +1,1451 @@
+//! OpenAI protocol transformer.
+//!
+//! Handles conversion between OpenAI Chat Completions API format and
+//! the Unified Internal Format.
+
+use super::{
+    ChunkType, Protocol, Result, Role, StopReason, Transformer, UnifiedContent, UnifiedMessage,
+    UnifiedParameters, UnifiedRequest, UnifiedResponse, UnifiedStreamChunk, UnifiedTool,
+    UnifiedToolCall, UnifiedUsage,
+};
+use crate::core::AppError;
+use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+
+// ============================================================================
+// OpenAI Request/Response Types
+// ============================================================================
+
+/// OpenAI message format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIMessage {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<OpenAIContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<OpenAIToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// OpenAI content can be string or array of content parts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpenAIContent {
+    Text(String),
+    Parts(Vec<OpenAIContentPart>),
+}
+
+/// OpenAI content part for multimodal messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum OpenAIContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: OpenAIImageUrl },
+}
+
+/// OpenAI image URL structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIImageUrl {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// OpenAI tool call structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: OpenAIFunctionCall,
+}
+
+/// OpenAI function call structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIFunctionCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+/// OpenAI tool definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAITool {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: OpenAIFunction,
+}
+
+/// OpenAI function definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIFunction {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub parameters: Value,
+}
+
+/// OpenAI chat completion request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIChatRequest {
+    pub model: String,
+    pub messages: Vec<OpenAIMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<OpenAITool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<Value>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
+/// OpenAI chat completion response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIChatResponse {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<OpenAIChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<OpenAIUsage>,
+}
+
+/// OpenAI choice structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIChoice {
+    pub index: i32,
+    pub message: OpenAIMessage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+}
+
+/// OpenAI usage structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIUsage {
+    pub prompt_tokens: i32,
+    pub completion_tokens: i32,
+    pub total_tokens: i32,
+}
+
+/// OpenAI streaming chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIStreamChunk {
+    pub id: String,
+    pub object: String,
+    pub created: i64,
+    pub model: String,
+    pub choices: Vec<OpenAIStreamChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<OpenAIUsage>,
+}
+
+/// OpenAI streaming choice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIStreamChoice {
+    pub index: i32,
+    pub delta: OpenAIDelta,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+}
+
+/// OpenAI delta content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<OpenAIDeltaToolCall>>,
+}
+
+/// OpenAI delta tool call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIDeltaToolCall {
+    pub index: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type")]
+    pub call_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<OpenAIDeltaFunction>,
+}
+
+/// OpenAI delta function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenAIDeltaFunction {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+}
+
+// ============================================================================
+// OpenAI Transformer Implementation
+// ============================================================================
+
+/// OpenAI protocol transformer.
+pub struct OpenAITransformer;
+
+impl OpenAITransformer {
+    /// Create a new OpenAI transformer.
+    pub fn new() -> Self {
+        OpenAITransformer
+    }
+
+    /// Convert OpenAI message to unified message.
+    fn message_to_unified(msg: &OpenAIMessage) -> Result<UnifiedMessage> {
+        let role = msg.role.parse().unwrap_or(Role::User);
+
+        let content = match &msg.content {
+            Some(OpenAIContent::Text(text)) => vec![UnifiedContent::text(text)],
+            Some(OpenAIContent::Parts(parts)) => {
+                parts
+                    .iter()
+                    .map(|part| match part {
+                        OpenAIContentPart::Text { text } => UnifiedContent::text(text),
+                        OpenAIContentPart::ImageUrl { image_url } => {
+                            // Check if it's a data URL (base64)
+                            if image_url.url.starts_with("data:") {
+                                // Parse data URL: data:image/jpeg;base64,/9j/4AAQ...
+                                let parts: Vec<&str> = image_url.url.splitn(2, ',').collect();
+                                if parts.len() == 2 {
+                                    let media_type = parts[0]
+                                        .trim_start_matches("data:")
+                                        .split(';')
+                                        .next()
+                                        .unwrap_or("image/jpeg");
+                                    UnifiedContent::image_base64(media_type, parts[1])
+                                } else {
+                                    UnifiedContent::image_url(&image_url.url)
+                                }
+                            } else {
+                                UnifiedContent::image_url(&image_url.url)
+                            }
+                        }
+                    })
+                    .collect()
+            }
+            None => vec![],
+        };
+
+        let tool_calls = msg
+            .tool_calls
+            .as_ref()
+            .map(|calls| {
+                calls
+                    .iter()
+                    .map(|tc| {
+                        let arguments: Value =
+                            serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
+                        UnifiedToolCall {
+                            id: tc.id.clone(),
+                            name: tc.function.name.clone(),
+                            arguments,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(UnifiedMessage {
+            role,
+            content,
+            name: msg.name.clone(),
+            tool_calls,
+            tool_call_id: msg.tool_call_id.clone(),
+        })
+    }
+
+    /// Convert unified message to OpenAI message.
+    fn unified_to_message(msg: &UnifiedMessage) -> OpenAIMessage {
+        let role = msg.role.to_string();
+
+        // Build content
+        let content = if msg.content.is_empty() {
+            None
+        } else if msg.content.len() == 1 {
+            // Single text content - use simple string format
+            if let Some(text) = msg.content[0].as_text() {
+                Some(OpenAIContent::Text(text.to_string()))
+            } else {
+                Some(OpenAIContent::Parts(
+                    msg.content
+                        .iter()
+                        .filter_map(Self::unified_to_content_part)
+                        .collect(),
+                ))
+            }
+        } else {
+            // Multiple content blocks - use array format
+            Some(OpenAIContent::Parts(
+                msg.content
+                    .iter()
+                    .filter_map(Self::unified_to_content_part)
+                    .collect(),
+            ))
+        };
+
+        // Build tool calls
+        let tool_calls = if msg.tool_calls.is_empty() {
+            None
+        } else {
+            Some(
+                msg.tool_calls
+                    .iter()
+                    .map(|tc| OpenAIToolCall {
+                        id: tc.id.clone(),
+                        call_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: tc.name.clone(),
+                            arguments: serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                        },
+                    })
+                    .collect(),
+            )
+        };
+
+        OpenAIMessage {
+            role,
+            content,
+            reasoning_content: None,
+            name: msg.name.clone(),
+            tool_calls,
+            tool_call_id: msg.tool_call_id.clone(),
+        }
+    }
+
+    /// Convert unified content to OpenAI content part.
+    fn unified_to_content_part(content: &UnifiedContent) -> Option<OpenAIContentPart> {
+        match content {
+            UnifiedContent::Text { text } => Some(OpenAIContentPart::Text { text: text.clone() }),
+            UnifiedContent::Image {
+                source_type,
+                media_type,
+                data,
+            } => {
+                let url = if source_type == "base64" {
+                    format!("data:{};base64,{}", media_type, data)
+                } else {
+                    data.clone()
+                };
+                Some(OpenAIContentPart::ImageUrl {
+                    image_url: OpenAIImageUrl { url, detail: None },
+                })
+            }
+            // Other content types don't have direct OpenAI equivalents in content
+            _ => None,
+        }
+    }
+
+    /// Convert OpenAI finish reason to unified stop reason.
+    fn finish_reason_to_stop_reason(reason: &str) -> StopReason {
+        match reason {
+            "stop" => StopReason::EndTurn,
+            "length" => StopReason::MaxTokens,
+            "tool_calls" => StopReason::ToolUse,
+            "content_filter" => StopReason::ContentFilter,
+            _ => StopReason::EndTurn,
+        }
+    }
+
+    /// Convert unified stop reason to OpenAI finish reason.
+    fn stop_reason_to_finish_reason(reason: &StopReason) -> &'static str {
+        match reason {
+            StopReason::EndTurn => "stop",
+            StopReason::MaxTokens | StopReason::Length => "length",
+            StopReason::StopSequence => "stop",
+            StopReason::ToolUse => "tool_calls",
+            StopReason::ContentFilter => "content_filter",
+        }
+    }
+}
+
+impl Default for OpenAITransformer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Transformer for OpenAITransformer {
+    fn protocol(&self) -> Protocol {
+        Protocol::OpenAI
+    }
+
+    fn transform_request_out(&self, raw: Value) -> Result<UnifiedRequest> {
+        let request: OpenAIChatRequest =
+            serde_json::from_value(raw).map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+        // Convert messages
+        let messages: Vec<UnifiedMessage> = request
+            .messages
+            .iter()
+            .map(Self::message_to_unified)
+            .collect::<Result<Vec<_>>>()?;
+
+        // Extract system message if present
+        let system = messages
+            .iter()
+            .find(|m| m.role == Role::System)
+            .map(|m| m.text_content());
+
+        // Filter out system messages from the message list
+        let messages: Vec<UnifiedMessage> = messages
+            .into_iter()
+            .filter(|m| m.role != Role::System)
+            .collect();
+
+        // Convert tools
+        let tools: Vec<UnifiedTool> = request
+            .tools
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| UnifiedTool {
+                name: t.function.name,
+                description: t.function.description,
+                input_schema: t.function.parameters,
+                tool_type: Some(t.tool_type),
+            })
+            .collect();
+
+        // Build parameters
+        let parameters = UnifiedParameters {
+            temperature: request.temperature,
+            max_tokens: request.max_tokens.or(request.max_completion_tokens),
+            top_p: request.top_p,
+            top_k: None,
+            stop_sequences: request.stop,
+            stream: request.stream.unwrap_or(false),
+            extra: request.extra,
+        };
+
+        Ok(UnifiedRequest {
+            model: request.model,
+            messages,
+            system,
+            parameters,
+            tools,
+            tool_choice: request.tool_choice,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            client_protocol: Protocol::OpenAI,
+            metadata: HashMap::new(),
+        })
+    }
+
+    fn transform_request_in(&self, unified: &UnifiedRequest) -> Result<Value> {
+        // Convert messages back to OpenAI format
+        let mut messages: Vec<OpenAIMessage> = vec![];
+
+        // Add system message if present
+        if let Some(ref system) = unified.system {
+            messages.push(OpenAIMessage {
+                role: "system".to_string(),
+                content: Some(OpenAIContent::Text(system.clone())),
+                reasoning_content: None,
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
+        // Add other messages
+        for msg in &unified.messages {
+            messages.push(Self::unified_to_message(msg));
+        }
+
+        // Convert tools
+        let tools: Option<Vec<OpenAITool>> = if unified.tools.is_empty() {
+            None
+        } else {
+            Some(
+                unified
+                    .tools
+                    .iter()
+                    .map(|t| OpenAITool {
+                        tool_type: t
+                            .tool_type
+                            .clone()
+                            .unwrap_or_else(|| "function".to_string()),
+                        function: OpenAIFunction {
+                            name: t.name.clone(),
+                            description: t.description.clone(),
+                            parameters: t.input_schema.clone(),
+                        },
+                    })
+                    .collect(),
+            )
+        };
+
+        let mut request = json!({
+            "model": unified.model,
+            "messages": messages,
+        });
+
+        // Add optional parameters
+        if let Some(temp) = unified.parameters.temperature {
+            request["temperature"] = json!(temp);
+        }
+        if let Some(max_tokens) = unified.parameters.max_tokens {
+            request["max_tokens"] = json!(max_tokens);
+        }
+        if let Some(top_p) = unified.parameters.top_p {
+            request["top_p"] = json!(top_p);
+        }
+        if let Some(ref stop) = unified.parameters.stop_sequences {
+            request["stop"] = json!(stop);
+        }
+        if unified.parameters.stream {
+            request["stream"] = json!(true);
+        }
+        if let Some(ref tools) = tools {
+            request["tools"] = json!(tools);
+        }
+        if let Some(ref tool_choice) = unified.tool_choice {
+            // Convert Anthropic tool_choice format to OpenAI format
+            // Anthropic: {"type": "auto"} | {"type": "any"} | {"type": "tool", "name": "xxx"}
+            // OpenAI: "auto" | "none" | "required" | {"type": "function", "function": {"name": "xxx"}}
+            let openai_tool_choice =
+                if let Some(tc_type) = tool_choice.get("type").and_then(|t| t.as_str()) {
+                    match tc_type {
+                        "auto" => json!("auto"),
+                        "any" => json!("required"),
+                        "none" => json!("none"),
+                        "tool" => {
+                            // Anthropic {"type": "tool", "name": "xxx"} -> OpenAI {"type": "function", "function": {"name": "xxx"}}
+                            if let Some(name) = tool_choice.get("name").and_then(|n| n.as_str()) {
+                                json!({
+                                    "type": "function",
+                                    "function": {"name": name}
+                                })
+                            } else {
+                                tool_choice.clone()
+                            }
+                        }
+                        _ => tool_choice.clone(),
+                    }
+                } else if tool_choice.is_string() {
+                    // Already in OpenAI string format
+                    tool_choice.clone()
+                } else {
+                    tool_choice.clone()
+                };
+            request["tool_choice"] = openai_tool_choice;
+        }
+
+        // Add extra parameters
+        for (key, value) in &unified.parameters.extra {
+            request[key] = value.clone();
+        }
+
+        Ok(request)
+    }
+
+    fn transform_response_in(&self, raw: Value, original_model: &str) -> Result<UnifiedResponse> {
+        let response: OpenAIChatResponse =
+            serde_json::from_value(raw).map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+        let choice = response
+            .choices
+            .first()
+            .ok_or_else(|| AppError::BadRequest("No choices in response".to_string()))?;
+
+        // Convert message content
+        let content = match &choice.message.content {
+            Some(OpenAIContent::Text(text)) => vec![UnifiedContent::text(text)],
+            Some(OpenAIContent::Parts(parts)) => parts
+                .iter()
+                .map(|p| match p {
+                    OpenAIContentPart::Text { text } => UnifiedContent::text(text),
+                    OpenAIContentPart::ImageUrl { image_url } => {
+                        UnifiedContent::image_url(&image_url.url)
+                    }
+                })
+                .collect(),
+            None => vec![],
+        };
+
+        // Convert tool calls
+        let tool_calls: Vec<UnifiedToolCall> = choice
+            .message
+            .tool_calls
+            .as_ref()
+            .map(|calls| {
+                calls
+                    .iter()
+                    .map(|tc| {
+                        let arguments: Value =
+                            serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
+                        UnifiedToolCall {
+                            id: tc.id.clone(),
+                            name: tc.function.name.clone(),
+                            arguments,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let stop_reason = choice
+            .finish_reason
+            .as_ref()
+            .map(|r| Self::finish_reason_to_stop_reason(r));
+
+        let usage = response
+            .usage
+            .map(|u| UnifiedUsage::new(u.prompt_tokens, u.completion_tokens))
+            .unwrap_or_default();
+
+        Ok(UnifiedResponse {
+            id: response.id,
+            model: original_model.to_string(),
+            content,
+            stop_reason,
+            usage,
+            tool_calls,
+        })
+    }
+
+    fn transform_response_out(
+        &self,
+        unified: &UnifiedResponse,
+        _client_protocol: Protocol,
+    ) -> Result<Value> {
+        // Convert content to OpenAI format - separate text and thinking content
+        let mut text_parts: Vec<OpenAIContentPart> = Vec::new();
+        let mut reasoning_content: Option<String> = None;
+
+        for c in &unified.content {
+            match c {
+                UnifiedContent::Text { text } => {
+                    text_parts.push(OpenAIContentPart::Text { text: text.clone() });
+                }
+                UnifiedContent::Thinking { text, .. } => {
+                    // Collect thinking content for reasoning_content field
+                    match &mut reasoning_content {
+                        Some(existing) => {
+                            existing.push_str(text);
+                        }
+                        None => {
+                            reasoning_content = Some(text.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Build content field
+        let content = if text_parts.is_empty() {
+            None
+        } else if text_parts.len() == 1 {
+            if let OpenAIContentPart::Text { text } = &text_parts[0] {
+                Some(OpenAIContent::Text(text.clone()))
+            } else {
+                None
+            }
+        } else {
+            Some(OpenAIContent::Parts(text_parts))
+        };
+
+        // Convert tool calls
+        let tool_calls: Option<Vec<OpenAIToolCall>> = if unified.tool_calls.is_empty() {
+            None
+        } else {
+            Some(
+                unified
+                    .tool_calls
+                    .iter()
+                    .map(|tc| OpenAIToolCall {
+                        id: tc.id.clone(),
+                        call_type: "function".to_string(),
+                        function: OpenAIFunctionCall {
+                            name: tc.name.clone(),
+                            arguments: serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                        },
+                    })
+                    .collect(),
+            )
+        };
+
+        let finish_reason = unified
+            .stop_reason
+            .as_ref()
+            .map(Self::stop_reason_to_finish_reason);
+
+        let response = OpenAIChatResponse {
+            id: unified.id.clone(),
+            object: "chat.completion".to_string(),
+            created: chrono::Utc::now().timestamp(),
+            model: unified.model.clone(),
+            choices: vec![OpenAIChoice {
+                index: 0,
+                message: OpenAIMessage {
+                    role: "assistant".to_string(),
+                    content,
+                    reasoning_content,
+                    name: None,
+                    tool_calls,
+                    tool_call_id: None,
+                },
+                finish_reason: finish_reason.map(|s| s.to_string()),
+            }],
+            usage: Some(OpenAIUsage {
+                prompt_tokens: unified.usage.input_tokens,
+                completion_tokens: unified.usage.output_tokens,
+                total_tokens: unified.usage.total_tokens(),
+            }),
+        };
+
+        serde_json::to_value(response).map_err(AppError::Serialization)
+    }
+
+    fn transform_stream_chunk_in(&self, chunk: &Bytes) -> Result<Vec<UnifiedStreamChunk>> {
+        let chunk_str = std::str::from_utf8(chunk)
+            .map_err(|e| AppError::BadRequest(format!("Invalid UTF-8: {}", e)))?;
+
+        // Parse SSE format: "data: {...}\n\n"
+        let mut chunks = vec![];
+
+        for line in chunk_str.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with(':') {
+                continue;
+            }
+
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data == "[DONE]" {
+                    chunks.push(UnifiedStreamChunk::message_stop());
+                    continue;
+                }
+
+                let stream_chunk: OpenAIStreamChunk = serde_json::from_str(data)
+                    .map_err(|e| AppError::BadRequest(format!("Invalid JSON: {}", e)))?;
+
+                // Track if we've emitted a message_delta for this chunk
+                let mut emitted_message_delta = false;
+
+                for choice in &stream_chunk.choices {
+                    // Handle content delta (text content is always at index 0)
+                    if let Some(ref content) = choice.delta.content {
+                        chunks.push(UnifiedStreamChunk::content_block_delta(
+                            0, // Text content is always index 0
+                            UnifiedContent::text(content),
+                        ));
+                    }
+
+                    // Handle tool_calls delta (streaming tool use)
+                    // Tool calls start at index 1 (after text content at index 0)
+                    if let Some(ref tool_calls) = choice.delta.tool_calls {
+                        for tc in tool_calls {
+                            // Calculate the actual content block index:
+                            // - Index 0 is reserved for text content
+                            // - Tool calls start at index 1
+                            // - Handle negative indices safely (some providers may send -1 or other invalid values)
+                            let content_block_index = if tc.index < 0 {
+                                // Treat negative index as 0, so content block index becomes 1
+                                1usize
+                            } else {
+                                (tc.index as usize).saturating_add(1)
+                            };
+
+                            // If this is the first chunk for this tool call (has id and name),
+                            // emit a content_block_start
+                            if tc.id.is_some() {
+                                let id = tc.id.clone().unwrap_or_default();
+                                let name = tc
+                                    .function
+                                    .as_ref()
+                                    .and_then(|f| f.name.clone())
+                                    .unwrap_or_default();
+                                chunks.push(UnifiedStreamChunk::content_block_start(
+                                    content_block_index,
+                                    UnifiedContent::tool_use(id, name, serde_json::json!({})),
+                                ));
+                            }
+
+                            // If there are arguments, emit a tool_input_delta
+                            if let Some(ref func) = tc.function {
+                                if let Some(ref args) = func.arguments {
+                                    if !args.is_empty() {
+                                        chunks.push(UnifiedStreamChunk::content_block_delta(
+                                            content_block_index,
+                                            UnifiedContent::tool_input_delta(
+                                                content_block_index,
+                                                args,
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Handle finish reason
+                    if let Some(ref reason) = choice.finish_reason {
+                        let stop_reason = Self::finish_reason_to_stop_reason(reason);
+                        // Extract usage from chunk level if available
+                        let usage = stream_chunk
+                            .usage
+                            .as_ref()
+                            .map(|u| UnifiedUsage::new(u.prompt_tokens, u.completion_tokens))
+                            .unwrap_or_default();
+                        chunks.push(UnifiedStreamChunk::message_delta(stop_reason, usage));
+                        emitted_message_delta = true;
+                    }
+                }
+
+                // Handle usage in chunks without finish_reason
+                // OpenAI may send usage in a separate final chunk or in a chunk with empty choices
+                if !emitted_message_delta {
+                    if let Some(ref usage) = stream_chunk.usage {
+                        // Emit a message_delta with usage but no stop_reason change
+                        // This handles the case where usage comes in a separate chunk
+                        let unified_usage =
+                            UnifiedUsage::new(usage.prompt_tokens, usage.completion_tokens);
+                        chunks.push(UnifiedStreamChunk::message_delta(
+                            StopReason::EndTurn,
+                            unified_usage,
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(chunks)
+    }
+
+    fn transform_stream_chunk_out(
+        &self,
+        chunk: &UnifiedStreamChunk,
+        _client_protocol: Protocol,
+    ) -> Result<String> {
+        match chunk.chunk_type {
+            ChunkType::ContentBlockStart => {
+                // Handle tool_use content block start
+                if let Some(ref content_block) = chunk.content_block {
+                    if let UnifiedContent::ToolUse { id, name, .. } = content_block {
+                        let openai_chunk = json!({
+                            "id": "chatcmpl-stream",
+                            "object": "chat.completion.chunk",
+                            "created": chrono::Utc::now().timestamp(),
+                            "model": "model",
+                            "choices": [{
+                                "index": 0,
+                                "delta": {
+                                    "tool_calls": [{
+                                        "index": chunk.index,
+                                        "id": id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": name,
+                                            "arguments": ""
+                                        }
+                                    }]
+                                },
+                                "finish_reason": null
+                            }]
+                        });
+                        return Ok(format!("data: {}\n\n", openai_chunk));
+                    }
+                }
+                Ok(String::new())
+            }
+            ChunkType::ContentBlockDelta => {
+                if let Some(ref delta) = chunk.delta {
+                    match delta {
+                        UnifiedContent::Text { text } => {
+                            let openai_chunk = json!({
+                                "id": "chatcmpl-stream",
+                                "object": "chat.completion.chunk",
+                                "created": chrono::Utc::now().timestamp(),
+                                "model": "model",
+                                "choices": [{
+                                    "index": chunk.index,
+                                    "delta": { "content": text },
+                                    "finish_reason": null
+                                }]
+                            });
+                            return Ok(format!("data: {}\n\n", openai_chunk));
+                        }
+                        UnifiedContent::Thinking { text, .. } => {
+                            // Output thinking content as reasoning_content for OpenAI-compatible APIs
+                            let openai_chunk = json!({
+                                "id": "chatcmpl-stream",
+                                "object": "chat.completion.chunk",
+                                "created": chrono::Utc::now().timestamp(),
+                                "model": "model",
+                                "choices": [{
+                                    "index": chunk.index,
+                                    "delta": { "reasoning_content": text },
+                                    "finish_reason": null
+                                }]
+                            });
+                            return Ok(format!("data: {}\n\n", openai_chunk));
+                        }
+                        UnifiedContent::ToolInputDelta {
+                            index,
+                            partial_json,
+                        } => {
+                            // Convert to OpenAI tool_calls streaming format
+                            let openai_chunk = json!({
+                                "id": "chatcmpl-stream",
+                                "object": "chat.completion.chunk",
+                                "created": chrono::Utc::now().timestamp(),
+                                "model": "model",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {
+                                        "tool_calls": [{
+                                            "index": index,
+                                            "function": {
+                                                "arguments": partial_json
+                                            }
+                                        }]
+                                    },
+                                    "finish_reason": null
+                                }]
+                            });
+                            return Ok(format!("data: {}\n\n", openai_chunk));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(String::new())
+            }
+            ChunkType::MessageDelta => {
+                let finish_reason = chunk
+                    .stop_reason
+                    .as_ref()
+                    .map(Self::stop_reason_to_finish_reason);
+
+                let mut openai_chunk = json!({
+                    "id": "chatcmpl-stream",
+                    "object": "chat.completion.chunk",
+                    "created": chrono::Utc::now().timestamp(),
+                    "model": "model",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": finish_reason
+                    }]
+                });
+
+                if let Some(ref usage) = chunk.usage {
+                    openai_chunk["usage"] = json!({
+                        "prompt_tokens": usage.input_tokens,
+                        "completion_tokens": usage.output_tokens,
+                        "total_tokens": usage.total_tokens()
+                    });
+                }
+
+                Ok(format!("data: {}\n\n", openai_chunk))
+            }
+            ChunkType::MessageStop => Ok("data: [DONE]\n\n".to_string()),
+            _ => Ok(String::new()),
+        }
+    }
+
+    fn endpoint(&self) -> &'static str {
+        "/v1/chat/completions"
+    }
+
+    fn can_handle(&self, raw: &Value) -> bool {
+        // OpenAI format: has "messages" array and no Anthropic-specific fields
+        raw.get("messages").is_some()
+            && raw.get("system").is_none()
+            && !raw
+                .get("messages")
+                .and_then(|m| m.as_array())
+                .map(|msgs| {
+                    msgs.iter().any(|msg| {
+                        msg.get("content")
+                            .and_then(|c| c.as_array())
+                            .map(|arr| {
+                                arr.iter().any(|block| {
+                                    let t = block.get("type").and_then(|t| t.as_str());
+                                    matches!(t, Some("tool_use") | Some("tool_result"))
+                                })
+                            })
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_openai_transformer_protocol() {
+        let transformer = OpenAITransformer::new();
+        assert_eq!(transformer.protocol(), Protocol::OpenAI);
+    }
+
+    #[test]
+    fn test_transform_request_out() {
+        let transformer = OpenAITransformer::new();
+        let raw = json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello!"}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 100
+        });
+
+        let unified = transformer.transform_request_out(raw).unwrap();
+        assert_eq!(unified.model, "gpt-4");
+        assert_eq!(unified.system, Some("You are helpful.".to_string()));
+        assert_eq!(unified.messages.len(), 1);
+        assert_eq!(unified.parameters.temperature, Some(0.7));
+        assert_eq!(unified.parameters.max_tokens, Some(100));
+    }
+
+    #[test]
+    fn test_transform_request_in() {
+        let transformer = OpenAITransformer::new();
+        let unified = UnifiedRequest::new("gpt-4", vec![UnifiedMessage::user("Hello!")])
+            .with_system("Be helpful")
+            .with_max_tokens(100);
+
+        let raw = transformer.transform_request_in(&unified).unwrap();
+        assert_eq!(raw["model"], "gpt-4");
+        assert_eq!(raw["max_tokens"], 100);
+        assert!(raw["messages"].as_array().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn test_transform_response_in() {
+        let transformer = OpenAITransformer::new();
+        let raw = json!({
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "created": 1234567890,
+            "model": "gpt-4",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello there!"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+
+        let unified = transformer.transform_response_in(raw, "gpt-4").unwrap();
+        assert_eq!(unified.id, "chatcmpl-123");
+        assert_eq!(unified.text_content(), "Hello there!");
+        assert_eq!(unified.stop_reason, Some(StopReason::EndTurn));
+        assert_eq!(unified.usage.input_tokens, 10);
+    }
+
+    #[test]
+    fn test_transform_response_out() {
+        let transformer = OpenAITransformer::new();
+        let unified = UnifiedResponse::text("msg_123", "gpt-4", "Hello!", UnifiedUsage::new(10, 5));
+
+        let raw = transformer
+            .transform_response_out(&unified, Protocol::OpenAI)
+            .unwrap();
+        assert_eq!(raw["id"], "msg_123");
+        assert_eq!(raw["object"], "chat.completion");
+        assert_eq!(raw["choices"][0]["message"]["content"], "Hello!");
+    }
+
+    #[test]
+    fn test_can_handle() {
+        let transformer = OpenAITransformer::new();
+
+        // OpenAI format
+        let openai_request = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+        assert!(transformer.can_handle(&openai_request));
+
+        // Anthropic format (has system field)
+        let anthropic_request = json!({
+            "model": "claude-3",
+            "system": "Be helpful",
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+        assert!(!transformer.can_handle(&anthropic_request));
+    }
+
+    #[test]
+    fn test_finish_reason_conversion() {
+        assert_eq!(
+            OpenAITransformer::finish_reason_to_stop_reason("stop"),
+            StopReason::EndTurn
+        );
+        assert_eq!(
+            OpenAITransformer::finish_reason_to_stop_reason("length"),
+            StopReason::MaxTokens
+        );
+        assert_eq!(
+            OpenAITransformer::finish_reason_to_stop_reason("tool_calls"),
+            StopReason::ToolUse
+        );
+    }
+
+    #[test]
+    fn test_anthropic_tools_to_openai() {
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        // Anthropic format request with tools
+        let request = json!({
+            "model": "claude-3-opus",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{
+                "name": "generate_image",
+                "description": "Generate an image",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string"}
+                    },
+                    "required": ["prompt"]
+                }
+            }],
+            "tool_choice": {"type": "auto"}
+        });
+
+        // Transform: Anthropic -> Unified
+        let unified = anthropic.transform_request_out(request).unwrap();
+        assert_eq!(unified.tools.len(), 1);
+        assert_eq!(unified.tools[0].name, "generate_image");
+
+        // Transform: Unified -> OpenAI
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+
+        // Verify OpenAI tool format
+        let tools = openai_req["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "generate_image");
+        assert_eq!(tools[0]["function"]["description"], "Generate an image");
+        assert!(tools[0]["function"]["parameters"]["properties"]["prompt"].is_object());
+
+        // tool_choice should be converted from Anthropic {"type": "auto"} to OpenAI "auto"
+        assert_eq!(openai_req["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn test_tool_choice_conversion() {
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        // Test {"type": "auto"} -> "auto"
+        let request = json!({
+            "model": "claude-3",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"name": "t", "input_schema": {"type": "object"}}],
+            "tool_choice": {"type": "auto"}
+        });
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+        assert_eq!(openai_req["tool_choice"], "auto");
+
+        // Test {"type": "any"} -> "required"
+        let request = json!({
+            "model": "claude-3",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"name": "t", "input_schema": {"type": "object"}}],
+            "tool_choice": {"type": "any"}
+        });
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+        assert_eq!(openai_req["tool_choice"], "required");
+
+        // Test {"type": "tool", "name": "xxx"} -> {"type": "function", "function": {"name": "xxx"}}
+        let request = json!({
+            "model": "claude-3",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"name": "my_func", "input_schema": {"type": "object"}}],
+            "tool_choice": {"type": "tool", "name": "my_func"}
+        });
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+        assert_eq!(openai_req["tool_choice"]["type"], "function");
+        assert_eq!(openai_req["tool_choice"]["function"]["name"], "my_func");
+    }
+
+    #[test]
+    fn test_streaming_tool_calls_in() {
+        let transformer = OpenAITransformer::new();
+
+        // Test tool_calls streaming - first chunk with id and name
+        // OpenAI tool_call index 0 should map to content block index 1 (index 0 is reserved for text)
+        let chunk_start = b"data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_123\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n";
+        let chunks = transformer
+            .transform_stream_chunk_in(&Bytes::from_static(chunk_start))
+            .unwrap();
+        assert!(!chunks.is_empty());
+        // Should have content_block_start for tool_use
+        let start_chunk = chunks
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::ContentBlockStart);
+        assert!(start_chunk.is_some());
+        let start_chunk = start_chunk.unwrap();
+        // Tool call index 0 should map to content block index 1
+        assert_eq!(
+            start_chunk.index, 1,
+            "Tool call index 0 should map to content block index 1"
+        );
+        if let Some(UnifiedContent::ToolUse { id, name, .. }) = &start_chunk.content_block {
+            assert_eq!(id, "call_123");
+            assert_eq!(name, "get_weather");
+        } else {
+            panic!("Expected ToolUse content block");
+        }
+
+        // Test tool_calls streaming - arguments delta
+        let chunk_args = b"data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}]}\n\n";
+        let chunks = transformer
+            .transform_stream_chunk_in(&Bytes::from_static(chunk_args))
+            .unwrap();
+        assert!(!chunks.is_empty());
+        // Should have content_block_delta with ToolInputDelta
+        let delta_chunk = chunks
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::ContentBlockDelta);
+        assert!(delta_chunk.is_some());
+        let delta_chunk = delta_chunk.unwrap();
+        // Tool call index 0 should map to content block index 1
+        assert_eq!(
+            delta_chunk.index, 1,
+            "Tool call delta index 0 should map to content block index 1"
+        );
+        if let Some(UnifiedContent::ToolInputDelta {
+            partial_json,
+            index,
+        }) = &delta_chunk.delta
+        {
+            assert_eq!(partial_json, "{\"city\":");
+            assert_eq!(*index, 1, "ToolInputDelta index should be 1");
+        } else {
+            panic!(
+                "Expected ToolInputDelta content, got {:?}",
+                delta_chunk.delta
+            );
+        }
+    }
+
+    #[test]
+    fn test_streaming_tool_calls_out() {
+        let transformer = OpenAITransformer::new();
+
+        // Test outputting content_block_start for tool_use
+        let chunk = UnifiedStreamChunk::content_block_start(
+            0,
+            UnifiedContent::tool_use("call_123", "get_weather", serde_json::json!({})),
+        );
+        let output = transformer
+            .transform_stream_chunk_out(&chunk, Protocol::OpenAI)
+            .unwrap();
+        assert!(output.contains("tool_calls"));
+        assert!(output.contains("call_123"));
+        assert!(output.contains("get_weather"));
+
+        // Test outputting tool_input_delta
+        let chunk = UnifiedStreamChunk::content_block_delta(
+            0,
+            UnifiedContent::tool_input_delta(0, "{\"city\":"),
+        );
+        let output = transformer
+            .transform_stream_chunk_out(&chunk, Protocol::OpenAI)
+            .unwrap();
+        assert!(output.contains("tool_calls"));
+        assert!(output.contains("arguments"));
+        assert!(output.contains("{\\\"city\\\":"));
+    }
+
+    #[test]
+    fn test_streaming_usage_with_finish_reason() {
+        let transformer = OpenAITransformer::new();
+
+        // Test chunk with finish_reason AND usage in the same chunk
+        let chunk_with_usage = b"data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":173,\"completion_tokens\":23,\"total_tokens\":196}}\n\n";
+        let chunks = transformer
+            .transform_stream_chunk_in(&Bytes::from_static(chunk_with_usage))
+            .unwrap();
+
+        // Should have a message_delta with usage
+        let message_delta = chunks
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::MessageDelta);
+        assert!(message_delta.is_some(), "Should have message_delta chunk");
+
+        let delta = message_delta.unwrap();
+        assert_eq!(delta.stop_reason, Some(StopReason::EndTurn));
+        assert!(delta.usage.is_some(), "Should have usage in message_delta");
+
+        let usage = delta.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 173, "input_tokens should be 173");
+        assert_eq!(usage.output_tokens, 23, "output_tokens should be 23");
+    }
+
+    #[test]
+    fn test_streaming_usage_in_separate_chunk() {
+        let transformer = OpenAITransformer::new();
+
+        // Test chunk with usage but no finish_reason (separate usage chunk)
+        // This simulates OpenAI sending usage in a separate final chunk
+        let usage_only_chunk = b"data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50,\"total_tokens\":150}}\n\n";
+        let chunks = transformer
+            .transform_stream_chunk_in(&Bytes::from_static(usage_only_chunk))
+            .unwrap();
+
+        // Should have a message_delta with usage
+        let message_delta = chunks
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::MessageDelta);
+        assert!(
+            message_delta.is_some(),
+            "Should have message_delta chunk for usage-only chunk"
+        );
+
+        let delta = message_delta.unwrap();
+        assert!(delta.usage.is_some(), "Should have usage in message_delta");
+
+        let usage = delta.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 100, "input_tokens should be 100");
+        assert_eq!(usage.output_tokens, 50, "output_tokens should be 50");
+    }
+
+    #[test]
+    fn test_streaming_usage_without_usage_field() {
+        let transformer = OpenAITransformer::new();
+
+        // Test chunk with finish_reason but NO usage (older OpenAI behavior)
+        let chunk_no_usage = b"data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        let chunks = transformer
+            .transform_stream_chunk_in(&Bytes::from_static(chunk_no_usage))
+            .unwrap();
+
+        // Should have a message_delta with default (zero) usage
+        let message_delta = chunks
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::MessageDelta);
+        assert!(message_delta.is_some(), "Should have message_delta chunk");
+
+        let delta = message_delta.unwrap();
+        assert_eq!(delta.stop_reason, Some(StopReason::EndTurn));
+        assert!(delta.usage.is_some(), "Should have usage (even if default)");
+
+        let usage = delta.usage.as_ref().unwrap();
+        // Default usage when not provided
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn test_streaming_tool_calls_negative_index() {
+        let transformer = OpenAITransformer::new();
+
+        // Test tool_calls streaming with negative index (some providers may send -1)
+        // This should NOT panic and should handle gracefully
+        let chunk_negative_index = b"data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":-1,\"id\":\"call_123\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n";
+        let result =
+            transformer.transform_stream_chunk_in(&Bytes::from_static(chunk_negative_index));
+        assert!(result.is_ok(), "Should handle negative index without panic");
+
+        let chunks = result.unwrap();
+        // Should have content_block_start for tool_use
+        let start_chunk = chunks
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::ContentBlockStart);
+        assert!(start_chunk.is_some());
+        let start_chunk = start_chunk.unwrap();
+        // Negative index should be treated as 0, so content block index becomes 1
+        assert_eq!(
+            start_chunk.index, 1,
+            "Negative tool call index should map to content block index 1"
+        );
+    }
+
+    #[test]
+    fn test_cross_protocol_streaming_usage_openai_to_anthropic() {
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let openai = OpenAITransformer::new();
+        let anthropic = AnthropicTransformer::new();
+
+        // Simulate OpenAI streaming chunk with usage
+        let openai_chunk = b"data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":173,\"completion_tokens\":23,\"total_tokens\":196}}\n\n";
+
+        // Transform OpenAI chunk to unified format
+        let unified_chunks = openai
+            .transform_stream_chunk_in(&Bytes::from_static(openai_chunk))
+            .unwrap();
+
+        // Find the message_delta chunk
+        let message_delta = unified_chunks
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::MessageDelta)
+            .unwrap();
+
+        // Transform unified chunk to Anthropic format
+        let anthropic_output = anthropic
+            .transform_stream_chunk_out(message_delta, Protocol::Anthropic)
+            .unwrap();
+
+        // Verify Anthropic output contains correct usage
+        assert!(
+            anthropic_output.contains("message_delta"),
+            "Should contain message_delta event"
+        );
+        assert!(
+            anthropic_output.contains("\"input_tokens\":173"),
+            "Should contain input_tokens: 173"
+        );
+        assert!(
+            anthropic_output.contains("\"output_tokens\":23"),
+            "Should contain output_tokens: 23"
+        );
+    }
+}

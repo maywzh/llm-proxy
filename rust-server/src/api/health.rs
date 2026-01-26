@@ -261,10 +261,9 @@ pub async fn get_provider_health(
 
     // Get provider to verify it exists
     let db = state.dynamic_config.database();
-    let _provider = db
-        .get_provider(provider_id)
-        .await?
-        .ok_or_else(|| AdminError::NotFound(format!("Provider with ID {} not found", provider_id)))?;
+    let _provider = db.get_provider(provider_id).await?.ok_or_else(|| {
+        AdminError::NotFound(format!("Provider with ID {} not found", provider_id))
+    })?;
 
     // Parse models parameter
     let model_list = query.models.as_ref().map(|m| {
@@ -331,10 +330,9 @@ pub async fn check_provider_health_concurrent(
 
     // Get provider to verify it exists
     let db = state.dynamic_config.database();
-    let provider = db
-        .get_provider(provider_id)
-        .await?
-        .ok_or_else(|| AdminError::NotFound(format!("Provider with ID {} not found", provider_id)))?;
+    let provider = db.get_provider(provider_id).await?.ok_or_else(|| {
+        AdminError::NotFound(format!("Provider with ID {} not found", provider_id))
+    })?;
 
     // Validate request parameters
     if request.max_concurrent < 1 || request.max_concurrent > 10 {
@@ -381,5 +379,8 @@ pub fn health_router() -> Router<Arc<AdminState>> {
 
 /// Create provider health router (for /admin/v1/providers/{id}/health endpoint)
 pub fn provider_health_router() -> Router<Arc<AdminState>> {
-    Router::new().route("/:provider_id/health", post(check_provider_health_concurrent))
+    Router::new().route(
+        "/:provider_id/health",
+        post(check_provider_health_concurrent),
+    )
 }

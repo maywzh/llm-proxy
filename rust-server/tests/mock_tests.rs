@@ -44,6 +44,7 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
             api_key: "test_key".to_string(),
             weight: 1,
             model_mapping,
+            provider_type: "openai".to_string(),
         }],
         server: ServerConfig {
             host: "0.0.0.0".to_string(),
@@ -60,7 +61,7 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
 
     let provider_service = ProviderService::new(config.clone());
     let rate_limiter = Arc::new(RateLimiter::new());
-    
+
     // Create shared HTTP client for tests
     let http_client = reqwest::Client::builder()
         .danger_accept_invalid_certs(!config.verify_ssl)
@@ -69,7 +70,7 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
         .pool_idle_timeout(std::time::Duration::from_secs(30))
         .build()
         .expect("Failed to build HTTP client");
-    
+
     let state = Arc::new(AppState::new(
         config,
         provider_service,
@@ -304,7 +305,7 @@ async fn test_provider_error_with_string_error() {
     } else {
         panic!("Expected error message in response");
     };
-    
+
     assert!(error_msg.contains("Service temporarily unavailable"));
 }
 

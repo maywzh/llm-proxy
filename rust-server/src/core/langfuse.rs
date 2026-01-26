@@ -93,10 +93,14 @@ impl LangfuseConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.enabled {
             if self.public_key.is_none() {
-                return Err("LANGFUSE_PUBLIC_KEY is required when LANGFUSE_ENABLED=true".to_string());
+                return Err(
+                    "LANGFUSE_PUBLIC_KEY is required when LANGFUSE_ENABLED=true".to_string()
+                );
             }
             if self.secret_key.is_none() {
-                return Err("LANGFUSE_SECRET_KEY is required when LANGFUSE_ENABLED=true".to_string());
+                return Err(
+                    "LANGFUSE_SECRET_KEY is required when LANGFUSE_ENABLED=true".to_string()
+                );
             }
         }
         Ok(())
@@ -116,7 +120,7 @@ impl LangfuseConfig {
 /// HashMap containing client metadata (user_agent, x_forwarded_for, etc.)
 pub fn extract_client_metadata(headers: &axum::http::HeaderMap) -> HashMap<String, String> {
     let mut client_metadata = HashMap::new();
-    
+
     if let Some(ua) = headers.get("user-agent").and_then(|v| v.to_str().ok()) {
         client_metadata.insert("user_agent".to_string(), ua.to_string());
     }
@@ -132,7 +136,7 @@ pub fn extract_client_metadata(headers: &axum::http::HeaderMap) -> HashMap<Strin
     if let Some(referer) = headers.get("referer").and_then(|v| v.to_str().ok()) {
         client_metadata.insert("referer".to_string(), referer.to_string());
     }
-    
+
     client_metadata
 }
 
@@ -154,13 +158,13 @@ pub fn build_langfuse_tags(
         format!("endpoint:{}", endpoint),
         format!("credential:{}", credential_name),
     ];
-    
+
     if let Some(ua) = user_agent {
         // Truncate user-agent for tag (tags should be short)
         let ua_short = if ua.len() > 50 { &ua[..50] } else { ua };
         tags.push(format!("user_agent:{}", ua_short));
     }
-    
+
     tags
 }
 
@@ -606,7 +610,7 @@ async fn langfuse_worker(mut receiver: mpsc::Receiver<LangfuseEvent>, config: La
                         metadata.insert("request_id".to_string(), serde_json::json!(request_id));
                         metadata.insert("credential_name".to_string(), serde_json::json!(credential_name));
                         metadata.insert("endpoint".to_string(), serde_json::json!(endpoint));
-                        
+
                         // Add client metadata (user-agent, x-forwarded-for, etc.)
                         for (key, value) in client_metadata {
                             metadata.insert(key, serde_json::json!(value));
@@ -785,7 +789,8 @@ fn base64_writer(output: &mut Vec<u8>) -> impl Write + '_ {
 
     impl<'a> Write for Base64Writer<'a> {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            const ALPHABET: &[u8] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
             for chunk in buf.chunks(3) {
                 let b0 = chunk[0] as usize;

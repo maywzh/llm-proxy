@@ -8,9 +8,16 @@ use crate::api::claude_models::{
     ClaudeErrorResponse, ClaudeMessagesRequest, ClaudeTokenCountRequest, ClaudeTokenCountResponse,
 };
 use crate::api::handlers::AppState;
+use crate::api::streaming::count_tokens as tiktoken_count;
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
-use crate::core::langfuse::{get_langfuse_service, GenerationData, extract_client_metadata, build_langfuse_tags};
+use crate::core::jsonl_logger::{
+    log_provider_request, log_provider_response, log_provider_streaming_response, log_request,
+    log_response, log_streaming_response,
+};
+use crate::core::langfuse::{
+    build_langfuse_tags, extract_client_metadata, get_langfuse_service, GenerationData,
+};
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
@@ -18,7 +25,6 @@ use crate::core::{AppError, Result};
 use crate::services::claude_converter::{
     claude_to_openai_request, convert_openai_streaming_to_claude, openai_to_claude_response,
 };
-use crate::api::streaming::count_tokens as tiktoken_count;
 use crate::with_request_context;
 use axum::{
     body::Body,
@@ -128,7 +134,9 @@ fn build_claude_error_response(
         response.extensions_mut().insert(ModelName(m.to_string()));
     }
     if let Some(p) = provider {
-        response.extensions_mut().insert(ProviderName(p.to_string()));
+        response
+            .extensions_mut()
+            .insert(ProviderName(p.to_string()));
     }
     if let Some(k) = api_key_name {
         response.extensions_mut().insert(ApiKeyName(k.to_string()));
@@ -181,11 +189,7 @@ pub async fn create_message(
         let user_agent = client_metadata.get("user_agent").cloned();
 
         // Build tags for Langfuse using shared helper
-        let tags = build_langfuse_tags(
-            "/v1/messages",
-            &api_key_name,
-            user_agent.as_deref(),
-        );
+        let tags = build_langfuse_tags("/v1/messages", &api_key_name, user_agent.as_deref());
 
         // Initialize Langfuse tracing
         let langfuse = get_langfuse_service();
@@ -219,8 +223,10 @@ pub async fn create_message(
         );
 
         // Strip provider suffix if configured
-        let effective_model =
-            strip_provider_suffix(&claude_request.model, state.config.provider_suffix.as_deref());
+        let effective_model = strip_provider_suffix(
+            &claude_request.model,
+            state.config.provider_suffix.as_deref(),
+        );
         let model_label = effective_model.clone();
 
         // Capture input data for Langfuse
@@ -299,7 +305,9 @@ pub async fn create_message(
         let param_keys = ["temperature", "max_tokens", "top_p", "stop"];
         for key in param_keys {
             if let Some(val) = openai_request.get(key) {
-                generation_data.model_parameters.insert(key.to_string(), val.clone());
+                generation_data
+                    .model_parameters
+                    .insert(key.to_string(), val.clone());
             }
         }
 
@@ -316,8 +324,27 @@ pub async fn create_message(
                     "Processing Claude completion request"
                 );
 
+                // Log request immediately to JSONL
+                let claude_request_value =
+                    serde_json::to_value(&claude_request).unwrap_or_default();
+                log_request(
+                    &request_id,
+                    "/v1/messages",
+                    &provider.name,
+                    &claude_request_value,
+                );
+
                 // Get api_key_name from context for use in closures
                 let api_key_name = get_api_key_name();
+
+                // Log provider request to JSONL (the OpenAI-format request sent to provider)
+                log_provider_request(
+                    &request_id,
+                    &provider.name,
+                    &provider.api_base,
+                    "/chat/completions",
+                    &openai_request,
+                );
 
                 let response = match state
                     .http_client
@@ -381,15 +408,13 @@ pub async fn create_message(
                 // Check if backend API returned an error status code
                 if status.is_client_error() || status.is_server_error() {
                     let error_body = match response.bytes().await {
-                        Ok(bytes) => {
-                            match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                                Ok(body) => body,
-                                Err(_) => {
-                                    let text = String::from_utf8_lossy(&bytes).to_string();
-                                    json!({"error": {"message": text}})
-                                }
+                        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                            Ok(body) => body,
+                            Err(_) => {
+                                let text = String::from_utf8_lossy(&bytes).to_string();
+                                json!({"error": {"message": text}})
                             }
-                        }
+                        },
                         Err(_) => json!({"error": {"message": format!("HTTP {}", status)}}),
                     };
 
@@ -437,6 +462,8 @@ pub async fn create_message(
                         api_key_name,
                         generation_data,
                         trace_id,
+                        request_id.clone(),
+                        serde_json::to_value(&claude_request).unwrap_or_default(),
                     )
                     .await
                 } else {
@@ -449,6 +476,8 @@ pub async fn create_message(
                         api_key_name,
                         generation_data,
                         trace_id,
+                        request_id.clone(),
+                        serde_json::to_value(&claude_request).unwrap_or_default(),
                     )
                     .await
                 }
@@ -458,6 +487,7 @@ pub async fn create_message(
 }
 
 /// Handle streaming Claude response.
+#[allow(clippy::too_many_arguments)]
 async fn handle_streaming_response(
     response: reqwest::Response,
     original_model: String,
@@ -466,17 +496,22 @@ async fn handle_streaming_response(
     api_key_name: String,
     generation_data: GenerationData,
     trace_id: Option<String>,
+    request_id: String,
+    request_payload: serde_json::Value,
 ) -> Result<Response> {
     let stream = response.bytes_stream();
+    let start_time = std::time::Instant::now();
 
     // Convert OpenAI streaming to Claude streaming format
     let claude_stream = convert_openai_streaming_to_claude(Box::pin(stream), original_model);
 
-    // Wrap the stream to capture output for Langfuse
+    // Wrap the stream to capture output for Langfuse and JSONL logging
     let model_label_clone = model_label.clone();
     let provider_name_clone = provider_name.clone();
     let api_key_name_clone = api_key_name.clone();
     let trace_id_clone = trace_id.clone();
+    let request_id_clone = request_id.clone();
+    let _request_payload_clone = request_payload.clone();
 
     let langfuse_stream = {
         let accumulated_output = String::new();
@@ -484,10 +519,39 @@ async fn handle_streaming_response(
         let usage_input_tokens: u32 = 0;
         let usage_output_tokens: u32 = 0;
         let first_token_received = false;
+        let accumulated_sse_data: Vec<String> = Vec::new();
 
         futures::stream::unfold(
-            (claude_stream, accumulated_output, finish_reason, usage_input_tokens, usage_output_tokens, first_token_received, generation_data, trace_id_clone),
-            move |(mut stream, mut accumulated_output, mut finish_reason, mut usage_input_tokens, mut usage_output_tokens, mut first_token_received, mut gen_data, trace_id)| {
+            (
+                claude_stream,
+                accumulated_output,
+                finish_reason,
+                usage_input_tokens,
+                usage_output_tokens,
+                first_token_received,
+                generation_data,
+                trace_id_clone,
+                accumulated_sse_data,
+                start_time,
+                model_label.clone(),
+                provider_name.clone(),
+                request_id.clone(),
+            ),
+            move |(
+                mut stream,
+                mut accumulated_output,
+                mut finish_reason,
+                mut usage_input_tokens,
+                mut usage_output_tokens,
+                mut first_token_received,
+                mut gen_data,
+                trace_id,
+                mut accumulated_sse_data,
+                start_time,
+                model_label,
+                provider_name,
+                request_id,
+            )| {
                 async move {
                     match stream.next().await {
                         Some(event) => {
@@ -497,15 +561,31 @@ async fn handle_streaming_response(
                                 gen_data.ttft_time = Some(Utc::now());
                             }
 
+                            // Accumulate raw SSE data for JSONL logging
+                            if !request_id.is_empty() {
+                                // Store raw SSE lines for JSONL logging
+                                for line in event.lines() {
+                                    if line.starts_with("data: ") {
+                                        accumulated_sse_data.push(line.to_string());
+                                    }
+                                }
+                            }
+
                             // Parse event to extract output content and usage
                             if event.starts_with("event: content_block_delta") {
                                 // Extract text from content_block_delta events
                                 for line in event.lines() {
                                     if let Some(data_str) = line.strip_prefix("data: ") {
-                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(data_str) {
+                                        if let Ok(data) =
+                                            serde_json::from_str::<serde_json::Value>(data_str)
+                                        {
                                             if let Some(delta) = data.get("delta") {
-                                                if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
-                                                    if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                                if delta.get("type").and_then(|t| t.as_str())
+                                                    == Some("text_delta")
+                                                {
+                                                    if let Some(text) =
+                                                        delta.get("text").and_then(|t| t.as_str())
+                                                    {
                                                         accumulated_output.push_str(text);
                                                     }
                                                 }
@@ -517,17 +597,28 @@ async fn handle_streaming_response(
                                 // Extract finish_reason and usage from message_delta events
                                 for line in event.lines() {
                                     if let Some(data_str) = line.strip_prefix("data: ") {
-                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(data_str) {
+                                        if let Ok(data) =
+                                            serde_json::from_str::<serde_json::Value>(data_str)
+                                        {
                                             if let Some(delta) = data.get("delta") {
-                                                if let Some(reason) = delta.get("stop_reason").and_then(|r| r.as_str()) {
+                                                if let Some(reason) = delta
+                                                    .get("stop_reason")
+                                                    .and_then(|r| r.as_str())
+                                                {
                                                     finish_reason = Some(reason.to_string());
                                                 }
                                             }
                                             if let Some(usage) = data.get("usage") {
-                                                if let Some(input) = usage.get("input_tokens").and_then(|t| t.as_u64()) {
+                                                if let Some(input) = usage
+                                                    .get("input_tokens")
+                                                    .and_then(|t| t.as_u64())
+                                                {
                                                     usage_input_tokens = input as u32;
                                                 }
-                                                if let Some(output) = usage.get("output_tokens").and_then(|t| t.as_u64()) {
+                                                if let Some(output) = usage
+                                                    .get("output_tokens")
+                                                    .and_then(|t| t.as_u64())
+                                                {
                                                     usage_output_tokens = output as u32;
                                                 }
                                             }
@@ -541,15 +632,51 @@ async fn handle_streaming_response(
                                     gen_data.finish_reason = finish_reason.clone();
                                     gen_data.prompt_tokens = usage_input_tokens;
                                     gen_data.completion_tokens = usage_output_tokens;
-                                    gen_data.total_tokens = usage_input_tokens + usage_output_tokens;
+                                    gen_data.total_tokens =
+                                        usage_input_tokens + usage_output_tokens;
                                     gen_data.end_time = Some(Utc::now());
                                     if let Ok(service) = get_langfuse_service().read() {
                                         service.trace_generation(gen_data.clone());
                                     }
                                 }
+
+                                // Log streaming response to JSONL file
+                                if !request_id.is_empty() {
+                                    log_streaming_response(
+                                        &request_id,
+                                        200,
+                                        None,
+                                        accumulated_sse_data.clone(),
+                                    );
+                                    // Log provider streaming response (the raw SSE data from provider)
+                                    log_provider_streaming_response(
+                                        &request_id,
+                                        &provider_name,
+                                        200,
+                                        None,
+                                        accumulated_sse_data.clone(),
+                                    );
+                                }
                             }
 
-                            Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(event)), (stream, accumulated_output, finish_reason, usage_input_tokens, usage_output_tokens, first_token_received, gen_data, trace_id)))
+                            Some((
+                                Ok::<_, std::io::Error>(axum::body::Bytes::from(event)),
+                                (
+                                    stream,
+                                    accumulated_output,
+                                    finish_reason,
+                                    usage_input_tokens,
+                                    usage_output_tokens,
+                                    first_token_received,
+                                    gen_data,
+                                    trace_id,
+                                    accumulated_sse_data,
+                                    start_time,
+                                    model_label,
+                                    provider_name,
+                                    request_id,
+                                ),
+                            ))
                         }
                         None => None,
                     }
@@ -566,6 +693,7 @@ async fn handle_streaming_response(
         model = %model_label_clone,
         provider = %provider_name_clone,
         api_key_name = %api_key_name_clone,
+        request_id = %request_id_clone,
         "Claude streaming response started"
     );
 
@@ -579,14 +707,21 @@ async fn handle_streaming_response(
         .unwrap();
 
     // Add extensions for middleware metrics tracking
-    response.extensions_mut().insert(ModelName(model_label_clone));
-    response.extensions_mut().insert(ProviderName(provider_name_clone));
-    response.extensions_mut().insert(ApiKeyName(api_key_name_clone));
+    response
+        .extensions_mut()
+        .insert(ModelName(model_label_clone));
+    response
+        .extensions_mut()
+        .insert(ProviderName(provider_name_clone));
+    response
+        .extensions_mut()
+        .insert(ApiKeyName(api_key_name_clone));
 
     Ok(response)
 }
 
 /// Handle non-streaming Claude response.
+#[allow(clippy::too_many_arguments)]
 async fn handle_non_streaming_response(
     response: reqwest::Response,
     original_model: String,
@@ -595,9 +730,17 @@ async fn handle_non_streaming_response(
     api_key_name: String,
     mut generation_data: GenerationData,
     trace_id: Option<String>,
+    request_id: String,
+    _request_payload: serde_json::Value,
 ) -> Result<Response> {
+    let status = response.status();
+
     let response_data: serde_json::Value = match response.json().await {
-        Ok(data) => data,
+        Ok(data) => {
+            // Log provider response to JSONL (the raw OpenAI-format response from provider)
+            log_provider_response(&request_id, &provider_name, status.as_u16(), None, &data);
+            data
+        }
         Err(e) => {
             tracing::error!(
                 provider = %provider_name,
@@ -670,18 +813,29 @@ async fn handle_non_streaming_response(
         }
     }
 
+    // Log response to JSONL file (non-streaming)
+    log_response(
+        &request_id,
+        status.as_u16(),
+        None,
+        &serde_json::to_value(&claude_response).unwrap_or_default(),
+    );
+
     // Note: Request count metrics are recorded by middleware via response extensions
 
     tracing::debug!(
         model = %model_label,
         provider = %provider_name,
         api_key_name = %api_key_name,
+        request_id = %request_id,
         "Claude non-streaming response completed"
     );
 
     let mut response = Json(claude_response).into_response();
     response.extensions_mut().insert(ModelName(model_label));
-    response.extensions_mut().insert(ProviderName(provider_name));
+    response
+        .extensions_mut()
+        .insert(ProviderName(provider_name));
     response.extensions_mut().insert(ApiKeyName(api_key_name));
 
     Ok(response)

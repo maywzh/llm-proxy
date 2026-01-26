@@ -27,10 +27,12 @@ def _is_pattern(key: str) -> bool:
 
     # Check for paired regex metacharacters that suggest actual pattern usage
     # Only consider it a pattern if we have matched pairs or pipe symbols
-    if (("(" in key and ")" in key) or
-        ("[" in key and "]" in key) or
-        ("{" in key and "}" in key) or
-        ("|" in key)):
+    if (
+        ("(" in key and ")" in key)
+        or ("[" in key and "]" in key)
+        or ("{" in key and "}" in key)
+        or ("|" in key)
+    ):
         try:
             compiled = _compile_pattern(key)
             # A real pattern typically doesn't match itself but matches other strings
@@ -143,6 +145,7 @@ class Provider:
     api_key: str
     weight: int
     model_mapping: Dict[str, str] = field(default_factory=dict)
+    provider_type: str = field(default="openai")
 
     def supports_model(self, model: str) -> bool:
         """Check if this provider supports the given model (exact or pattern match)."""

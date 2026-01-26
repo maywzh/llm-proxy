@@ -11,7 +11,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
-from app.api.router import api_router, metrics_router, admin_router, claude_router
+from app.api.router import (
+    api_router,
+    metrics_router,
+    admin_router,
+    claude_router,
+    v2_router,
+)
 from app.services.provider_service import get_provider_service
 from app.services.langfuse_service import (
     init_langfuse_service,
@@ -19,6 +25,7 @@ from app.services.langfuse_service import (
 )
 from app.core.config import get_config, get_env_config
 from app.core.http_client import get_http_client, close_http_client
+from app.core.jsonl_logger import init_jsonl_logger, shutdown_jsonl_logger
 from app.core.middleware import MetricsMiddleware
 from app.core.metrics import APP_INFO
 from app.core.logging import setup_logging, get_logger
@@ -74,9 +81,15 @@ async def lifespan(app: FastAPI):
     # Initialize Langfuse service (optional, fails gracefully if not configured)
     init_langfuse_service()
 
+    # Initialize JSONL logger (optional, controlled by JSONL_LOG_ENABLED env var)
+    await init_jsonl_logger()
+
     yield
 
     logger.info("Shutting down LLM API Proxy")
+
+    # Shutdown JSONL logger (flushes pending records)
+    await shutdown_jsonl_logger()
 
     # Shutdown Langfuse service (flushes pending events)
     shutdown_langfuse_service()
@@ -207,6 +220,7 @@ def create_app() -> FastAPI:
     app.add_middleware(MetricsMiddleware)
 
     app.include_router(api_router)
+    app.include_router(v2_router)
     app.include_router(metrics_router)
     app.include_router(admin_router)
     app.include_router(claude_router)

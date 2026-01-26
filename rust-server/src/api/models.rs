@@ -147,6 +147,13 @@ pub struct Provider {
     pub api_key: String,
     pub weight: u32,
     pub model_mapping: HashMap<String, String>,
+    /// Provider type (e.g., "openai", "azure", "anthropic")
+    #[serde(default = "default_provider_type")]
+    pub provider_type: String,
+}
+
+fn default_provider_type() -> String {
+    "openai".to_string()
 }
 
 impl Provider {
@@ -284,12 +291,20 @@ pub struct Delta {
 
 /// Model information.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[schema(example = json!({"id": "gpt-4", "object": "model", "created": 1677610602, "owned_by": "system"}))]
+#[schema(example = json!({"id": "gpt-4", "object": "model", "created": 1677610602, "owned_by": "system", "permission": [], "root": "gpt-4", "parent": null}))]
 pub struct ModelInfo {
     pub id: String,
     pub object: String,
     pub created: i64,
     pub owned_by: String,
+    /// Model permissions (OpenAI compatibility)
+    #[serde(default)]
+    pub permission: Vec<String>,
+    /// Root model identifier (OpenAI compatibility)
+    pub root: String,
+    /// Parent model identifier (OpenAI compatibility)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 /// List of available models.
@@ -607,12 +622,17 @@ mod tests {
                 object: "model".to_string(),
                 created: 1234567890,
                 owned_by: "openai".to_string(),
+                permission: vec![],
+                root: "gpt-4".to_string(),
+                parent: None,
             }],
         };
 
         let json = serde_json::to_string(&model_list).unwrap();
         assert!(json.contains("\"object\":\"list\""));
         assert!(json.contains("\"id\":\"gpt-4\""));
+        assert!(json.contains("\"root\":\"gpt-4\""));
+        assert!(json.contains("\"permission\":[]"));
     }
 
     #[test]
@@ -623,12 +643,14 @@ mod tests {
             api_key: "key".to_string(),
             weight: 1,
             model_mapping: HashMap::new(),
+            provider_type: "openai".to_string(),
         };
 
         let cloned = provider.clone();
         assert_eq!(cloned.name, provider.name);
         assert_eq!(cloned.api_base, provider.api_base);
         assert_eq!(cloned.weight, provider.weight);
+        assert_eq!(cloned.provider_type, provider.provider_type);
     }
 
     #[test]
@@ -659,7 +681,10 @@ mod tests {
     fn test_wildcard_model_mapping_exact_match() {
         let mut mapping = HashMap::new();
         mapping.insert("gpt-4".to_string(), "gpt-4-exact".to_string());
-        mapping.insert("claude-opus-4-5-.*".to_string(), "claude-opus-mapped".to_string());
+        mapping.insert(
+            "claude-opus-4-5-.*".to_string(),
+            "claude-opus-mapped".to_string(),
+        );
 
         // Exact match should work
         assert!(model_matches_mapping("gpt-4", &mapping));
@@ -669,7 +694,10 @@ mod tests {
     #[test]
     fn test_wildcard_model_mapping_regex_pattern() {
         let mut mapping = HashMap::new();
-        mapping.insert("claude-opus-4-5-.*".to_string(), "claude-opus-mapped".to_string());
+        mapping.insert(
+            "claude-opus-4-5-.*".to_string(),
+            "claude-opus-mapped".to_string(),
+        );
 
         // Regex pattern should match
         assert!(model_matches_mapping("claude-opus-4-5-20240620", &mapping));
@@ -709,17 +737,26 @@ mod tests {
         mapping.insert("claude-opus".to_string(), "claude-opus-exact".to_string());
 
         // Exact match should take priority over pattern
-        assert_eq!(get_mapped_model("claude-opus", &mapping), "claude-opus-exact");
+        assert_eq!(
+            get_mapped_model("claude-opus", &mapping),
+            "claude-opus-exact"
+        );
 
         // Pattern should match other claude models
-        assert_eq!(get_mapped_model("claude-sonnet", &mapping), "claude-pattern");
+        assert_eq!(
+            get_mapped_model("claude-sonnet", &mapping),
+            "claude-pattern"
+        );
     }
 
     #[test]
     fn test_provider_supports_model_with_patterns() {
         let mut mapping = HashMap::new();
         mapping.insert("gpt-4".to_string(), "gpt-4-mapped".to_string());
-        mapping.insert("claude-opus-4-5-.*".to_string(), "claude-mapped".to_string());
+        mapping.insert(
+            "claude-opus-4-5-.*".to_string(),
+            "claude-mapped".to_string(),
+        );
 
         let provider = Provider {
             name: "test".to_string(),
@@ -727,6 +764,7 @@ mod tests {
             api_key: "key".to_string(),
             weight: 1,
             model_mapping: mapping,
+            provider_type: "openai".to_string(),
         };
 
         // Test exact match

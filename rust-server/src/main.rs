@@ -9,15 +9,19 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::Local;
 use llm_proxy_rust::{
-    admin_router, combined_openapi,
+    admin_router,
     api::{
-        chat_completions, claude_count_tokens, claude_create_message, completions, list_models,
-        metrics_handler, AdminState, AppState,
+        chat_completions, chat_completions_v2, claude_count_tokens, claude_create_message,
+        completions, list_models, messages_v2, metrics_handler, responses_v2, AdminState, AppState,
+        ProxyState,
     },
+    combined_openapi,
     core::{
-        admin_logging_middleware, init_langfuse_service, init_metrics, AppConfig, Database,
-        DatabaseConfig, DynamicConfig, MetricsMiddleware, RateLimiter, RuntimeConfig,
+        admin_logging_middleware, init_jsonl_logger, init_langfuse_service, init_metrics,
+        AppConfig, Database, DatabaseConfig, DynamicConfig, MetricsMiddleware, RateLimiter,
+        RuntimeConfig,
     },
     services::ProviderService,
 };
@@ -26,7 +30,6 @@ use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use utoipa_swagger_ui::SwaggerUi;
-use chrono::Local;
 
 fn main() -> Result<()> {
     // Load .env file if present (before reading any environment variables)
@@ -65,20 +68,34 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
 async fn async_main() -> Result<()> {
     // Check if NO_COLOR environment variable is set (for file logging without ANSI codes)
     let no_color = std::env::var("NO_COLOR").is_ok();
-    
+
     // Initialize logging with local timezone (respects TZ environment variable)
     // Default filter: info level for most crates, debug for llm_proxy_rust,
     // and warn level for hyper/reqwest (to hide verbose chunked header logs from debug output)
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info,llm_proxy_rust=debug,hyper=warn,reqwest=warn".into());
-    
+    // Also filter out hyper::proto trace logs which are very noisy
+    //
+    // IMPORTANT: We always append noise-suppression filters for hyper/h2/reqwest
+    // because if RUST_LOG is set to just "info" or "trace", it would override
+    // our defaults and allow noisy trace logs through.
+    let base_filter =
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info,llm_proxy_rust=debug".to_string());
+
+    // Always suppress noisy HTTP library logs regardless of RUST_LOG setting
+    let filter_str = format!(
+        "{},hyper=warn,hyper::proto=warn,h2=warn,reqwest=warn",
+        base_filter
+    );
+    let filter = tracing_subscriber::EnvFilter::new(filter_str);
+
     if no_color {
         // Disable ANSI colors for file logging
         tracing_subscriber::registry()
             .with(filter)
-            .with(tracing_subscriber::fmt::layer()
-                .with_timer(LocalTime)
-                .with_ansi(false))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_timer(LocalTime)
+                    .with_ansi(false),
+            )
             .init();
     } else {
         // Enable ANSI colors for terminal
@@ -93,6 +110,9 @@ async fn async_main() -> Result<()> {
 
     // Initialize Langfuse service (optional, fails gracefully if not configured)
     init_langfuse_service(None);
+
+    // Initialize JSONL logger (optional, disabled by default)
+    init_jsonl_logger().await;
 
     // Get required environment variables
     let db_url = std::env::var("DB_URL")
@@ -179,12 +199,12 @@ fn build_router(
     http_client: reqwest::Client,
 ) -> Router {
     // Admin routes with logging middleware
-    let admin_routes = admin_router(admin_state)
-        .layer(axum::middleware::from_fn(admin_logging_middleware));
+    let admin_routes =
+        admin_router(admin_state).layer(axum::middleware::from_fn(admin_logging_middleware));
 
     // Swagger UI for API documentation (includes both V1 and Admin APIs)
-    let swagger_ui = SwaggerUi::new("/swagger-ui")
-        .url("/api-docs/openapi.json", combined_openapi());
+    let swagger_ui =
+        SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", combined_openapi());
 
     // Get current config
     let config = dynamic_config.get_full();
@@ -222,7 +242,10 @@ fn build_router(
         Some(dynamic_config),
     ));
 
-    // Build API routes with AppState
+    // Build proxy state with transformer support
+    let proxy_state = Arc::new(ProxyState::new(state.clone()));
+
+    // Build API routes with AppState (v1 - legacy endpoints)
     let api_routes = Router::new()
         // OpenAI-compatible endpoints
         .route("/v1/chat/completions", post(chat_completions))
@@ -234,11 +257,20 @@ fn build_router(
         .layer(axum::middleware::from_fn(MetricsMiddleware::track_metrics))
         .with_state(state);
 
+    // Build v2 API routes with ProxyState (transformer-based)
+    let api_routes_v2 = Router::new()
+        .route("/v2/chat/completions", post(chat_completions_v2))
+        .route("/v2/messages", post(messages_v2))
+        .route("/v2/responses", post(responses_v2))
+        .layer(axum::middleware::from_fn(MetricsMiddleware::track_metrics))
+        .with_state(proxy_state);
+
     // Merge admin routes (with AdminState) and API routes (with AppState)
     Router::new()
         .nest("/admin/v1", admin_routes)
         .merge(swagger_ui)
         .merge(api_routes)
+        .merge(api_routes_v2)
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         // Placeholder for Claude Code telemetry (returns 200 to suppress 404 noise)
@@ -248,10 +280,7 @@ fn build_router(
 }
 
 /// Convert RuntimeConfig to AppConfig for compatibility
-fn convert_runtime_to_app_config(
-    runtime: &RuntimeConfig,
-    base: &AppConfig,
-) -> AppConfig {
+fn convert_runtime_to_app_config(runtime: &RuntimeConfig, base: &AppConfig) -> AppConfig {
     use llm_proxy_rust::core::config::{CredentialConfig, ProviderConfig};
 
     let providers: Vec<ProviderConfig> = runtime
@@ -263,6 +292,7 @@ fn convert_runtime_to_app_config(
             api_key: p.api_key.clone(),
             weight: p.weight as u32,
             model_mapping: p.model_mapping.0.clone(),
+            provider_type: p.provider_type.clone(),
         })
         .collect();
 
@@ -273,12 +303,12 @@ fn convert_runtime_to_app_config(
             credential_key: c.credential_key.clone(), // Use hash for comparison
             name: c.name.clone(),
             description: None,
-            rate_limit: c.rate_limit.map(|rps| {
-                llm_proxy_rust::core::config::RateLimitConfig {
+            rate_limit: c
+                .rate_limit
+                .map(|rps| llm_proxy_rust::core::config::RateLimitConfig {
                     requests_per_second: rps as u32,
                     burst_size: (rps as u32).saturating_mul(2),
-                }
-            }),
+                }),
             enabled: c.is_enabled,
             allowed_models: c.allowed_models.clone(),
         })

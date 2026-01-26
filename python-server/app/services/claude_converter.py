@@ -5,6 +5,7 @@ and OpenAI API format for request/response handling.
 """
 
 import json
+import re
 import uuid
 from io import StringIO
 from typing import Any, AsyncIterator, Dict, List, Optional, Union
@@ -16,6 +17,14 @@ from app.models.claude import ClaudeMessage, ClaudeMessagesRequest
 from app.models.provider import get_mapped_model
 
 logger = get_logger()
+
+# Regex pattern to strip x-anthropic-billing-header prefix from system text
+BILLING_HEADER_REGEX = re.compile(r"^x-anthropic-billing-header:\s*")
+
+
+def _strip_billing_header(text: str) -> str:
+    """Strip x-anthropic-billing-header prefix from text if present."""
+    return BILLING_HEADER_REGEX.sub("", text)
 
 
 def claude_to_openai_request(
@@ -221,6 +230,9 @@ async def convert_openai_streaming_to_claude(
 ) -> AsyncIterator[str]:
     """Convert OpenAI streaming response to Claude streaming format.
 
+    Uses on-demand synthesis pattern (V2 style): events are synthesized
+    only when needed, rather than pre-generated unconditionally.
+
     Args:
         openai_stream: Async iterator of OpenAI SSE chunks (bytes)
         original_model: The original Claude model name from request
@@ -230,39 +242,17 @@ async def convert_openai_streaming_to_claude(
     """
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
 
-    # Send initial SSE events
-    yield _format_sse_event(
-        ClaudeConstants.EVENT_MESSAGE_START,
-        {
-            "type": ClaudeConstants.EVENT_MESSAGE_START,
-            "message": {
-                "id": message_id,
-                "type": "message",
-                "role": ClaudeConstants.ROLE_ASSISTANT,
-                "model": original_model,
-                "content": [],
-                "stop_reason": None,
-                "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
-            },
-        },
-    )
+    # On-demand synthesis state flags
+    message_started = False
+    ping_emitted = False
+    thinking_block_started = False
+    text_block_started = False
 
-    yield _format_sse_event(
-        ClaudeConstants.EVENT_CONTENT_BLOCK_START,
-        {
-            "type": ClaudeConstants.EVENT_CONTENT_BLOCK_START,
-            "index": 0,
-            "content_block": {"type": ClaudeConstants.CONTENT_TEXT, "text": ""},
-        },
-    )
-
-    yield _format_sse_event(
-        ClaudeConstants.EVENT_PING, {"type": ClaudeConstants.EVENT_PING}
-    )
+    # Block indices
+    thinking_block_index = -1  # Will be set to 0 when thinking starts
+    text_block_index = 0  # Shifts to 1 if thinking block is present
 
     # Process streaming chunks
-    text_block_index = 0
     tool_block_counter = 0
     current_tool_calls: Dict[int, Dict[str, Any]] = {}
     final_stop_reason = ClaudeConstants.STOP_END_TURN
@@ -323,12 +313,100 @@ async def convert_openai_streaming_to_claude(
                         delta = choice.get("delta", {})
                         finish_reason = choice.get("finish_reason")
 
+                        # Handle finish reason
+                        if finish_reason:
+                            final_stop_reason = _map_finish_reason(finish_reason)
+
+                        if not delta:
+                            continue
+
+                        # On-demand synthesis: check if we have content
+                        has_content = (
+                            delta.get("content") is not None
+                            or delta.get("reasoning_content") is not None
+                            or delta.get("tool_calls") is not None
+                        )
+
+                        # Emit message_start + ping on first content
+                        if has_content and not message_started:
+                            yield _format_sse_event(
+                                ClaudeConstants.EVENT_MESSAGE_START,
+                                {
+                                    "type": ClaudeConstants.EVENT_MESSAGE_START,
+                                    "message": {
+                                        "id": message_id,
+                                        "type": "message",
+                                        "role": ClaudeConstants.ROLE_ASSISTANT,
+                                        "model": original_model,
+                                        "content": [],
+                                        "stop_reason": None,
+                                        "stop_sequence": None,
+                                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                                    },
+                                },
+                            )
+                            message_started = True
+
+                            if not ping_emitted:
+                                yield _format_sse_event(
+                                    ClaudeConstants.EVENT_PING,
+                                    {"type": ClaudeConstants.EVENT_PING},
+                                )
+                                ping_emitted = True
+
+                        # Handle reasoning_content delta (for extended thinking)
+                        reasoning_content = delta.get("reasoning_content")
+                        if reasoning_content is not None:
+                            # Start thinking block if not yet started
+                            if not thinking_block_started:
+                                thinking_block_started = True
+                                thinking_block_index = 0
+                                # Shift text block index to 1 since thinking is at 0
+                                text_block_index = 1
+
+                                yield _format_sse_event(
+                                    ClaudeConstants.EVENT_CONTENT_BLOCK_START,
+                                    {
+                                        "type": ClaudeConstants.EVENT_CONTENT_BLOCK_START,
+                                        "index": 0,
+                                        "content_block": {
+                                            "type": ClaudeConstants.CONTENT_THINKING,
+                                            "thinking": "",
+                                        },
+                                    },
+                                )
+
+                            # Emit thinking delta
+                            yield _format_sse_event(
+                                ClaudeConstants.EVENT_CONTENT_BLOCK_DELTA,
+                                {
+                                    "type": ClaudeConstants.EVENT_CONTENT_BLOCK_DELTA,
+                                    "index": thinking_block_index,
+                                    "delta": {
+                                        "type": ClaudeConstants.DELTA_THINKING,
+                                        "thinking": reasoning_content,
+                                    },
+                                },
+                            )
+
                         # Handle text delta
-                        if (
-                            delta
-                            and "content" in delta
-                            and delta["content"] is not None
-                        ):
+                        text_content = delta.get("content")
+                        if text_content is not None:
+                            # On-demand synthesis: emit content_block_start for text if not yet emitted
+                            if not text_block_started:
+                                yield _format_sse_event(
+                                    ClaudeConstants.EVENT_CONTENT_BLOCK_START,
+                                    {
+                                        "type": ClaudeConstants.EVENT_CONTENT_BLOCK_START,
+                                        "index": text_block_index,
+                                        "content_block": {
+                                            "type": ClaudeConstants.CONTENT_TEXT,
+                                            "text": "",
+                                        },
+                                    },
+                                )
+                                text_block_started = True
+
                             yield _format_sse_event(
                                 ClaudeConstants.EVENT_CONTENT_BLOCK_DELTA,
                                 {
@@ -336,7 +414,7 @@ async def convert_openai_streaming_to_claude(
                                     "index": text_block_index,
                                     "delta": {
                                         "type": ClaudeConstants.DELTA_TEXT,
-                                        "text": delta["content"],
+                                        "text": text_content,
                                     },
                                 },
                             )
@@ -355,10 +433,6 @@ async def convert_openai_streaming_to_claude(
                                     yield _format_sse_event(
                                         event["event"], event["data"]
                                     )
-
-                        # Handle finish reason
-                        if finish_reason:
-                            final_stop_reason = _map_finish_reason(finish_reason)
 
                 # Check if stream is done (set inside the for loop)
                 if stream_done:
@@ -380,35 +454,51 @@ async def convert_openai_streaming_to_claude(
         yield f"event: error\ndata: {json.dumps(error_event, ensure_ascii=False)}\n\n"
         return
 
-    # Send final SSE events
-    yield _format_sse_event(
-        ClaudeConstants.EVENT_CONTENT_BLOCK_STOP,
-        {"type": ClaudeConstants.EVENT_CONTENT_BLOCK_STOP, "index": text_block_index},
-    )
-
-    for tool_data in current_tool_calls.values():
-        if tool_data.get("started") and tool_data.get("claude_index") is not None:
+    # Send final SSE events (only if message was started - on-demand synthesis)
+    if message_started:
+        # content_block_stop for thinking block (if started)
+        if thinking_block_started:
             yield _format_sse_event(
                 ClaudeConstants.EVENT_CONTENT_BLOCK_STOP,
                 {
                     "type": ClaudeConstants.EVENT_CONTENT_BLOCK_STOP,
-                    "index": tool_data["claude_index"],
+                    "index": thinking_block_index,
                 },
             )
 
-    yield _format_sse_event(
-        ClaudeConstants.EVENT_MESSAGE_DELTA,
-        {
-            "type": ClaudeConstants.EVENT_MESSAGE_DELTA,
-            "delta": {"stop_reason": final_stop_reason, "stop_sequence": None},
-            "usage": usage_data,
-        },
-    )
+        # content_block_stop for text block (only if started)
+        if text_block_started:
+            yield _format_sse_event(
+                ClaudeConstants.EVENT_CONTENT_BLOCK_STOP,
+                {
+                    "type": ClaudeConstants.EVENT_CONTENT_BLOCK_STOP,
+                    "index": text_block_index,
+                },
+            )
 
-    yield _format_sse_event(
-        ClaudeConstants.EVENT_MESSAGE_STOP,
-        {"type": ClaudeConstants.EVENT_MESSAGE_STOP},
-    )
+        for tool_data in current_tool_calls.values():
+            if tool_data.get("started") and tool_data.get("claude_index") is not None:
+                yield _format_sse_event(
+                    ClaudeConstants.EVENT_CONTENT_BLOCK_STOP,
+                    {
+                        "type": ClaudeConstants.EVENT_CONTENT_BLOCK_STOP,
+                        "index": tool_data["claude_index"],
+                    },
+                )
+
+        yield _format_sse_event(
+            ClaudeConstants.EVENT_MESSAGE_DELTA,
+            {
+                "type": ClaudeConstants.EVENT_MESSAGE_DELTA,
+                "delta": {"stop_reason": final_stop_reason, "stop_sequence": None},
+                "usage": usage_data,
+            },
+        )
+
+        yield _format_sse_event(
+            ClaudeConstants.EVENT_MESSAGE_STOP,
+            {"type": ClaudeConstants.EVENT_MESSAGE_STOP},
+        )
 
 
 # ============================================================================
@@ -419,20 +509,23 @@ async def convert_openai_streaming_to_claude(
 def _extract_system_text(
     system: Union[str, List[Any]],
 ) -> str:
-    """Extract system text from Claude system field."""
+    """Extract system text from Claude system field.
+
+    Also strips x-anthropic-billing-header prefix from text blocks.
+    """
     if isinstance(system, str):
-        return system
+        return _strip_billing_header(system)
 
     if isinstance(system, list):
         text_parts = []
         for block in system:
             if hasattr(block, "type") and block.type == ClaudeConstants.CONTENT_TEXT:
-                text_parts.append(block.text)
+                text_parts.append(_strip_billing_header(block.text))
             elif (
                 isinstance(block, dict)
                 and block.get("type") == ClaudeConstants.CONTENT_TEXT
             ):
-                text_parts.append(block.get("text", ""))
+                text_parts.append(_strip_billing_header(block.get("text", "")))
         return "\n\n".join(text_parts)
 
     return ""
@@ -642,6 +735,14 @@ def _convert_tool_choice(tool_choice: Dict[str, Any]) -> Any:
 def _build_content_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Build Claude content blocks from OpenAI message."""
     content_blocks: List[Dict[str, Any]] = []
+
+    # Add reasoning/thinking content first (if present)
+    # OpenAI-compatible APIs like Grok use reasoning_content for extended thinking
+    reasoning_content = message.get("reasoning_content")
+    if reasoning_content:
+        content_blocks.append(
+            {"type": ClaudeConstants.CONTENT_THINKING, "thinking": reasoning_content}
+        )
 
     # Add text content
     text_content = message.get("content")

@@ -12,6 +12,9 @@ class ProviderConfig(BaseModel):
     api_key: str
     weight: int = Field(default=1, ge=1)
     model_mapping: Dict[str, str] = Field(default_factory=dict)
+    provider_type: str = Field(
+        default="openai", description="Provider type (openai, anthropic, etc.)"
+    )
 
 
 class RateLimitConfig(BaseModel):

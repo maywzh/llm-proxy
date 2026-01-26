@@ -113,6 +113,14 @@ pub struct ProviderConfig {
     /// Model name mappings (client model -> provider model)
     #[serde(default)]
     pub model_mapping: HashMap<String, String>,
+
+    /// Provider type (e.g., "openai", "azure", "anthropic")
+    #[serde(default = "default_provider_type")]
+    pub provider_type: String,
+}
+
+fn default_provider_type() -> String {
+    "openai".to_string()
 }
 
 /// Server-specific configuration.
@@ -342,4 +350,3 @@ mod tests {
         }
     }
 }
-
