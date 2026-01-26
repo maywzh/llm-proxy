@@ -13,6 +13,12 @@ from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
 
 from app.api.dependencies import verify_auth, get_provider_svc
+from app.core.jsonl_logger import (
+    log_request,
+    log_response,
+    log_provider_request,
+    log_provider_response,
+)
 from app.services.provider_service import ProviderService
 from app.services.langfuse_service import (
     get_langfuse_service,
@@ -210,7 +216,7 @@ async def _parse_request_body(
         generation_data.end_time = datetime.now(timezone.utc)
         if trace_id:
             langfuse_service.trace_generation(generation_data)
-        raise HTTPException(status_code=499, detail="Client closed request")
+        raise HTTPException(status_code=408, detail="Client closed request")
     except json.JSONDecodeError as e:
         logger.warning(f"Invalid JSON in request body: {str(e)}")
         generation_data.is_error = True
@@ -318,6 +324,7 @@ async def _handle_streaming_request(
     trace_id: Optional[str],
     langfuse_service: LangfuseService,
     endpoint: str,
+    request_id: str,
 ) -> Response:
     """Handle a streaming (SSE) completion request.
 
@@ -333,6 +340,7 @@ async def _handle_streaming_request(
         trace_id: Langfuse trace ID
         langfuse_service: The Langfuse service instance
         endpoint: The API endpoint being called
+        request_id: Request ID for JSONL logging
 
     Returns:
         A streaming Response object
@@ -344,6 +352,15 @@ async def _handle_streaming_request(
         "Content-Type": "application/json",
     }
     url = f"{provider.api_base}/{endpoint}"
+
+    # Log provider request to JSONL (consistent with Rust V1)
+    log_provider_request(
+        request_id=request_id,
+        provider=provider.name,
+        api_base=provider.api_base,
+        endpoint=f"/{endpoint}",
+        payload=data,
+    )
 
     # Use shared HTTP client for streaming
     client = get_http_client()
@@ -466,6 +483,7 @@ async def _handle_non_streaming_request(
     trace_id: Optional[str],
     langfuse_service: LangfuseService,
     endpoint: str,
+    request_id: str,
 ) -> Response:
     """Handle a non-streaming completion request.
 
@@ -480,6 +498,7 @@ async def _handle_non_streaming_request(
         trace_id: Langfuse trace ID
         langfuse_service: The Langfuse service instance
         endpoint: The API endpoint being called
+        request_id: Request ID for JSONL logging
 
     Returns:
         A JSON Response object
@@ -494,6 +513,15 @@ async def _handle_non_streaming_request(
     }
     url = f"{provider.api_base}/{endpoint}"
 
+    # Log provider request to JSONL (consistent with Rust V1)
+    log_provider_request(
+        request_id=request_id,
+        provider=provider.name,
+        api_base=provider.api_base,
+        endpoint=f"/{endpoint}",
+        payload=data,
+    )
+
     # Use shared HTTP client for non-streaming requests
     client = get_http_client()
     response = await client.post(url, json=data, headers=headers)
@@ -502,6 +530,15 @@ async def _handle_non_streaming_request(
     # Faithfully pass through the backend error
     if response.status_code >= 400:
         error_body = _parse_non_stream_error(response)
+
+        # Log provider error response to JSONL
+        log_provider_response(
+            request_id=request_id,
+            provider=provider.name,
+            status_code=response.status_code,
+            error_msg=error_body.get("error", {}).get("message") if isinstance(error_body.get("error"), dict) else error_body.get("error"),
+            body=error_body,
+        )
 
         logger.error(
             f"Backend API returned error status {response.status_code} "
@@ -538,6 +575,15 @@ async def _handle_non_streaming_request(
         )
 
     response_data = response.json()
+
+    # Log provider response to JSONL (consistent with Rust V1)
+    log_provider_response(
+        request_id=request_id,
+        provider=provider.name,
+        status_code=response.status_code,
+        error_msg=None,
+        body=response_data,
+    )
 
     # Log Gemini 3 response signatures for debugging (pass-through, no modification)
     log_gemini_response_signatures(response_data, provider.name)
@@ -708,6 +754,14 @@ async def proxy_completion_request(
         # Use effective_model for model_mapping lookup (supports wildcard patterns)
         data["model"] = provider.get_mapped_model(effective_model)
 
+    # Log client request to JSONL (consistent with Rust V1 and Python V2)
+    log_request(
+        request_id=request_id,
+        endpoint=f"/v1/{endpoint}",
+        provider=provider.name,
+        payload=data,
+    )
+
     try:
         # Set provider context for logging
         set_provider_context(provider.name)
@@ -725,6 +779,7 @@ async def proxy_completion_request(
                 trace_id,
                 langfuse_service,
                 endpoint,
+                request_id,
             )
         else:
             return await _handle_non_streaming_request(
@@ -736,6 +791,7 @@ async def proxy_completion_request(
                 trace_id,
                 langfuse_service,
                 endpoint,
+                request_id,
             )
 
     except HTTPException:

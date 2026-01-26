@@ -9,7 +9,12 @@ use crate::api::streaming::{
 };
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
-use crate::core::langfuse::{get_langfuse_service, GenerationData, extract_client_metadata, build_langfuse_tags};
+use crate::core::jsonl_logger::{
+    log_provider_request, log_provider_response, log_request, log_response,
+};
+use crate::core::langfuse::{
+    build_langfuse_tags, extract_client_metadata, get_langfuse_service, GenerationData,
+};
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
@@ -37,28 +42,35 @@ struct CachedProviderService {
 }
 
 /// Convert database credential to config credential
-fn convert_credential(c: &crate::core::database::CredentialEntity) -> crate::core::config::CredentialConfig {
+fn convert_credential(
+    c: &crate::core::database::CredentialEntity,
+) -> crate::core::config::CredentialConfig {
     crate::core::config::CredentialConfig {
         credential_key: c.credential_key.clone(),
         name: c.name.clone(),
         description: None,
-        rate_limit: c.rate_limit.map(|rps| crate::core::config::RateLimitConfig {
-            requests_per_second: rps as u32,
-            burst_size: (rps as u32).saturating_mul(2),
-        }),
+        rate_limit: c
+            .rate_limit
+            .map(|rps| crate::core::config::RateLimitConfig {
+                requests_per_second: rps as u32,
+                burst_size: (rps as u32).saturating_mul(2),
+            }),
         enabled: c.is_enabled,
         allowed_models: c.allowed_models.clone(),
     }
 }
 
 /// Convert database provider to config provider
-fn convert_provider(p: &crate::core::database::ProviderEntity) -> crate::core::config::ProviderConfig {
+fn convert_provider(
+    p: &crate::core::database::ProviderEntity,
+) -> crate::core::config::ProviderConfig {
     crate::core::config::ProviderConfig {
         name: p.provider_key.clone(),
         api_base: p.api_base.clone(),
         api_key: p.api_key.clone(),
         weight: p.weight as u32,
         model_mapping: p.model_mapping.0.clone(),
+        provider_type: p.provider_type.clone(),
     }
 }
 
@@ -160,6 +172,78 @@ fn log_gemini_request_signatures(payload: &serde_json::Value, provider_name: &st
 }
 
 // ============================================================================
+// Bedrock Claude Compatibility
+// ============================================================================
+
+/// Check if the model is a Bedrock Claude model.
+/// Bedrock Claude models have prefix "claude-" and suffix "-bedrock".
+pub fn is_bedrock_claude_model(model: &str) -> bool {
+    model.starts_with("claude-") && model.ends_with("-bedrock")
+}
+
+/// Check if messages contain tool_calls (OpenAI format) but no tools definition.
+/// This is used to detect when we need to inject a placeholder tool for Bedrock compatibility.
+fn messages_contain_tool_calls(payload: &serde_json::Value) -> bool {
+    payload
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|messages| {
+            messages.iter().any(|msg| {
+                msg.get("tool_calls")
+                    .and_then(|tc| tc.as_array())
+                    .map(|arr| !arr.is_empty())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Check if the payload already has tools defined.
+fn has_tools_defined(payload: &serde_json::Value) -> bool {
+    payload
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|arr| !arr.is_empty())
+        .unwrap_or(false)
+}
+
+/// Inject a placeholder tool for Bedrock Claude compatibility.
+/// This is needed when messages contain tool_calls but no tools definition.
+fn inject_placeholder_tool(payload: &mut serde_json::Value) {
+    let placeholder_tool = json!({
+        "type": "function",
+        "function": {
+            "name": "_placeholder_tool",
+            "description": "Placeholder tool for Bedrock compatibility",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    });
+
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("tools".to_string(), json!([placeholder_tool]));
+    }
+
+    tracing::debug!("Injected placeholder tool for Bedrock Claude compatibility");
+}
+
+/// Apply Bedrock Claude compatibility fix if needed.
+/// Injects a placeholder tool when:
+/// 1. The model is a Bedrock Claude model
+/// 2. Messages contain tool_calls
+/// 3. No tools are defined in the request
+pub fn apply_bedrock_compatibility(payload: &mut serde_json::Value, model: &str) {
+    if is_bedrock_claude_model(model)
+        && messages_contain_tool_calls(payload)
+        && !has_tools_defined(payload)
+    {
+        inject_placeholder_tool(payload);
+    }
+}
+
+// ============================================================================
 // AppState
 // ============================================================================
 
@@ -186,7 +270,10 @@ impl AppState {
         let (initial_version, initial_credentials) = match &dynamic_config {
             Some(dc) => {
                 let rc = dc.get_full();
-                (rc.version, rc.credentials.iter().map(convert_credential).collect())
+                (
+                    rc.version,
+                    rc.credentials.iter().map(convert_credential).collect(),
+                )
             }
             None => (0, config.credentials.clone()),
         };
@@ -207,9 +294,20 @@ impl AppState {
     }
 
     /// Rebuild cache from current DynamicConfig state
-    fn rebuild_cache(&self, runtime_config: &crate::core::database::RuntimeConfig) -> CachedProviderService {
-        let providers: Vec<_> = runtime_config.providers.iter().map(convert_provider).collect();
-        let credentials: Vec<_> = runtime_config.credentials.iter().map(convert_credential).collect();
+    fn rebuild_cache(
+        &self,
+        runtime_config: &crate::core::database::RuntimeConfig,
+    ) -> CachedProviderService {
+        let providers: Vec<_> = runtime_config
+            .providers
+            .iter()
+            .map(convert_provider)
+            .collect();
+        let credentials: Vec<_> = runtime_config
+            .credentials
+            .iter()
+            .map(convert_credential)
+            .collect();
 
         let app_config = crate::core::config::AppConfig {
             providers,
@@ -234,24 +332,24 @@ impl AppState {
     /// Returns Arc to avoid cloning on fast path.
     fn get_cached(&self) -> arc_swap::Guard<Arc<CachedProviderService>> {
         let cached = self.cached_service.load();
-        
+
         if let Some(ref dc) = self.dynamic_config {
             let runtime_config = dc.get_full();
             if cached.version != runtime_config.version {
                 // Version changed, rebuild cache
                 let new_cached = Arc::new(self.rebuild_cache(&runtime_config));
                 self.cached_service.store(new_cached);
-                
+
                 tracing::debug!(
                     old_version = cached.version,
                     new_version = runtime_config.version,
                     "ProviderService cache updated"
                 );
-                
+
                 return self.cached_service.load();
             }
         }
-        
+
         cached
     }
 
@@ -268,22 +366,29 @@ impl AppState {
 
 /// Verify API key authentication and check rate limits.
 ///
-/// Checks the Authorization header against configured credentials.
+/// Checks both x-api-key and Authorization headers against configured credentials.
+/// x-api-key takes precedence over Authorization: Bearer (consistent with Python).
 /// If a credential is found, also enforces rate limiting if configured.
 ///
 /// Returns the full CredentialConfig for the authenticated credential, or None if no auth required.
 fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<CredentialConfig>> {
-    // Extract the provided key from Authorization header
-    let provided_key = headers.get("authorization").and_then(|auth_header| {
-        auth_header
-            .to_str()
-            .ok()
-            .and_then(|auth_str| auth_str.strip_prefix("Bearer "))
-    });
+    // Extract the provided key from headers
+    // x-api-key takes precedence over Authorization: Bearer (consistent with Python/Claude API)
+    let provided_key = headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            headers.get("authorization").and_then(|auth_header| {
+                auth_header
+                    .to_str()
+                    .ok()
+                    .and_then(|auth_str| auth_str.strip_prefix("Bearer "))
+            })
+        });
 
     // Get credentials from DynamicConfig if available
     let credentials = state.get_credentials();
-    
+
     // Check if any authentication is required
     if credentials.is_empty() {
         return Ok(None);
@@ -298,7 +403,9 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<Credentia
     for credential_config in credentials {
         if credential_config.enabled && credential_config.credential_key == provided_key_hash {
             // Check rate limit for this credential using the hash
-            state.rate_limiter.check_rate_limit(&credential_config.credential_key)?;
+            state
+                .rate_limiter
+                .check_rate_limit(&credential_config.credential_key)?;
 
             tracing::debug!(
                 credential_name = %credential_config.name,
@@ -395,11 +502,7 @@ fn init_langfuse_trace(
     let user_agent = client_metadata.get("user_agent").cloned();
 
     // Build tags for Langfuse
-    let tags = build_langfuse_tags(
-        "/v1/chat/completions",
-        api_key_name,
-        user_agent.as_deref(),
-    );
+    let tags = build_langfuse_tags("/v1/chat/completions", api_key_name, user_agent.as_deref());
 
     // Initialize Langfuse tracing
     let langfuse = get_langfuse_service();
@@ -451,9 +554,9 @@ fn parse_request_body(
         .map(|m| m.to_string());
 
     // Strip provider suffix if configured (e.g., "Proxy/gpt-4" -> "gpt-4")
-    let effective_model = original_model.as_ref().map(|m| {
-        strip_provider_suffix(m, state.config.provider_suffix.as_deref())
-    });
+    let effective_model = original_model
+        .as_ref()
+        .map(|m| strip_provider_suffix(m, state.config.provider_suffix.as_deref()));
     let model_label = effective_model
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
@@ -465,7 +568,7 @@ fn parse_request_body(
         .and_then(|m| m.as_array())
         .map(|arr| arr.to_vec())
         .unwrap_or_default();
-    
+
     let is_stream = payload
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -492,13 +595,14 @@ fn parse_request_body(
     }
 
     // Calculate prompt tokens for fallback
-    let prompt_tokens_for_fallback = payload
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .map(|messages| {
-            let count_model = effective_model.as_deref().unwrap_or("gpt-3.5-turbo");
-            calculate_message_tokens(messages, count_model)
-        });
+    let prompt_tokens_for_fallback =
+        payload
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|messages| {
+                let count_model = effective_model.as_deref().unwrap_or("gpt-3.5-turbo");
+                calculate_message_tokens(messages, count_model)
+            });
 
     Ok(ParsedRequest {
         original_model,
@@ -528,7 +632,7 @@ fn select_provider(
     trace_id: &Option<String>,
 ) -> Result<SelectedProvider> {
     let provider_service = state.get_provider_service();
-    
+
     let provider = match provider_service.get_next_provider(effective_model) {
         Ok(p) => p,
         Err(err) => {
@@ -556,12 +660,7 @@ fn select_provider(
     if let Some(ref tid) = trace_id {
         let langfuse = get_langfuse_service();
         if let Ok(service) = langfuse.read() {
-            service.update_trace_provider(
-                tid,
-                &provider.name,
-                &provider.api_base,
-                model_label,
-            );
+            service.update_trace_provider(tid, &provider.name, &provider.api_base, model_label);
         };
     }
 
@@ -573,6 +672,7 @@ fn select_provider(
 /// Apply model mapping to the request payload.
 ///
 /// Updates the model field in the payload based on provider's model mapping.
+/// Also applies Bedrock Claude compatibility fix if needed.
 ///
 /// # Arguments
 /// * `payload` - Mutable reference to the JSON payload
@@ -585,6 +685,12 @@ fn apply_model_mapping(
     original_model: &Option<String>,
     effective_model: &Option<String>,
 ) {
+    // Apply Bedrock Claude compatibility fix BEFORE model mapping
+    // This uses the effective model name (before mapping to ARN or other provider-specific names)
+    if let Some(eff_model) = effective_model.as_ref() {
+        apply_bedrock_compatibility(payload, eff_model);
+    }
+
     if let Some(eff_model) = effective_model.as_ref() {
         let mapped = provider.get_mapped_model(eff_model);
         if mapped != *eff_model {
@@ -592,7 +698,7 @@ fn apply_model_mapping(
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert(
                     "model".to_string(),
-                    serde_json::Value::String(mapped),
+                    serde_json::Value::String(mapped.clone()),
                 );
             }
         } else if original_model.as_ref() != effective_model.as_ref() {
@@ -653,21 +759,19 @@ async fn handle_backend_error(
     trace_id: &Option<String>,
 ) -> Response {
     let error_body = match response.bytes().await {
-        Ok(bytes) => {
-            match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                Ok(body) => body,
-                Err(_) => {
-                    let text = String::from_utf8_lossy(&bytes).to_string();
-                    json!({
-                        "error": {
-                            "message": text,
-                            "type": "error",
-                            "code": status.as_u16()
-                        }
-                    })
-                }
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(body) => body,
+            Err(_) => {
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                json!({
+                    "error": {
+                        "message": text,
+                        "type": "error",
+                        "code": status.as_u16()
+                    }
+                })
             }
-        }
+        },
         Err(_) => json!({
             "error": {
                 "message": format!("HTTP {}", status),
@@ -693,7 +797,7 @@ async fn handle_backend_error(
     generation_data.is_error = true;
     generation_data.error_message = Some(error_message);
     generation_data.end_time = Some(Utc::now());
-    
+
     if trace_id.is_some() {
         let langfuse = get_langfuse_service();
         if let Ok(service) = langfuse.read() {
@@ -703,10 +807,14 @@ async fn handle_backend_error(
 
     // Build response with proper extensions
     let mut resp = Json(error_body).into_response();
-    *resp.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    resp.extensions_mut().insert(ModelName(model_label.to_string()));
-    resp.extensions_mut().insert(ProviderName(provider_name.to_string()));
-    resp.extensions_mut().insert(ApiKeyName(api_key_name.to_string()));
+    *resp.status_mut() =
+        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    resp.extensions_mut()
+        .insert(ModelName(model_label.to_string()));
+    resp.extensions_mut()
+        .insert(ProviderName(provider_name.to_string()));
+    resp.extensions_mut()
+        .insert(ApiKeyName(api_key_name.to_string()));
     resp
 }
 
@@ -723,6 +831,8 @@ async fn handle_backend_error(
 /// * `generation_data` - Generation data for Langfuse (consumed)
 /// * `trace_id` - Optional trace ID for Langfuse
 /// * `api_key_name` - API key name for error responses
+/// * `request_id` - Request ID for JSONL logging
+/// * `request_payload` - Request payload for JSONL logging
 #[allow(clippy::too_many_arguments)]
 async fn handle_streaming_response(
     response: reqwest::Response,
@@ -733,6 +843,8 @@ async fn handle_streaming_response(
     generation_data: GenerationData,
     trace_id: &Option<String>,
     api_key_name: &str,
+    request_id: String,
+    request_payload: serde_json::Value,
 ) -> Result<Response> {
     // Only pass generation_data if trace_id is Some (Langfuse enabled and sampled)
     let langfuse_data = if trace_id.is_some() {
@@ -740,7 +852,7 @@ async fn handle_streaming_response(
     } else {
         None
     };
-    
+
     match create_sse_stream(
         response,
         model_label.clone(),
@@ -748,6 +860,9 @@ async fn handle_streaming_response(
         prompt_tokens_for_fallback,
         ttft_timeout_secs,
         langfuse_data,
+        Some(request_id),
+        Some("/v1/chat/completions".to_string()),
+        Some(request_payload),
     )
     .await
     {
@@ -780,6 +895,9 @@ async fn handle_streaming_response(
 /// * `generation_data` - Mutable reference to generation data for Langfuse
 /// * `trace_id` - Optional trace ID for Langfuse
 /// * `api_key_name` - API key name for error responses
+/// * `request_id` - Request ID for JSONL logging
+/// * `request_payload` - Request payload for JSONL logging
+#[allow(clippy::too_many_arguments)]
 async fn handle_non_streaming_response(
     response: reqwest::Response,
     model_label: &str,
@@ -787,9 +905,17 @@ async fn handle_non_streaming_response(
     generation_data: &mut GenerationData,
     trace_id: &Option<String>,
     api_key_name: &str,
+    request_id: &str,
+    _request_payload: &serde_json::Value,
 ) -> Result<Response> {
+    let status = response.status();
+
     let response_data: serde_json::Value = match response.json().await {
-        Ok(data) => data,
+        Ok(data) => {
+            // Log provider response to JSONL (the raw response from provider)
+            log_provider_response(request_id, provider_name, status.as_u16(), None, &data);
+            data
+        }
         Err(e) => {
             tracing::error!(
                 provider = %provider_name,
@@ -819,11 +945,25 @@ async fn handle_non_streaming_response(
     // Capture output for Langfuse
     if let Some(choices) = response_data.get("choices").and_then(|c| c.as_array()) {
         if let Some(first_choice) = choices.first() {
-            generation_data.output_content = first_choice
+            // Extract content
+            let content = first_choice
                 .get("message")
                 .and_then(|m| m.get("content"))
                 .and_then(|c| c.as_str())
                 .map(|s| s.to_string());
+            // Extract reasoning_content (for OpenAI-compatible APIs like Grok)
+            let reasoning = first_choice
+                .get("message")
+                .and_then(|m| m.get("reasoning_content"))
+                .and_then(|r| r.as_str())
+                .map(|s| s.to_string());
+            // Combine content and reasoning for Langfuse output
+            generation_data.output_content = match (content, reasoning) {
+                (Some(c), Some(r)) => Some(format!("{}\n\n[Reasoning]\n{}", c, r)),
+                (Some(c), None) => Some(c),
+                (None, Some(r)) => Some(format!("[Reasoning]\n{}", r)),
+                (None, None) => None,
+            };
             generation_data.finish_reason = first_choice
                 .get("finish_reason")
                 .and_then(|r| r.as_str())
@@ -835,7 +975,7 @@ async fn handle_non_streaming_response(
     if let Some(usage_obj) = response_data.get("usage") {
         if let Ok(usage) = serde_json::from_value::<Usage>(usage_obj.clone()) {
             record_token_usage(&usage, model_label, provider_name);
-            
+
             // Capture usage for Langfuse
             generation_data.prompt_tokens = usage.prompt_tokens;
             generation_data.completion_tokens = usage.completion_tokens;
@@ -854,8 +994,8 @@ async fn handle_non_streaming_response(
 
     // Log response info: DEBUG shows summary, TRACE shows full response with size
     if tracing::enabled!(tracing::Level::DEBUG) {
-        let request_id = crate::core::logging::get_request_id();
-        let finish_reason = response_data.get("choices")
+        let finish_reason = response_data
+            .get("choices")
             .and_then(|c| c.as_array())
             .and_then(|arr| arr.first())
             .and_then(|choice| choice.get("finish_reason"))
@@ -884,6 +1024,9 @@ async fn handle_non_streaming_response(
     // Log Gemini 3 thought_signature presence in response (pass-through debugging)
     log_gemini_response_signatures(&response_data, provider_name);
 
+    // Log response to JSONL file (non-streaming)
+    log_response(request_id, status.as_u16(), None, &response_data);
+
     let rewritten = rewrite_model_in_response(response_data, model_label);
     Ok(Json(rewritten).into_response())
 }
@@ -904,7 +1047,7 @@ fn record_langfuse_error(
     generation_data.is_error = true;
     generation_data.error_message = Some(error_message.to_string());
     generation_data.end_time = Some(Utc::now());
-    
+
     if trace_id.is_some() {
         let langfuse = get_langfuse_service();
         if let Ok(service) = langfuse.read() {
@@ -929,7 +1072,9 @@ fn add_response_extensions(
     api_key_name: String,
 ) {
     response.extensions_mut().insert(ModelName(model_label));
-    response.extensions_mut().insert(ProviderName(provider_name));
+    response
+        .extensions_mut()
+        .insert(ProviderName(provider_name));
     response.extensions_mut().insert(ApiKeyName(api_key_name));
 }
 
@@ -1027,7 +1172,8 @@ pub async fn chat_completions(
             .scope(provider.name.clone(), async move {
                 // Log request info: DEBUG shows summary, TRACE shows full payload with size
                 if tracing::enabled!(tracing::Level::DEBUG) {
-                    let messages_count = payload.get("messages")
+                    let messages_count = payload
+                        .get("messages")
                         .and_then(|m| m.as_array())
                         .map(|arr| arr.len())
                         .unwrap_or(0);
@@ -1042,7 +1188,8 @@ pub async fn chat_completions(
                     );
 
                     if tracing::enabled!(tracing::Level::TRACE) {
-                        let payload_json = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                        let payload_json =
+                            serde_json::to_string_pretty(&payload).unwrap_or_default();
                         tracing::trace!(
                             request_id = %request_id,
                             payload_bytes = payload_json.len(),
@@ -1055,7 +1202,24 @@ pub async fn chat_completions(
                 // Log Gemini 3 thought_signature presence in request (pass-through debugging)
                 log_gemini_request_signatures(&payload, &provider.name);
 
+                // Log request immediately to JSONL
+                log_request(
+                    &request_id,
+                    "/v1/chat/completions",
+                    &provider.name,
+                    &payload,
+                );
+
                 let api_key_name = get_api_key_name();
+
+                // Log provider request to JSONL (the request sent to provider)
+                log_provider_request(
+                    &request_id,
+                    &provider.name,
+                    &provider.api_base,
+                    "/chat/completions",
+                    &payload,
+                );
 
                 // Send request to provider
                 let response = match send_provider_request(
@@ -1063,7 +1227,9 @@ pub async fn chat_completions(
                     &url,
                     &provider.api_key,
                     &payload,
-                ).await {
+                )
+                .await
+                {
                     Ok(resp) => resp,
                     Err(e) => {
                         tracing::error!(
@@ -1116,7 +1282,8 @@ pub async fn chat_completions(
                         &api_key_name,
                         &mut generation_data,
                         &trace_id,
-                    ).await);
+                    )
+                    .await);
                 }
 
                 // Handle successful response
@@ -1130,7 +1297,10 @@ pub async fn chat_completions(
                         generation_data,
                         &trace_id,
                         &api_key_name,
-                    ).await?
+                        request_id.clone(),
+                        payload.clone(),
+                    )
+                    .await?
                 } else {
                     handle_non_streaming_response(
                         response,
@@ -1139,7 +1309,10 @@ pub async fn chat_completions(
                         &mut generation_data,
                         &trace_id,
                         &api_key_name,
-                    ).await?
+                        &request_id,
+                        &payload,
+                    )
+                    .await?
                 };
 
                 // Add response extensions for middleware logging
@@ -1197,14 +1370,13 @@ pub async fn completions(
         let original_model = payload.get("model").and_then(|m| m.as_str());
 
         // Strip provider suffix if configured (e.g., "Proxy/gpt-4" -> "gpt-4")
-        let effective_model = original_model.map(|m| {
-            strip_provider_suffix(m, state.config.provider_suffix.as_deref())
-        });
+        let effective_model = original_model
+            .map(|m| strip_provider_suffix(m, state.config.provider_suffix.as_deref()));
         let model_label = effective_model.as_deref().unwrap_or("unknown").to_string();
 
         // Get fresh provider service from DynamicConfig
         let provider_service = state.get_provider_service();
-        
+
         let provider = match provider_service.get_next_provider(effective_model.as_deref()) {
             Ok(p) => p,
             Err(err) => {
@@ -1222,124 +1394,132 @@ pub async fn completions(
         // Execute request within provider context scope
         PROVIDER_CONTEXT
             .scope(provider.name.clone(), async move {
-                            tracing::debug!(
-                                request_id = %request_id,
-                                provider = %provider.name,
-                                "Processing completions request"
-                            );
+                tracing::debug!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    "Processing completions request"
+                );
 
-                            // Get api_key_name from context
-                            let api_key_name = get_api_key_name();
+                // Get api_key_name from context
+                let api_key_name = get_api_key_name();
 
-                            let response = match state.http_client
-                                .post(&url)
-                                .header("Authorization", format!("Bearer {}", provider.api_key))
-                                .header("Content-Type", "application/json")
-                                .json(&payload)
-                                .send()
-                                .await
-                            {
-                                Ok(resp) => resp,
-                                Err(e) => {
-                                    tracing::error!(
-                                        request_id = %request_id,
-                                        provider = %provider.name,
-                                        url = %url,
-                                        model = %model_label,
-                                        error = %e,
-                                        is_timeout = e.is_timeout(),
-                                        is_connect = e.is_connect(),
-                                        "HTTP request failed to provider"
-                                    );
-                                    let status = if e.is_timeout() {
-                                        StatusCode::GATEWAY_TIMEOUT
-                                    } else {
-                                        StatusCode::BAD_GATEWAY
-                                    };
-                                    return Ok(build_error_response(
-                                        status,
-                                        format!("Upstream request failed: {}", e),
-                                        &model_label,
-                                        &provider.name,
-                                        &api_key_name,
-                                    ));
-                                }
-                            };
+                let response = match state
+                    .http_client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", provider.api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&payload)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        tracing::error!(
+                            request_id = %request_id,
+                            provider = %provider.name,
+                            url = %url,
+                            model = %model_label,
+                            error = %e,
+                            is_timeout = e.is_timeout(),
+                            is_connect = e.is_connect(),
+                            "HTTP request failed to provider"
+                        );
+                        let status = if e.is_timeout() {
+                            StatusCode::GATEWAY_TIMEOUT
+                        } else {
+                            StatusCode::BAD_GATEWAY
+                        };
+                        return Ok(build_error_response(
+                            status,
+                            format!("Upstream request failed: {}", e),
+                            &model_label,
+                            &provider.name,
+                            &api_key_name,
+                        ));
+                    }
+                };
 
-                            let status = response.status();
-                            tracing::debug!(
-                                request_id = %request_id,
-                                provider = %provider.name,
-                                url = %url,
-                                status = %status,
-                                method = "POST",
-                                "HTTP request completed"
-                            );
+                let status = response.status();
+                tracing::debug!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    url = %url,
+                    status = %status,
+                    method = "POST",
+                    "HTTP request completed"
+                );
 
-                            // Check if backend API returned an error status code
-                            // Faithfully pass through the backend error
-                            if status.is_client_error() || status.is_server_error() {
-                                let error_body = match response.bytes().await {
-                                    Ok(bytes) => {
-                                        // Try to parse as JSON first
-                                        match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                                            Ok(body) => body,
-                                            Err(_) => {
-                                                // If can't parse as JSON, create error object with text
-                                                let text = String::from_utf8_lossy(&bytes).to_string();
-                                                json!({
-                                                    "error": {
-                                                        "message": text,
-                                                        "type": "error",
-                                                        "code": status.as_u16()
-                                                    }
-                                                })
-                                            }
-                                        }
-                                    }
-                                    Err(_) => json!({
+                // Check if backend API returned an error status code
+                // Faithfully pass through the backend error
+                if status.is_client_error() || status.is_server_error() {
+                    let error_body = match response.bytes().await {
+                        Ok(bytes) => {
+                            // Try to parse as JSON first
+                            match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                Ok(body) => body,
+                                Err(_) => {
+                                    // If can't parse as JSON, create error object with text
+                                    let text = String::from_utf8_lossy(&bytes).to_string();
+                                    json!({
                                         "error": {
-                                            "message": format!("HTTP {}", status),
+                                            "message": text,
                                             "type": "error",
                                             "code": status.as_u16()
                                         }
-                                    }),
-                                };
-
-                                tracing::error!(
-                                    request_id = %request_id,
-                                    provider = %provider.name,
-                                    status = %status,
-                                    "Backend API returned error status"
-                                );
-
-                                // Faithfully return the backend's status code and error body
-                                let mut response = Json(error_body).into_response();
-                                *response.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                                response.extensions_mut().insert(ModelName(model_label.clone()));
-                                response.extensions_mut().insert(ProviderName(provider.name.clone()));
-                                response.extensions_mut().insert(ApiKeyName(api_key_name.clone()));
-                                return Ok(response);
-                            }
-
-                            let response_data: serde_json::Value = match response.json().await {
-                                Ok(data) => data,
-                                Err(e) => {
-                                    tracing::error!(
-                                        request_id = %request_id,
-                                        provider = %provider.name,
-                                        error = %e,
-                                        "Failed to parse provider response JSON"
-                                    );
-                                    return Ok(build_error_response(
-                                        StatusCode::BAD_GATEWAY,
-                                        format!("Invalid JSON from provider: {}", e),
-                                        &model_label,
-                                        &provider.name,
-                                        &api_key_name,
-                                    ));
+                                    })
                                 }
-                            };
+                            }
+                        }
+                        Err(_) => json!({
+                            "error": {
+                                "message": format!("HTTP {}", status),
+                                "type": "error",
+                                "code": status.as_u16()
+                            }
+                        }),
+                    };
+
+                    tracing::error!(
+                        request_id = %request_id,
+                        provider = %provider.name,
+                        status = %status,
+                        "Backend API returned error status"
+                    );
+
+                    // Faithfully return the backend's status code and error body
+                    let mut response = Json(error_body).into_response();
+                    *response.status_mut() = StatusCode::from_u16(status.as_u16())
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                    response
+                        .extensions_mut()
+                        .insert(ModelName(model_label.clone()));
+                    response
+                        .extensions_mut()
+                        .insert(ProviderName(provider.name.clone()));
+                    response
+                        .extensions_mut()
+                        .insert(ApiKeyName(api_key_name.clone()));
+                    return Ok(response);
+                }
+
+                let response_data: serde_json::Value = match response.json().await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        tracing::error!(
+                            request_id = %request_id,
+                            provider = %provider.name,
+                            error = %e,
+                            "Failed to parse provider response JSON"
+                        );
+                        return Ok(build_error_response(
+                            StatusCode::BAD_GATEWAY,
+                            format!("Invalid JSON from provider: {}", e),
+                            &model_label,
+                            &provider.name,
+                            &api_key_name,
+                        ));
+                    }
+                };
                 let mut final_response = Json(response_data).into_response();
 
                 // Add model, provider, and api_key_name info to response extensions for middleware logging
@@ -1394,7 +1574,7 @@ pub async fn list_models(
             // Get fresh provider service from DynamicConfig
             let provider_service = state.get_provider_service();
             let all_models = provider_service.get_all_models();
-            
+
             // Filter models based on allowed_models if configured
             let filtered_models: HashSet<String> = if let Some(ref config) = key_config {
                 if !config.allowed_models.is_empty() {
@@ -1413,10 +1593,14 @@ pub async fn list_models(
             let mut model_list: Vec<ModelInfo> = filtered_models
                 .into_iter()
                 .map(|model| ModelInfo {
-                    id: model,
+                    id: model.clone(),
                     object: "model".to_string(),
                     created: 1677610602,
                     owned_by: "system".to_string(),
+                    // OpenAI compatibility fields
+                    permission: vec![],
+                    root: model,
+                    parent: None,
                 })
                 .collect();
 
@@ -1528,19 +1712,13 @@ mod tests {
     #[test]
     fn test_strip_provider_suffix_with_matching_prefix() {
         // When provider_suffix is "Proxy", "Proxy/gpt-4" should become "gpt-4"
-        assert_eq!(
-            strip_provider_suffix("Proxy/gpt-4", Some("Proxy")),
-            "gpt-4"
-        );
+        assert_eq!(strip_provider_suffix("Proxy/gpt-4", Some("Proxy")), "gpt-4");
     }
 
     #[test]
     fn test_strip_provider_suffix_without_prefix() {
         // When model doesn't have the prefix, it should remain unchanged
-        assert_eq!(
-            strip_provider_suffix("gpt-4", Some("Proxy")),
-            "gpt-4"
-        );
+        assert_eq!(strip_provider_suffix("gpt-4", Some("Proxy")), "gpt-4");
     }
 
     #[test]
@@ -1555,10 +1733,7 @@ mod tests {
     #[test]
     fn test_strip_provider_suffix_no_suffix_configured() {
         // When no provider_suffix is configured, model should remain unchanged
-        assert_eq!(
-            strip_provider_suffix("Proxy/gpt-4", None),
-            "Proxy/gpt-4"
-        );
+        assert_eq!(strip_provider_suffix("Proxy/gpt-4", None), "Proxy/gpt-4");
     }
 
     #[test]
@@ -1613,5 +1788,238 @@ mod tests {
             "Proxygpt-4"
         );
     }
-}
 
+    // ========================================================================
+    // Bedrock Claude Compatibility Tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_bedrock_claude_model() {
+        // Valid Bedrock Claude models
+        assert!(is_bedrock_claude_model("claude-3-opus-bedrock"));
+        assert!(is_bedrock_claude_model("claude-3-sonnet-bedrock"));
+        assert!(is_bedrock_claude_model("claude-4.5-opus-bedrock"));
+        assert!(is_bedrock_claude_model("claude-instant-bedrock"));
+
+        // Non-Bedrock models
+        assert!(!is_bedrock_claude_model("claude-3-opus"));
+        assert!(!is_bedrock_claude_model("gpt-4"));
+        assert!(!is_bedrock_claude_model("bedrock-claude-3-opus")); // Wrong prefix
+        assert!(!is_bedrock_claude_model("claude-3-opus-azure")); // Wrong suffix
+    }
+
+    #[test]
+    fn test_messages_contain_tool_calls_with_tool_calls() {
+        let payload = json!({
+            "model": "claude-3-opus-bedrock",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{\"location\": \"NYC\"}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+        assert!(messages_contain_tool_calls(&payload));
+    }
+
+    #[test]
+    fn test_messages_contain_tool_calls_without_tool_calls() {
+        let payload = json!({
+            "model": "claude-3-opus-bedrock",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"}
+            ]
+        });
+        assert!(!messages_contain_tool_calls(&payload));
+    }
+
+    #[test]
+    fn test_messages_contain_tool_calls_empty_tool_calls() {
+        let payload = json!({
+            "model": "claude-3-opus-bedrock",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "content": "Hi",
+                    "tool_calls": []
+                }
+            ]
+        });
+        assert!(!messages_contain_tool_calls(&payload));
+    }
+
+    #[test]
+    fn test_has_tools_defined_with_tools() {
+        let payload = json!({
+            "model": "claude-3-opus-bedrock",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                }
+            ]
+        });
+        assert!(has_tools_defined(&payload));
+    }
+
+    #[test]
+    fn test_has_tools_defined_without_tools() {
+        let payload = json!({
+            "model": "claude-3-opus-bedrock",
+            "messages": [{"role": "user", "content": "Hello"}]
+        });
+        assert!(!has_tools_defined(&payload));
+    }
+
+    #[test]
+    fn test_has_tools_defined_empty_tools() {
+        let payload = json!({
+            "model": "claude-3-opus-bedrock",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": []
+        });
+        assert!(!has_tools_defined(&payload));
+    }
+
+    #[test]
+    fn test_apply_bedrock_compatibility_injects_placeholder() {
+        let mut payload = json!({
+            "model": "claude-3-opus-bedrock",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+
+        apply_bedrock_compatibility(&mut payload, "claude-3-opus-bedrock");
+
+        // Should have tools injected
+        assert!(payload.get("tools").is_some());
+        let tools = payload.get("tools").unwrap().as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0]["function"]["name"].as_str().unwrap(),
+            "_placeholder_tool"
+        );
+    }
+
+    #[test]
+    fn test_apply_bedrock_compatibility_no_injection_for_non_bedrock() {
+        let mut payload = json!({
+            "model": "claude-3-opus",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        });
+
+        apply_bedrock_compatibility(&mut payload, "claude-3-opus");
+
+        // Should NOT have tools injected (not a Bedrock model)
+        assert!(payload.get("tools").is_none());
+    }
+
+    #[test]
+    fn test_apply_bedrock_compatibility_no_injection_with_existing_tools() {
+        let mut payload = json!({
+            "model": "claude-3-opus-bedrock",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object", "properties": {}}
+                    }
+                }
+            ]
+        });
+
+        apply_bedrock_compatibility(&mut payload, "claude-3-opus-bedrock");
+
+        // Should still have original tools (not replaced)
+        let tools = payload.get("tools").unwrap().as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            tools[0]["function"]["name"].as_str().unwrap(),
+            "get_weather"
+        );
+    }
+
+    #[test]
+    fn test_apply_bedrock_compatibility_no_injection_without_tool_calls() {
+        let mut payload = json!({
+            "model": "claude-3-opus-bedrock",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"}
+            ]
+        });
+
+        apply_bedrock_compatibility(&mut payload, "claude-3-opus-bedrock");
+
+        // Should NOT have tools injected (no tool_calls in messages)
+        assert!(payload.get("tools").is_none());
+    }
+}

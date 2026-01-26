@@ -33,15 +33,16 @@
 pub mod api;
 pub mod core;
 pub mod services;
+pub mod transformer;
 
 // Re-export commonly used types for convenience
 pub use api::{
-    admin_router, combined_openapi, claude_count_tokens, claude_create_message, AdminApiDoc,
+    admin_router, claude_count_tokens, claude_create_message, combined_openapi, AdminApiDoc,
     AdminState, AppState, ChatCompletionRequest, ChatCompletionResponse, ClaudeMessagesRequest,
     ClaudeResponse, V1ApiDoc,
 };
 pub use core::{
-    admin_logging_middleware, AppConfig, AppError, Database, DatabaseConfig, DynamicConfig,
-    Result, RuntimeConfig,
+    admin_logging_middleware, AppConfig, AppError, Database, DatabaseConfig, DynamicConfig, Result,
+    RuntimeConfig,
 };
 pub use services::{claude_to_openai_request, openai_to_claude_response, ProviderService};

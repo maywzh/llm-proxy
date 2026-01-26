@@ -254,9 +254,10 @@ fn test_openai_to_claude_with_tool_calls() {
     assert!(claude_response.content.len() >= 1);
 
     // Check for tool use content block
-    let has_tool_use = claude_response.content.iter().any(|block| {
-        matches!(block, ClaudeContentBlock::ToolUse(_))
-    });
+    let has_tool_use = claude_response
+        .content
+        .iter()
+        .any(|block| matches!(block, ClaudeContentBlock::ToolUse(_)));
     assert!(has_tool_use);
 }
 
@@ -354,8 +355,7 @@ fn test_claude_message_content_serialization() {
     assert_eq!(json, "\"Hello\"");
 
     // Test blocks content
-    let blocks_content =
-        ClaudeMessageContent::Blocks(vec![ClaudeContentBlock::text("Hello")]);
+    let blocks_content = ClaudeMessageContent::Blocks(vec![ClaudeContentBlock::text("Hello")]);
     let json = serde_json::to_string(&blocks_content).unwrap();
     assert!(json.contains("\"type\":\"text\""));
 }
@@ -629,10 +629,7 @@ fn test_langfuse_model_parameters_capture() {
     assert_eq!(model_parameters.get("temperature"), Some(&json!(0.8)));
     assert_eq!(model_parameters.get("max_tokens"), Some(&json!(2048)));
     assert_eq!(model_parameters.get("top_p"), Some(&json!(0.95)));
-    assert_eq!(
-        model_parameters.get("stop"),
-        Some(&json!(["STOP", "END"]))
-    );
+    assert_eq!(model_parameters.get("stop"), Some(&json!(["STOP", "END"])));
 }
 
 #[test]

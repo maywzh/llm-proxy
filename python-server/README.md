@@ -29,6 +29,8 @@ High-performance LLM API proxy service built with FastAPI, supporting weighted l
 - ✅ **Weighted Load Balancing** - Intelligent weighted round-robin algorithm for request distribution
 - ✅ **Streaming Responses** - Complete SSE streaming response support
 - ✅ **OpenAI Compatible** - 100% compatible with OpenAI API format
+- ✅ **Cross-Protocol Transformation** - Accept requests in any protocol (OpenAI, Anthropic, Response API) and route to any provider
+- ✅ **V2 API Endpoints** - New endpoints with full cross-protocol support
 - ✅ **Model Mapping** - Flexible model name transformation and routing
 - ✅ **Prometheus Monitoring** - Complete metrics collection and export
 - ✅ **Grafana Visualization** - Pre-configured dashboards and alerts
@@ -41,6 +43,7 @@ High-performance LLM API proxy service built with FastAPI, supporting weighted l
 - ✅ **Dynamic Configuration** - PostgreSQL-based hot-reload configuration
 - ✅ **Async Processing** - Full async architecture with FastAPI + httpx
 - ✅ **Langfuse Integration** - Optional LLM observability and tracing
+- ✅ **JSONL Logging** - Optional async JSONL file logging for debugging
 
 ## 🔧 Tech Stack
 
@@ -237,13 +240,68 @@ curl http://localhost:18000/health/detailed
 
 ### Supported Endpoints
 
+**V1 API (Legacy)**
 - `/v1/chat/completions` - Chat completions API
 - `/v1/completions` - Legacy completions API
 - `/v1/models` - List all available models
+
+**V2 API (Cross-Protocol Support)**
+- `/v2/chat/completions` - OpenAI-compatible with cross-protocol transformation
+- `/v2/messages` - Anthropic-compatible with cross-protocol transformation
+- `/v2/responses` - Response API with cross-protocol transformation
+
+**Other Endpoints**
 - `/health` - Basic health check
 - `/health/detailed` - Detailed health check (tests all providers)
 - `/metrics` - Prometheus metrics endpoint
 - `/docs` - OpenAPI documentation
+
+### V2 API: Cross-Protocol Transformation
+
+The V2 API endpoints support cross-protocol transformation, allowing you to send requests in any supported format and route them to any provider:
+
+```bash
+# Send OpenAI request to Anthropic provider
+curl http://localhost:18000/v2/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $YOUR_CREDENTIAL_KEY" \
+  -d '{
+    "model": "claude-3-opus",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Send Anthropic request to OpenAI provider
+curl http://localhost:18000/v2/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $YOUR_CREDENTIAL_KEY" \
+  -d '{
+    "model": "gpt-4",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Send Response API request to any provider
+curl http://localhost:18000/v2/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $YOUR_CREDENTIAL_KEY" \
+  -d '{
+    "model": "gpt-4",
+    "instructions": "You are a helpful assistant.",
+    "input": "Hello!",
+    "max_output_tokens": 1000
+  }'
+```
+
+**How It Works:**
+1. The proxy detects the client protocol from the request format
+2. Transforms the request to the provider's native protocol
+3. Forwards the request to the selected provider
+4. Transforms the response back to the client's expected format
+
+**Performance:**
+- Same-protocol requests use bypass optimization (minimal overhead)
+- Cross-protocol requests use the full transformation pipeline
+- Metrics track bypass vs. cross-protocol usage
 
 ## 🔑 Admin API
 
@@ -418,7 +476,90 @@ Traces will appear in your Langfuse dashboard with:
 - Timing metrics (duration, TTFT for streaming)
 - Error details (if request failed)
 
-## 📊 Monitoring
+## 📝 JSONL Logging
+
+LLM Proxy supports optional JSONL file logging for debugging and analysis. Requests and responses are logged as separate JSONL lines, linked by `request_id`.
+
+### Features
+
+- **Async Logging**: Non-blocking buffered writes with periodic flushing
+- **Separate Records**: Client requests, provider requests, and responses logged separately
+- **Streaming Support**: Captures full chunk sequences for streaming responses
+- **Linked Records**: All records share the same `request_id` for correlation
+
+### Configuration
+
+Set the following environment variables to enable JSONL logging:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `JSONL_LOG_ENABLED` | Enable JSONL logging | `false` |
+| `JSONL_LOG_PATH` | Path to JSONL log file | `./logs/requests.jsonl` |
+| `JSONL_LOG_BUFFER_SIZE` | Queue buffer size | `1000` |
+
+### Enabling JSONL Logging
+
+```bash
+export JSONL_LOG_ENABLED=true
+export JSONL_LOG_PATH=./logs/requests.jsonl
+export JSONL_LOG_BUFFER_SIZE=1000
+```
+
+### Log Record Types
+
+Each JSONL line contains one of these record types:
+
+1. **`request`** - Client request received
+   ```json
+   {
+     "type": "request",
+     "timestamp": "2026-01-23T19:30:00.000Z",
+     "request_id": "req-123",
+     "endpoint": "/v2/chat/completions",
+     "provider": "openai-main",
+     "payload": {...}
+   }
+   ```
+
+2. **`provider_request`** - Request sent to provider
+   ```json
+   {
+     "type": "provider_request",
+     "timestamp": "2026-01-23T19:30:00.100Z",
+     "request_id": "req-123",
+     "provider": "openai-main",
+     "api_base": "https://api.openai.com/v1",
+     "endpoint": "/chat/completions",
+     "payload": {...}
+   }
+   ```
+
+3. **`provider_response`** - Response from provider
+   ```json
+   {
+     "type": "provider_response",
+     "timestamp": "2026-01-23T19:30:01.000Z",
+     "request_id": "req-123",
+     "provider": "openai-main",
+     "status_code": 200,
+     "body": {...}
+   }
+   ```
+
+4. **`response`** - Response sent to client
+   ```json
+   {
+     "type": "response",
+     "timestamp": "2026-01-23T19:30:01.100Z",
+     "request_id": "req-123",
+     "status_code": 200,
+     "body": {...}
+   }
+   ```
+
+For streaming responses, `body` is replaced with `chunk_sequence` containing all SSE chunks.
+
+## � Monitoring
 
 ### Prometheus Metrics
 

@@ -4,17 +4,31 @@
 //! and OpenAI API format for request/response handling.
 
 use crate::api::claude_models::{
-    constants, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockToolUse,
-    ClaudeMessage, ClaudeMessageContent, ClaudeMessagesRequest, ClaudeResponse,
-    ClaudeSystemPrompt, ClaudeTool, ClaudeUsage,
+    constants, ClaudeContentBlock, ClaudeContentBlockText, ClaudeContentBlockThinking,
+    ClaudeContentBlockToolUse, ClaudeMessage, ClaudeMessageContent, ClaudeMessagesRequest,
+    ClaudeResponse, ClaudeSystemPrompt, ClaudeTool, ClaudeUsage,
 };
 use crate::api::models::get_mapped_model;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
+use lazy_static::lazy_static;
+use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
 use uuid::Uuid;
+
+lazy_static! {
+    /// Regex pattern to strip x-anthropic-billing-header prefix from system text.
+    /// Matches "x-anthropic-billing-header: " at the start of a line and removes it.
+    static ref BILLING_HEADER_REGEX: Regex =
+        Regex::new(r"^x-anthropic-billing-header:\s*").unwrap();
+}
+
+/// Strip x-anthropic-billing-header prefix from text if present.
+fn strip_billing_header(text: &str) -> String {
+    BILLING_HEADER_REGEX.replace(text, "").to_string()
+}
 
 // ============================================================================
 // Request Conversion: Claude -> OpenAI
@@ -207,6 +221,9 @@ pub fn openai_to_claude_response(
 // ============================================================================
 
 /// State for streaming conversion.
+///
+/// Uses on-demand synthesis pattern (V2 style): events are synthesized
+/// only when needed, rather than pre-generated unconditionally.
 #[allow(dead_code)]
 struct StreamingState {
     message_id: String,
@@ -216,6 +233,16 @@ struct StreamingState {
     current_tool_calls: HashMap<i32, ToolCallState>,
     final_stop_reason: String,
     usage_data: ClaudeUsage,
+    /// Whether thinking block has been started (for reasoning_content)
+    thinking_block_started: bool,
+    /// Index for thinking block (0 if present, text starts at 1)
+    thinking_block_index: i32,
+    /// Whether message_start event has been emitted (on-demand synthesis)
+    message_started: bool,
+    /// Whether ping event has been emitted (on-demand synthesis)
+    ping_emitted: bool,
+    /// Whether text content_block_start has been emitted (on-demand synthesis)
+    text_block_started: bool,
 }
 
 /// State for tracking tool calls during streaming.
@@ -253,58 +280,38 @@ pub fn convert_openai_streaming_to_claude(
         current_tool_calls: HashMap::new(),
         final_stop_reason: constants::STOP_END_TURN.to_string(),
         usage_data: ClaudeUsage::default(),
+        thinking_block_started: false,
+        thinking_block_index: -1, // Will be set to 0 when thinking starts
+        // On-demand synthesis: start with nothing emitted
+        message_started: false,
+        ping_emitted: false,
+        text_block_started: false,
     };
 
-    // Create initial events
-    let initial_events = vec![
-        // message_start event
-        format_sse_event(
-            constants::EVENT_MESSAGE_START,
-            &json!({
-                "type": constants::EVENT_MESSAGE_START,
-                "message": {
-                    "id": message_id,
-                    "type": "message",
-                    "role": constants::ROLE_ASSISTANT,
-                    "model": original_model,
-                    "content": [],
-                    "stop_reason": null,
-                    "stop_sequence": null,
-                    "usage": {"input_tokens": 0, "output_tokens": 0}
-                }
-            }),
-        ),
-        // content_block_start event
-        format_sse_event(
-            constants::EVENT_CONTENT_BLOCK_START,
-            &json!({
-                "type": constants::EVENT_CONTENT_BLOCK_START,
-                "index": 0,
-                "content_block": {"type": constants::CONTENT_TEXT, "text": ""}
-            }),
-        ),
-        // ping event
-        format_sse_event(
-            constants::EVENT_PING,
-            &json!({"type": constants::EVENT_PING}),
-        ),
-    ];
+    // No pre-generated events - use on-demand synthesis pattern (V2 style)
+    // Events will be synthesized when first content delta arrives
 
     // Create the stream
-    // State tuple: (stream, state, pending_events, initial_sent, stream_done, sse_buffer)
+    // State tuple: (stream, state, pending_events, stream_done, sse_buffer)
     // stream_done: true when [DONE] received or stream ended - no more polling
     let stream = futures::stream::unfold(
-        (openai_stream, state, initial_events, false, false, String::new()),
-        |(mut stream, mut state, mut pending_events, mut initial_sent, mut stream_done, mut sse_buffer)| async move {
-            // First, send pending events (initial events or queued final events)
+        (
+            openai_stream,
+            state,
+            Vec::<String>::new(), // pending_events - starts empty
+            false,                // stream_done
+            String::new(),        // sse_buffer
+        ),
+        |(mut stream, mut state, mut pending_events, mut stream_done, mut sse_buffer)| async move {
+            // First, send pending events (synthesized events or queued final events)
             if !pending_events.is_empty() {
                 let event = pending_events.remove(0);
-                if !initial_sent && pending_events.is_empty() {
-                    initial_sent = true;
-                }
-                return Some((event, (stream, state, pending_events, initial_sent, stream_done, sse_buffer)));
+                return Some((
+                    event,
+                    (stream, state, pending_events, stream_done, sse_buffer),
+                ));
             }
-            
+
             // If stream is done and no more pending events, terminate immediately
             if stream_done {
                 return None;
@@ -316,14 +323,14 @@ pub fn convert_openai_streaming_to_claude(
                 while let Some(event_end) = sse_buffer.find("\n\n") {
                     let event_str = sse_buffer[..event_end].to_string();
                     sse_buffer = sse_buffer[event_end + 2..].to_string();
-                    
+
                     // Process each line in the event
                     for line in event_str.lines() {
                         let line = line.trim();
                         if line.is_empty() || line.starts_with(':') {
                             continue;
                         }
-                        
+
                         if let Some(chunk_data) = line.strip_prefix("data: ") {
                             if chunk_data.trim() == "[DONE]" {
                                 // Stream is done - generate final events and mark as done
@@ -335,7 +342,7 @@ pub fn convert_openai_streaming_to_claude(
                                         let remaining: Vec<String> = events_iter.collect();
                                         return Some((
                                             first_event,
-                                            (stream, state, remaining, initial_sent, stream_done, sse_buffer),
+                                            (stream, state, remaining, stream_done, sse_buffer),
                                         ));
                                     }
                                 }
@@ -349,14 +356,16 @@ pub fn convert_openai_streaming_to_claude(
                                         state.usage_data = extract_usage_data(usage);
                                     }
 
-                                    let choices = chunk_json.get("choices").and_then(|c| c.as_array());
+                                    let choices =
+                                        chunk_json.get("choices").and_then(|c| c.as_array());
                                     if choices.is_none() || choices.unwrap().is_empty() {
                                         continue;
                                     }
 
                                     let choice = &choices.unwrap()[0];
                                     let delta = choice.get("delta");
-                                    let finish_reason = choice.get("finish_reason").and_then(|r| r.as_str());
+                                    let finish_reason =
+                                        choice.get("finish_reason").and_then(|r| r.as_str());
 
                                     // Handle finish reason first (may come before or with delta)
                                     if let Some(reason) = finish_reason {
@@ -365,9 +374,127 @@ pub fn convert_openai_streaming_to_claude(
 
                                     // Handle text delta
                                     if let Some(delta) = delta {
-                                        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                        // On-demand synthesis: emit message_start + ping on first content
+                                        // This matches V2 pattern - only synthesize when actually needed
+                                        let has_content = delta.get("content").is_some()
+                                            || delta.get("reasoning_content").is_some()
+                                            || delta.get("tool_calls").is_some();
+
+                                        if has_content && !state.message_started {
+                                            let mut init_events = Vec::new();
+
+                                            // Synthesize message_start
+                                            init_events.push(format_sse_event(
+                                                constants::EVENT_MESSAGE_START,
+                                                &json!({
+                                                    "type": constants::EVENT_MESSAGE_START,
+                                                    "message": {
+                                                        "id": state.message_id,
+                                                        "type": "message",
+                                                        "role": constants::ROLE_ASSISTANT,
+                                                        "model": state.original_model,
+                                                        "content": [],
+                                                        "stop_reason": null,
+                                                        "stop_sequence": null,
+                                                        "usage": {"input_tokens": 0, "output_tokens": 0}
+                                                    }
+                                                }),
+                                            ));
+
+                                            // Synthesize ping after message_start
+                                            if !state.ping_emitted {
+                                                init_events.push(format_sse_event(
+                                                    constants::EVENT_PING,
+                                                    &json!({"type": constants::EVENT_PING}),
+                                                ));
+                                                state.ping_emitted = true;
+                                            }
+
+                                            state.message_started = true;
+
+                                            // Queue these events and continue to process the delta
+                                            pending_events.extend(init_events);
+                                        }
+
+                                        // Handle reasoning_content delta (for extended thinking)
+                                        if let Some(reasoning) =
+                                            delta.get("reasoning_content").and_then(|r| r.as_str())
+                                        {
+                                            let mut events_to_send = Vec::new();
+
+                                            // Start thinking block if not yet started
+                                            if !state.thinking_block_started {
+                                                state.thinking_block_started = true;
+                                                state.thinking_block_index = 0;
+                                                // Shift text block index to 1 since thinking is at 0
+                                                state.text_block_index = 1;
+
+                                                // Emit content_block_start for thinking
+                                                events_to_send.push(format_sse_event(
+                                                    constants::EVENT_CONTENT_BLOCK_START,
+                                                    &json!({
+                                                        "type": constants::EVENT_CONTENT_BLOCK_START,
+                                                        "index": 0,
+                                                        "content_block": {
+                                                            "type": constants::CONTENT_THINKING,
+                                                            "thinking": ""
+                                                        }
+                                                    }),
+                                                ));
+                                            }
+
+                                            // Emit thinking delta
+                                            events_to_send.push(format_sse_event(
+                                                constants::EVENT_CONTENT_BLOCK_DELTA,
+                                                &json!({
+                                                    "type": constants::EVENT_CONTENT_BLOCK_DELTA,
+                                                    "index": state.thinking_block_index,
+                                                    "delta": {
+                                                        "type": "thinking_delta",
+                                                        "thinking": reasoning
+                                                    }
+                                                }),
+                                            ));
+
+                                            if !events_to_send.is_empty() {
+                                                let mut events_iter = events_to_send.into_iter();
+                                                if let Some(first_event) = events_iter.next() {
+                                                    let remaining: Vec<String> =
+                                                        events_iter.collect();
+                                                    let mut new_pending = pending_events;
+                                                    new_pending.extend(remaining);
+                                                    return Some((
+                                                        first_event,
+                                                        (
+                                                            stream,
+                                                            state,
+                                                            new_pending,
+                                                            stream_done,
+                                                            sse_buffer,
+                                                        ),
+                                                    ));
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(content) =
+                                            delta.get("content").and_then(|c| c.as_str())
+                                        {
+                                            // On-demand synthesis: emit content_block_start for text if not yet emitted
+                                            if !state.text_block_started {
+                                                pending_events.push(format_sse_event(
+                                                    constants::EVENT_CONTENT_BLOCK_START,
+                                                    &json!({
+                                                        "type": constants::EVENT_CONTENT_BLOCK_START,
+                                                        "index": state.text_block_index,
+                                                        "content_block": {"type": constants::CONTENT_TEXT, "text": ""}
+                                                    }),
+                                                ));
+                                                state.text_block_started = true;
+                                            }
+
                                             // Send text delta even if empty to match Python/claude-code-proxy behavior
-                                            let event = format_sse_event(
+                                            pending_events.push(format_sse_event(
                                                 constants::EVENT_CONTENT_BLOCK_DELTA,
                                                 &json!({
                                                     "type": constants::EVENT_CONTENT_BLOCK_DELTA,
@@ -377,34 +504,65 @@ pub fn convert_openai_streaming_to_claude(
                                                         "text": content
                                                     }
                                                 }),
-                                            );
-                                            return Some((event, (stream, state, pending_events, initial_sent, stream_done, sse_buffer)));
+                                            ));
+
+                                            // Return first pending event
+                                            if !pending_events.is_empty() {
+                                                let event = pending_events.remove(0);
+                                                return Some((
+                                                    event,
+                                                    (
+                                                        stream,
+                                                        state,
+                                                        pending_events,
+                                                        stream_done,
+                                                        sse_buffer,
+                                                    ),
+                                                ));
+                                            }
                                         }
 
                                         // Handle tool call deltas
-                                        if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
-                                            let events = process_tool_call_delta(tool_calls, &mut state);
+                                        if let Some(tool_calls) =
+                                            delta.get("tool_calls").and_then(|t| t.as_array())
+                                        {
+                                            let events =
+                                                process_tool_call_delta(tool_calls, &mut state);
                                             if !events.is_empty() {
                                                 let mut events_iter = events.into_iter();
                                                 if let Some(first_event) = events_iter.next() {
-                                                    let remaining: Vec<String> = events_iter.collect();
+                                                    let remaining: Vec<String> =
+                                                        events_iter.collect();
                                                     let mut new_pending = pending_events;
                                                     new_pending.extend(remaining);
-                                                    return Some((first_event, (stream, state, new_pending, initial_sent, stream_done, sse_buffer)));
+                                                    return Some((
+                                                        first_event,
+                                                        (
+                                                            stream,
+                                                            state,
+                                                            new_pending,
+                                                            stream_done,
+                                                            sse_buffer,
+                                                        ),
+                                                    ));
                                                 }
                                             }
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Failed to parse chunk: {}, error: {}", chunk_data, e);
+                                    tracing::warn!(
+                                        "Failed to parse chunk: {}, error: {}",
+                                        chunk_data,
+                                        e
+                                    );
                                     continue;
                                 }
                             }
                         }
                     }
                 }
-                
+
                 // Need more data from stream
                 match stream.next().await {
                     Some(Ok(bytes)) => {
@@ -422,7 +580,10 @@ pub fn convert_openai_streaming_to_claude(
                                 "error": {"type": "api_error", "message": format!("Streaming error: {}", e)}
                             })
                         );
-                        return Some((error_event, (stream, state, pending_events, initial_sent, stream_done, sse_buffer)));
+                        return Some((
+                            error_event,
+                            (stream, state, pending_events, stream_done, sse_buffer),
+                        ));
                     }
                     None => {
                         // Stream ended without [DONE], send final events
@@ -432,7 +593,10 @@ pub fn convert_openai_streaming_to_claude(
                             let mut events_iter = final_events.into_iter();
                             if let Some(first_event) = events_iter.next() {
                                 let remaining: Vec<String> = events_iter.collect();
-                                return Some((first_event, (stream, state, remaining, initial_sent, stream_done, sse_buffer)));
+                                return Some((
+                                    first_event,
+                                    (stream, state, remaining, stream_done, sse_buffer),
+                                ));
                             }
                         }
                         return None;
@@ -446,17 +610,33 @@ pub fn convert_openai_streaming_to_claude(
 }
 
 /// Generate final SSE events for stream completion.
+///
+/// Only emits content_block_stop for blocks that were actually started
+/// (on-demand synthesis pattern).
 fn generate_final_events(state: &StreamingState) -> Vec<String> {
     let mut events = Vec::new();
 
-    // content_block_stop for text block
-    events.push(format_sse_event(
-        constants::EVENT_CONTENT_BLOCK_STOP,
-        &json!({
-            "type": constants::EVENT_CONTENT_BLOCK_STOP,
-            "index": state.text_block_index
-        }),
-    ));
+    // content_block_stop for thinking block (if started)
+    if state.thinking_block_started {
+        events.push(format_sse_event(
+            constants::EVENT_CONTENT_BLOCK_STOP,
+            &json!({
+                "type": constants::EVENT_CONTENT_BLOCK_STOP,
+                "index": state.thinking_block_index
+            }),
+        ));
+    }
+
+    // content_block_stop for text block (only if started - on-demand synthesis)
+    if state.text_block_started {
+        events.push(format_sse_event(
+            constants::EVENT_CONTENT_BLOCK_STOP,
+            &json!({
+                "type": constants::EVENT_CONTENT_BLOCK_STOP,
+                "index": state.text_block_index
+            }),
+        ));
+    }
 
     // Send any remaining args_buffer content and content_block_stop for tool blocks
     for tool_data in state.current_tool_calls.values() {
@@ -488,21 +668,25 @@ fn generate_final_events(state: &StreamingState) -> Vec<String> {
         }
     }
 
-    // message_delta
-    events.push(format_sse_event(
-        constants::EVENT_MESSAGE_DELTA,
-        &json!({
-            "type": constants::EVENT_MESSAGE_DELTA,
-            "delta": {"stop_reason": state.final_stop_reason, "stop_sequence": null},
-            "usage": state.usage_data
-        }),
-    ));
+    // Only emit message_delta and message_stop if message was started
+    // (on-demand synthesis pattern)
+    if state.message_started {
+        // message_delta
+        events.push(format_sse_event(
+            constants::EVENT_MESSAGE_DELTA,
+            &json!({
+                "type": constants::EVENT_MESSAGE_DELTA,
+                "delta": {"stop_reason": state.final_stop_reason, "stop_sequence": null},
+                "usage": state.usage_data
+            }),
+        ));
 
-    // message_stop
-    events.push(format_sse_event(
-        constants::EVENT_MESSAGE_STOP,
-        &json!({"type": constants::EVENT_MESSAGE_STOP}),
-    ));
+        // message_stop
+        events.push(format_sse_event(
+            constants::EVENT_MESSAGE_STOP,
+            &json!({"type": constants::EVENT_MESSAGE_STOP}),
+        ));
+    }
 
     events
 }
@@ -536,7 +720,9 @@ fn process_tool_call_delta(tool_call_deltas: &[Value], state: &mut StreamingStat
                     tool_call.args_buffer.push_str(arguments);
 
                     // Try to parse complete JSON and send delta
-                    if serde_json::from_str::<Value>(&tool_call.args_buffer).is_ok() && !tool_call.json_sent {
+                    if serde_json::from_str::<Value>(&tool_call.args_buffer).is_ok()
+                        && !tool_call.json_sent
+                    {
                         if let Some(claude_index) = tool_call.claude_index {
                             events.push(format_sse_event(
                                 constants::EVENT_CONTENT_BLOCK_DELTA,
@@ -587,17 +773,16 @@ fn process_tool_call_delta(tool_call_deltas: &[Value], state: &mut StreamingStat
 // ============================================================================
 
 /// Extract system text from Claude system field.
+/// Also strips x-anthropic-billing-header prefix from text blocks if present.
 fn extract_system_text(system: &ClaudeSystemPrompt) -> String {
     match system {
-        ClaudeSystemPrompt::Text(text) => text.clone(),
-        ClaudeSystemPrompt::Blocks(blocks) => {
-            blocks
-                .iter()
-                .filter(|b| b.content_type == constants::CONTENT_TEXT)
-                .map(|b| b.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        }
+        ClaudeSystemPrompt::Text(text) => strip_billing_header(text),
+        ClaudeSystemPrompt::Blocks(blocks) => blocks
+            .iter()
+            .filter(|b| b.content_type == constants::CONTENT_TEXT)
+            .map(|b| strip_billing_header(&b.text))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
     }
 }
 
@@ -608,9 +793,9 @@ fn is_tool_result_message(msg: &ClaudeMessage) -> bool {
     }
     match &msg.content {
         ClaudeMessageContent::Text(_) => false,
-        ClaudeMessageContent::Blocks(blocks) => {
-            blocks.iter().any(|block| block.get_type() == constants::CONTENT_TOOL_RESULT)
-        }
+        ClaudeMessageContent::Blocks(blocks) => blocks
+            .iter()
+            .any(|block| block.get_type() == constants::CONTENT_TOOL_RESULT),
     }
 }
 
@@ -729,8 +914,12 @@ fn parse_tool_result_content(content: &Value) -> String {
                 .iter()
                 .filter_map(|item| {
                     if let Some(obj) = item.as_object() {
-                        if obj.get("type").and_then(|t| t.as_str()) == Some(constants::CONTENT_TEXT) {
-                            return obj.get("text").and_then(|t| t.as_str()).map(|s| s.to_string());
+                        if obj.get("type").and_then(|t| t.as_str()) == Some(constants::CONTENT_TEXT)
+                        {
+                            return obj
+                                .get("text")
+                                .and_then(|t| t.as_str())
+                                .map(|s| s.to_string());
                         }
                     }
                     if let Some(s) = item.as_str() {
@@ -796,6 +985,18 @@ fn convert_tool_choice(tool_choice: &Value) -> Value {
 /// Build Claude content blocks from OpenAI message.
 fn build_content_blocks(message: &Value) -> Vec<ClaudeContentBlock> {
     let mut content_blocks: Vec<ClaudeContentBlock> = Vec::new();
+
+    // Add reasoning/thinking content first (if present)
+    // OpenAI-compatible APIs like Grok use reasoning_content for extended thinking
+    if let Some(reasoning) = message.get("reasoning_content").and_then(|r| r.as_str()) {
+        if !reasoning.is_empty() {
+            content_blocks.push(ClaudeContentBlock::Thinking(ClaudeContentBlockThinking {
+                content_type: constants::CONTENT_THINKING.to_string(),
+                thinking: reasoning.to_string(),
+                signature: None,
+            }));
+        }
+    }
 
     // Add text content
     if let Some(text_content) = message.get("content").and_then(|c| c.as_str()) {
@@ -876,7 +1077,10 @@ fn extract_usage_data(usage: &Value) -> ClaudeUsage {
         .map(|t| t as i32);
 
     ClaudeUsage {
-        input_tokens: usage.get("prompt_tokens").and_then(|t| t.as_i64()).unwrap_or(0) as i32,
+        input_tokens: usage
+            .get("prompt_tokens")
+            .and_then(|t| t.as_i64())
+            .unwrap_or(0) as i32,
         output_tokens: usage
             .get("completion_tokens")
             .and_then(|t| t.as_i64())
@@ -932,7 +1136,9 @@ mod tests {
                 role: "user".to_string(),
                 content: ClaudeMessageContent::Text("Hello!".to_string()),
             }],
-            system: Some(ClaudeSystemPrompt::Text("You are a helpful assistant.".to_string())),
+            system: Some(ClaudeSystemPrompt::Text(
+                "You are a helpful assistant.".to_string(),
+            )),
             stop_sequences: None,
             stream: false,
             temperature: None,
@@ -1019,7 +1225,8 @@ mod tests {
             }
         });
 
-        let claude_response = openai_to_claude_response(&openai_response, "claude-3-opus-20240229").unwrap();
+        let claude_response =
+            openai_to_claude_response(&openai_response, "claude-3-opus-20240229").unwrap();
 
         assert_eq!(claude_response.model, "claude-3-opus-20240229");
         assert_eq!(claude_response.stop_reason, Some("end_turn".to_string()));
@@ -1047,6 +1254,60 @@ mod tests {
     fn test_extract_system_text_string() {
         let system = ClaudeSystemPrompt::Text("Hello".to_string());
         assert_eq!(extract_system_text(&system), "Hello");
+    }
+
+    #[test]
+    fn test_strip_billing_header() {
+        // Test with billing header prefix
+        assert_eq!(
+            strip_billing_header(
+                "x-anthropic-billing-header: cc_version=2.1.17.f12; cc_entrypoint=cli"
+            ),
+            "cc_version=2.1.17.f12; cc_entrypoint=cli"
+        );
+
+        // Test without billing header prefix
+        assert_eq!(
+            strip_billing_header("normal text without header"),
+            "normal text without header"
+        );
+
+        // Test with extra spaces after colon
+        assert_eq!(
+            strip_billing_header("x-anthropic-billing-header:   value"),
+            "value"
+        );
+    }
+
+    #[test]
+    fn test_extract_system_text_with_billing_header() {
+        use crate::api::claude_models::ClaudeSystemContent;
+
+        // Test with Text variant containing billing header
+        let system = ClaudeSystemPrompt::Text(
+            "x-anthropic-billing-header: cc_version=2.1.17.f12; cc_entrypoint=cli".to_string(),
+        );
+        assert_eq!(
+            extract_system_text(&system),
+            "cc_version=2.1.17.f12; cc_entrypoint=cli"
+        );
+
+        // Test with Blocks variant containing billing header
+        let system_blocks = ClaudeSystemPrompt::Blocks(vec![
+            ClaudeSystemContent {
+                content_type: "text".to_string(),
+                text: "x-anthropic-billing-header: cc_version=2.1.17.f12; cc_entrypoint=cli"
+                    .to_string(),
+            },
+            ClaudeSystemContent {
+                content_type: "text".to_string(),
+                text: "You are a helpful assistant.".to_string(),
+            },
+        ]);
+        assert_eq!(
+            extract_system_text(&system_blocks),
+            "cc_version=2.1.17.f12; cc_entrypoint=cli\n\nYou are a helpful assistant."
+        );
     }
 
     #[test]

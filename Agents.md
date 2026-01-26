@@ -37,9 +37,10 @@ llm-proxy/
 │   └── Dockerfile
 ├── rust-server/            # Axum implementation
 │   ├── src/
-│   │   ├── api/            # HTTP handlers, admin API, models, streaming
+│   │   ├── api/            # HTTP handlers, admin API, models, streaming, proxy
 │   │   ├── core/           # Config, database, error handling, metrics, middleware
-│   │   └── services/       # Provider service
+│   │   ├── services/       # Provider service
+│   │   └── transformer/    # Protocol transformation pipeline
 │   ├── tests/              # Integration and property tests
 │   └── Dockerfile
 ├── web/
@@ -168,6 +169,152 @@ sequenceDiagram
 5. **Request Forwarding**: Request proxied to selected provider with provider's API key
 6. **Response Handling**: Streaming (SSE) or non-streaming responses passed through
 7. **Metrics Collection**: Request count, latency, token usage recorded for Prometheus
+
+### Transformer Pipeline Architecture (Rust Server)
+
+The Rust server implements a sophisticated protocol transformation pipeline that enables cross-protocol communication between different LLM API formats.
+
+#### 4-Hook Transformation Model
+
+The transformer system uses a 4-hook pipeline for bidirectional protocol conversion:
+
+```mermaid
+graph TB
+    subgraph "Client Request Flow"
+        CR["Client Request<br/>(Any Protocol)"]
+        H1["Hook 1: transform_request_out<br/>Client Format → UIF"]
+        UIF1["Unified Internal Format"]
+        H2["Hook 2: transform_request_in<br/>UIF → Provider Format"]
+        PR["Provider Request"]
+    end
+    
+    subgraph "Provider Response Flow"
+        PRES["Provider Response"]
+        H3["Hook 3: transform_response_in<br/>Provider Format → UIF"]
+        UIF2["Unified Internal Format"]
+        H4["Hook 4: transform_response_out<br/>UIF → Client Format"]
+        CRES["Client Response<br/>(Original Protocol)"]
+    end
+    
+    CR --> H1
+    H1 --> UIF1
+    UIF1 --> H2
+    H2 --> PR
+    PR --> PRES
+    PRES --> H3
+    H3 --> UIF2
+    UIF2 --> H4
+    H4 --> CRES
+```
+
+**Hook Responsibilities:**
+
+1. **`transform_request_out`**: Normalize client request to Unified Internal Format (UIF)
+   - Rust: [`Transformer::transform_request_out()`](rust-server/src/transformer/mod.rs#L67)
+
+2. **`transform_request_in`**: Adapt UIF to target provider's protocol
+   - Rust: [`Transformer::transform_request_in()`](rust-server/src/transformer/mod.rs#L72)
+
+3. **`transform_response_in`**: Parse provider response into UIF
+   - Rust: [`Transformer::transform_response_in()`](rust-server/src/transformer/mod.rs#L77)
+
+4. **`transform_response_out`**: Format UIF for client's expected protocol
+   - Rust: [`Transformer::transform_response_out()`](rust-server/src/transformer/mod.rs#L86)
+
+#### Unified Internal Format (UIF)
+
+The UIF serves as the lingua franca for all protocol conversions:
+
+- **Core Types**: [`UnifiedRequest`](rust-server/src/transformer/unified.rs#L381), [`UnifiedResponse`](rust-server/src/transformer/unified.rs#L521), [`UnifiedMessage`](rust-server/src/transformer/unified.rs#L271)
+- **Content Blocks**: Text, Image, Tool Use, Tool Result, Thinking, File, Audio, Refusal
+- **Streaming**: [`UnifiedStreamChunk`](rust-server/src/transformer/unified.rs#L597) with chunk types (MessageStart, ContentBlockDelta, etc.)
+- **Protocol Enum**: [`Protocol`](rust-server/src/transformer/unified.rs#L17) - OpenAI, Anthropic, ResponseApi
+
+#### Protocol Transformers
+
+Each protocol implements the [`Transformer`](rust-server/src/transformer/mod.rs#L60) trait:
+
+| Transformer | Protocol | Endpoint | Implementation |
+|-------------|----------|----------|----------------|
+| **OpenAI** | OpenAI Chat Completions | `/v1/chat/completions` | [`OpenAITransformer`](rust-server/src/transformer/openai.rs#L207) |
+| **Anthropic** | Anthropic Messages API | `/v1/messages` | [`AnthropicTransformer`](rust-server/src/transformer/anthropic.rs#L237) |
+| **Response API** | OpenAI Response API | `/v1/responses` | [`ResponseApiTransformer`](rust-server/src/transformer/response_api.rs#L196) |
+
+**Key Features:**
+
+- **Protocol Detection**: [`ProtocolDetector`](rust-server/src/transformer/detector.rs) auto-detects request format
+- **Same-Protocol Bypass**: Direct passthrough when client and provider use same protocol
+- **Streaming Support**: Chunk-by-chunk transformation for cross-protocol streaming
+- **Model Mapping**: Automatic model name translation between protocols
+
+#### V2 API Endpoints
+
+The transformer pipeline powers three V2 endpoints with full cross-protocol support:
+
+| Endpoint | Method | Description | Handler |
+|----------|--------|-------------|---------|
+| `/v2/chat/completions` | POST | OpenAI-compatible with cross-protocol support | [`chat_completions_v2()`](rust-server/src/api/proxy.rs#L762) |
+| `/v2/messages` | POST | Anthropic-compatible with cross-protocol support | [`messages_v2()`](rust-server/src/api/proxy.rs#L771) |
+| `/v2/responses` | POST | Response API with cross-protocol support | [`responses_v2()`](rust-server/src/api/proxy.rs#L780) |
+
+**Cross-Protocol Examples:**
+
+```bash
+# Send OpenAI request to Anthropic provider
+POST /v2/chat/completions
+{
+  "model": "claude-3-opus",
+  "messages": [{"role": "user", "content": "Hello"}]
+}
+# → Transformed to Anthropic format → Provider → Transformed back to OpenAI format
+
+# Send Anthropic request to OpenAI provider
+POST /v2/messages
+{
+  "model": "gpt-4",
+  "max_tokens": 1024,
+  "messages": [{"role": "user", "content": "Hello"}]
+}
+# → Transformed to OpenAI format → Provider → Transformed back to Anthropic format
+```
+
+#### Request Flow (V2 Endpoints)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Proxy as V2 Proxy Handler
+    participant Detector as Protocol Detector
+    participant Pipeline as Transform Pipeline
+    participant Provider as LLM Provider
+    
+    Client->>Proxy: POST /v2/chat/completions
+    Proxy->>Proxy: Verify Credential Key
+    Proxy->>Proxy: Check Rate Limit
+    Proxy->>Detector: Detect Client Protocol
+    Detector-->>Proxy: Protocol.OpenAI
+    Proxy->>Proxy: Select Provider (Weighted)
+    Proxy->>Pipeline: transform_request(payload, ctx)
+    Pipeline->>Pipeline: Hook 1: Client → UIF
+    Pipeline->>Pipeline: Hook 2: UIF → Provider
+    Pipeline-->>Proxy: Transformed Request
+    Proxy->>Provider: Forward Request
+    Provider-->>Proxy: Response or Stream
+    Proxy->>Pipeline: transform_response(response, ctx)
+    Pipeline->>Pipeline: Hook 3: Provider → UIF
+    Pipeline->>Pipeline: Hook 4: UIF → Client
+    Pipeline-->>Proxy: Transformed Response
+    Proxy->>Proxy: Record Metrics
+    Proxy-->>Client: Response or Stream
+```
+
+#### Implementation Components
+
+- **Pipeline Executor**: [`TransformPipeline`](rust-server/src/transformer/mod.rs#L237) - Orchestrates transformation flow
+- **Transformer Registry**: [`TransformerRegistry`](rust-server/src/transformer/mod.rs#L127) - Manages protocol transformers
+- **Proxy Handler**: [`handle_proxy_request()`](rust-server/src/api/proxy.rs#L200) - Main entry point for V2 endpoints
+- **Transform Context**: [`TransformContext`](rust-server/src/transformer/mod.rs#L197) - Carries metadata through pipeline
+- **Stream Accumulator**: [`rust-server/src/transformer/stream.rs`](rust-server/src/transformer/stream.rs) - Accumulates streaming chunks
 
 ---
 
@@ -520,7 +667,9 @@ pnpm run check
 
 ## 9. API Reference
 
-### Chat Completions
+### V1 API Endpoints (Legacy)
+
+#### Chat Completions
 
 ```bash
 POST /v1/chat/completions
@@ -539,7 +688,66 @@ Content-Type: application/json
 }
 ```
 
-### Create Provider
+### V2 API Endpoints (Cross-Protocol Support)
+
+The V2 endpoints support cross-protocol transformation, allowing clients to use any protocol format regardless of the provider's native protocol.
+
+#### OpenAI-Compatible Chat Completions
+
+```bash
+POST /v2/chat/completions
+Authorization: Bearer <master_key>
+Content-Type: application/json
+
+{
+  "model": "claude-3-opus",  # Can target any provider
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"}
+  ],
+  "stream": false,
+  "temperature": 0.7,
+  "max_tokens": 1000
+}
+```
+
+#### Anthropic-Compatible Messages
+
+```bash
+POST /v2/messages
+Authorization: Bearer <master_key>
+Content-Type: application/json
+
+{
+  "model": "gpt-4",  # Can target any provider
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant.",
+  "messages": [
+    {"role": "user", "content": "Hello!"}
+  ],
+  "temperature": 0.7
+}
+```
+
+#### Response API
+
+```bash
+POST /v2/responses
+Authorization: Bearer <master_key>
+Content-Type: application/json
+
+{
+  "model": "gpt-4",
+  "instructions": "You are a helpful assistant.",
+  "input": "Hello!",
+  "max_output_tokens": 1000,
+  "temperature": 0.7
+}
+```
+
+### Admin API
+
+#### Create Provider
 
 ```bash
 POST /admin/v1/providers
@@ -598,3 +806,7 @@ Response includes auto-generated `id` field.
 - [Svelte Admin README](web/svelte-admin/README.md)
 - [Database Migrations](migrations/)
 - [Kubernetes Configs](k8s/dev/)
+
+---
+
+**Last Updated**: 2026-01-22

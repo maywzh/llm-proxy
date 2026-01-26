@@ -41,6 +41,7 @@ class ProviderService:
                 api_key=p.api_key,
                 weight=p.weight,
                 model_mapping=p.model_mapping,
+                provider_type=p.provider_type,
             )
             for p in config.providers
         ]

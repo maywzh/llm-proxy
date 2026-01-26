@@ -24,6 +24,7 @@ pub mod constants {
     pub const CONTENT_IMAGE: &str = "image";
     pub const CONTENT_TOOL_USE: &str = "tool_use";
     pub const CONTENT_TOOL_RESULT: &str = "tool_result";
+    pub const CONTENT_THINKING: &str = "thinking";
 
     // Tool type constants
     pub const TOOL_FUNCTION: &str = "function";
@@ -110,6 +111,16 @@ pub struct ClaudeContentBlockToolResult {
     pub is_error: Option<bool>,
 }
 
+/// Thinking content block in Claude messages (for extended thinking/reasoning).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ClaudeContentBlockThinking {
+    #[serde(rename = "type")]
+    pub content_type: String,
+    pub thinking: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
 /// Union type for all content block types.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
@@ -118,6 +129,7 @@ pub enum ClaudeContentBlock {
     Image(ClaudeContentBlockImage),
     ToolUse(ClaudeContentBlockToolUse),
     ToolResult(ClaudeContentBlockToolResult),
+    Thinking(ClaudeContentBlockThinking),
 }
 
 impl ClaudeContentBlock {
@@ -128,6 +140,7 @@ impl ClaudeContentBlock {
             ClaudeContentBlock::Image(b) => &b.content_type,
             ClaudeContentBlock::ToolUse(b) => &b.content_type,
             ClaudeContentBlock::ToolResult(b) => &b.content_type,
+            ClaudeContentBlock::Thinking(b) => &b.content_type,
         }
     }
 
@@ -139,8 +152,21 @@ impl ClaudeContentBlock {
         })
     }
 
+    /// Create a thinking content block.
+    pub fn thinking(thinking: impl Into<String>, signature: Option<String>) -> Self {
+        ClaudeContentBlock::Thinking(ClaudeContentBlockThinking {
+            content_type: constants::CONTENT_THINKING.to_string(),
+            thinking: thinking.into(),
+            signature,
+        })
+    }
+
     /// Create a tool use content block.
-    pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: serde_json::Value) -> Self {
+    pub fn tool_use(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: serde_json::Value,
+    ) -> Self {
         ClaudeContentBlock::ToolUse(ClaudeContentBlockToolUse {
             content_type: constants::CONTENT_TOOL_USE.to_string(),
             id: id.into(),
@@ -223,49 +249,49 @@ pub enum ClaudeSystemPrompt {
 pub struct ClaudeMessagesRequest {
     /// The model to use for completion
     pub model: String,
-    
+
     /// Maximum number of tokens to generate
     pub max_tokens: i32,
-    
+
     /// List of messages in the conversation
     pub messages: Vec<ClaudeMessage>,
-    
+
     /// System prompt or instructions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<ClaudeSystemPrompt>,
-    
+
     /// Sequences that will stop generation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
-    
+
     /// Whether to stream the response
     #[serde(default)]
     pub stream: bool,
-    
+
     /// Sampling temperature (0.0 to 1.0)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
-    
+
     /// Nucleus sampling probability
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
-    
+
     /// Top-k sampling parameter
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<i32>,
-    
+
     /// Optional metadata for the request
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
-    
+
     /// List of tools available to the model
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ClaudeTool>>,
-    
+
     /// How the model should use tools
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<serde_json::Value>,
-    
+
     /// Extended thinking configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ClaudeThinkingConfig>,
@@ -550,9 +576,7 @@ mod tests {
 
     #[test]
     fn test_claude_message_content_blocks() {
-        let content = ClaudeMessageContent::Blocks(vec![
-            ClaudeContentBlock::text("Hello"),
-        ]);
+        let content = ClaudeMessageContent::Blocks(vec![ClaudeContentBlock::text("Hello")]);
         let json = serde_json::to_string(&content).unwrap();
         assert!(json.contains("\"type\":\"text\""));
     }

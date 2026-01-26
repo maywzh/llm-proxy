@@ -4,11 +4,7 @@
 //! duration, active requests, and status codes.
 
 use crate::core::metrics::get_metrics;
-use axum::{
-    extract::Request,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, middleware::Next, response::Response};
 use std::time::Instant;
 
 /// Extension type for storing model name in response
@@ -67,10 +63,7 @@ impl MetricsMiddleware {
     ///
     /// * `request` - Incoming HTTP request
     /// * `next` - Next middleware/handler in the chain
-    pub async fn track_metrics(
-        request: Request,
-        next: Next,
-    ) -> Response {
+    pub async fn track_metrics(request: Request, next: Next) -> Response {
         let endpoint = request.uri().path().to_string();
         let method = request.method().to_string();
 
@@ -117,7 +110,14 @@ impl MetricsMiddleware {
         if provider != "unknown" {
             metrics
                 .request_count
-                .with_label_values(&[&method, &endpoint, model, provider, &status_code, api_key_name])
+                .with_label_values(&[
+                    &method,
+                    &endpoint,
+                    model,
+                    provider,
+                    &status_code,
+                    api_key_name,
+                ])
                 .inc();
 
             metrics
@@ -268,9 +268,15 @@ mod tests {
         async fn handler() -> Response<Body> {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             let mut response = Response::new(Body::from("ok"));
-            response.extensions_mut().insert(ModelName("gpt-4".to_string()));
-            response.extensions_mut().insert(ProviderName("openai".to_string()));
-            response.extensions_mut().insert(ApiKeyName("test-key".to_string()));
+            response
+                .extensions_mut()
+                .insert(ModelName("gpt-4".to_string()));
+            response
+                .extensions_mut()
+                .insert(ProviderName("openai".to_string()));
+            response
+                .extensions_mut()
+                .insert(ApiKeyName("test-key".to_string()));
             response
         }
 
@@ -302,14 +308,21 @@ mod tests {
             .route("/test-non-llm", get(handler))
             .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
 
-        let request = Request::builder().uri("/test-non-llm").body(Body::empty()).unwrap();
+        let request = Request::builder()
+            .uri("/test-non-llm")
+            .body(Body::empty())
+            .unwrap();
 
         let _response = app.oneshot(request).await.unwrap();
 
         // Metrics with "unknown" provider should not be recorded
-        let metric = metrics
-            .request_duration
-            .with_label_values(&["GET", "/test-non-llm", "unknown", "unknown", "anonymous"]);
+        let metric = metrics.request_duration.with_label_values(&[
+            "GET",
+            "/test-non-llm",
+            "unknown",
+            "unknown",
+            "anonymous",
+        ]);
 
         assert_eq!(metric.get_sample_count(), 0);
     }

@@ -15,8 +15,8 @@ use std::sync::Arc;
 use utoipa::{OpenApi, ToSchema};
 
 use crate::core::database::{
-    create_key_preview, CreateCredential, CreateProvider, DynamicConfig,
-    CredentialEntity, ProviderEntity, UpdateCredential, UpdateProvider,
+    create_key_preview, CreateCredential, CreateProvider, CredentialEntity, DynamicConfig,
+    ProviderEntity, UpdateCredential, UpdateProvider,
 };
 
 /// OpenAPI documentation for Admin API (admin endpoints only)
@@ -135,12 +135,12 @@ pub struct V1ApiDoc;
 pub fn combined_openapi() -> utoipa::openapi::OpenApi {
     let mut combined = AdminApiDoc::openapi();
     let v1_doc = V1ApiDoc::openapi();
-    
+
     // Merge paths
     for (path, item) in v1_doc.paths.paths {
         combined.paths.paths.insert(path, item);
     }
-    
+
     // Merge components (schemas)
     if let Some(v1_components) = v1_doc.components {
         if let Some(ref mut combined_components) = combined.components {
@@ -149,7 +149,7 @@ pub fn combined_openapi() -> utoipa::openapi::OpenApi {
             }
         }
     }
-    
+
     // Merge tags
     if let Some(v1_tags) = v1_doc.tags {
         if let Some(ref mut combined_tags) = combined.tags {
@@ -158,13 +158,13 @@ pub fn combined_openapi() -> utoipa::openapi::OpenApi {
             combined.tags = Some(v1_tags);
         }
     }
-    
+
     // Update info for combined doc
     combined.info.title = "LLM Proxy API".to_string();
     combined.info.description = Some(
         "LLM Proxy API with OpenAI-compatible endpoints and Admin API for configuration management.".to_string()
     );
-    
+
     combined
 }
 
@@ -642,7 +642,9 @@ pub async fn create_provider(
     verify_admin_auth(&headers, &state.admin_key)?;
 
     if req.provider_key.is_empty() {
-        return Err(AdminError::BadRequest("Provider key is required".to_string()));
+        return Err(AdminError::BadRequest(
+            "Provider key is required".to_string(),
+        ));
     }
     if req.api_base.is_empty() {
         return Err(AdminError::BadRequest("API base is required".to_string()));
@@ -862,7 +864,9 @@ pub async fn create_credential(
         return Err(AdminError::BadRequest("Key value is required".to_string()));
     }
     if req.name.is_empty() {
-        return Err(AdminError::BadRequest("Credential name is required".to_string()));
+        return Err(AdminError::BadRequest(
+            "Credential name is required".to_string(),
+        ));
     }
 
     let db = state.dynamic_config.database();
@@ -1008,9 +1012,7 @@ pub async fn validate_admin_key(
         return Err((StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response());
     }
 
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|h| h.to_str().ok());
+    let auth_header = headers.get("authorization").and_then(|h| h.to_str().ok());
 
     let provided_key = match auth_header {
         Some(h) if h.starts_with("Bearer ") => &h[7..],
@@ -1104,7 +1106,7 @@ pub async fn reload_config(
 /// Create Admin API router
 pub fn admin_router(state: Arc<AdminState>) -> Router {
     use crate::api::health::{health_router, provider_health_router};
-    
+
     Router::new()
         // Auth routes
         .route("/auth/validate", post(validate_admin_key))
@@ -1119,7 +1121,10 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
         // Provider health check route (POST /admin/v1/providers/{id}/health)
         .nest("/providers", provider_health_router())
         // Credential routes
-        .route("/credentials", get(list_credentials).post(create_credential))
+        .route(
+            "/credentials",
+            get(list_credentials).post(create_credential),
+        )
         .route(
             "/credentials/:id",
             get(get_credential)

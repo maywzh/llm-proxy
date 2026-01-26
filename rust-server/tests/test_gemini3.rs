@@ -98,7 +98,9 @@ fn test_extra_content_preserved_in_gemini3_response() {
     let tool_call = &response["choices"][0]["message"]["tool_calls"][0];
     assert!(tool_call["extra_content"]["google"]["thought_signature"].is_string());
     assert_eq!(
-        tool_call["extra_content"]["google"]["thought_signature"].as_str().unwrap(),
+        tool_call["extra_content"]["google"]["thought_signature"]
+            .as_str()
+            .unwrap(),
         "CvcQAdHN2OekY10ClPFkYA=="
     );
 }
@@ -191,7 +193,9 @@ fn test_extra_content_roundtrip_serialization() {
     // Verify extra_content is preserved
     let tool_call = &deserialized["messages"][1]["tool_calls"][0];
     assert_eq!(
-        tool_call["extra_content"]["google"]["thought_signature"].as_str().unwrap(),
+        tool_call["extra_content"]["google"]["thought_signature"]
+            .as_str()
+            .unwrap(),
         "CvcQAdHN2OekY10ClPFkYA=="
     );
 }
@@ -231,15 +235,21 @@ fn test_multiple_tool_calls_with_signatures() {
         }]
     });
 
-    let tool_calls = response["choices"][0]["message"]["tool_calls"].as_array().unwrap();
+    let tool_calls = response["choices"][0]["message"]["tool_calls"]
+        .as_array()
+        .unwrap();
 
     // First two have signatures
     assert_eq!(
-        tool_calls[0]["extra_content"]["google"]["thought_signature"].as_str().unwrap(),
+        tool_calls[0]["extra_content"]["google"]["thought_signature"]
+            .as_str()
+            .unwrap(),
         "sig_1"
     );
     assert_eq!(
-        tool_calls[1]["extra_content"]["google"]["thought_signature"].as_str().unwrap(),
+        tool_calls[1]["extra_content"]["google"]["thought_signature"]
+            .as_str()
+            .unwrap(),
         "sig_2"
     );
 
@@ -280,8 +290,14 @@ fn test_pass_through_preserves_unknown_fields() {
     let tool_call = &reparsed["choices"][0]["message"]["tool_calls"][0];
 
     // All fields should be preserved
-    assert_eq!(tool_call["extra_content"]["google"]["thought_signature"], "test_sig");
-    assert_eq!(tool_call["extra_content"]["other_provider"]["custom_field"], "value");
+    assert_eq!(
+        tool_call["extra_content"]["google"]["thought_signature"],
+        "test_sig"
+    );
+    assert_eq!(
+        tool_call["extra_content"]["other_provider"]["custom_field"],
+        "value"
+    );
     assert_eq!(tool_call["unknown_field"], "should_be_preserved");
     assert_eq!(tool_call["another_unknown"], 42);
 }

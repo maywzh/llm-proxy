@@ -41,7 +41,9 @@ pub enum AppError {
     Timeout,
 
     /// TTFT (Time To First Token) timeout errors
-    #[error("TTFT timeout: first token not received within {timeout_secs} seconds from {provider_name}")]
+    #[error(
+        "TTFT timeout: first token not received within {timeout_secs} seconds from {provider_name}"
+    )]
     TTFTTimeout {
         timeout_secs: u64,
         provider_name: String,
@@ -84,17 +86,23 @@ impl IntoResponse for AppError {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "Gateway timeout".to_string()),
-            AppError::TTFTTimeout { timeout_secs, provider_name } => (
+            AppError::TTFTTimeout {
+                timeout_secs,
+                provider_name,
+            } => (
                 StatusCode::GATEWAY_TIMEOUT,
-                format!("TTFT timeout: first token not received within {} seconds from {}", timeout_secs, provider_name),
+                format!(
+                    "TTFT timeout: first token not received within {} seconds from {}",
+                    timeout_secs, provider_name
+                ),
             ),
             AppError::RateLimitExceeded(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
             AppError::ClientDisconnect => {
-                // HTTP 499 is a non-standard status code used by nginx for "Client Closed Request"
-                // Log at info level since this is expected behavior
+                // Use HTTP 408 Request Timeout for client disconnect
+                // This is a standard status code per RFC 7231, more compatible than nginx's 499
                 tracing::info!("Client disconnected before request completed");
                 (
-                    StatusCode::from_u16(499).unwrap_or(StatusCode::BAD_REQUEST),
+                    StatusCode::REQUEST_TIMEOUT,
                     "Client closed request".to_string(),
                 )
             }
@@ -240,5 +248,12 @@ mod tests {
 
         let result = returns_error();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_client_disconnect_response() {
+        let err = AppError::ClientDisconnect;
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
     }
 }
