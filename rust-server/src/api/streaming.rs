@@ -5,6 +5,7 @@
 
 use crate::api::models::Usage;
 use crate::core::error::AppError;
+use crate::core::jsonl_logger::{log_provider_streaming_response, log_streaming_response};
 use crate::core::langfuse::{get_langfuse_service, GenerationData};
 use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
@@ -32,17 +33,17 @@ fn get_cached_bpe(model: &str) -> Option<Arc<tiktoken_rs::CoreBPE>> {
     if let Some(bpe) = BPE_CACHE.get(model) {
         return Some(Arc::clone(&bpe));
     }
-    
+
     // Cache miss - create new encoder
     let bpe = tiktoken_rs::get_bpe_from_model(model)
         .or_else(|_| tiktoken_rs::cl100k_base())
         .ok()?;
-    
+
     let bpe_arc = Arc::new(bpe);
-    
+
     // Store in cache (fine-grained locking via DashMap)
     BPE_CACHE.insert(model.to_string(), Arc::clone(&bpe_arc));
-    
+
     Some(bpe_arc)
 }
 
@@ -68,6 +69,14 @@ struct StreamState {
     accumulated_output: Vec<String>,
     /// Finish reason from the stream
     finish_reason: Option<String>,
+    /// Chunk counter for logging
+    chunk_count: usize,
+    /// Whether stream start has been logged
+    stream_start_logged: bool,
+    /// Accumulated raw SSE data strings for JSONL logging
+    accumulated_sse_data: Vec<String>,
+    /// Request ID for JSONL logging
+    request_id: String,
 }
 
 impl StreamState {
@@ -95,6 +104,10 @@ impl StreamState {
             generation_data,
             accumulated_output: Vec::new(),
             finish_reason: None,
+            chunk_count: 0,
+            stream_start_logged: false,
+            accumulated_sse_data: Vec::new(),
+            request_id: String::new(),
         }
     }
 }
@@ -172,6 +185,10 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
 /// * `input_tokens` - Optional input token count for fallback calculation
 /// * `ttft_timeout_secs` - Optional TTFT timeout in seconds
 /// * `generation_data` - Optional Langfuse generation data for tracing
+/// * `request_id` - Optional request ID for JSONL logging
+/// * `endpoint` - Optional endpoint for JSONL logging
+/// * `request_payload` - Optional request payload for JSONL logging
+#[allow(clippy::too_many_arguments)]
 pub async fn create_sse_stream(
     response: Response,
     original_model: String,
@@ -179,15 +196,18 @@ pub async fn create_sse_stream(
     input_tokens: Option<usize>,
     ttft_timeout_secs: Option<u64>,
     generation_data: Option<GenerationData>,
+    request_id: Option<String>,
+    endpoint: Option<String>,
+    request_payload: Option<Value>,
 ) -> Result<AxumResponse, AppError> {
     let stream = response.bytes_stream();
-    
+
     // Get api_key_name from context
     let api_key_name = get_api_key_name();
-    
+
     // Create initial state with TTFT timeout config - connection established immediately!
     // TTFT timeout is handled inside the stream, not before returning the response.
-    let initial_state = StreamState::new(
+    let mut initial_state = StreamState::new(
         stream,
         input_tokens.unwrap_or(0),
         original_model,
@@ -197,13 +217,21 @@ pub async fn create_sse_stream(
         generation_data,
     );
 
+    // Set JSONL logging parameters (endpoint and request_payload are no longer needed - request is logged separately)
+    initial_state.request_id = request_id.unwrap_or_default();
+    // Note: endpoint and request_payload parameters are kept for API compatibility but not used
+    let _ = endpoint;
+    let _ = request_payload;
+
     // Create the byte stream using unfold - TTFT timeout handled inside
     let byte_stream = futures::stream::unfold(initial_state, |mut state| async move {
         // Get the next chunk, applying TTFT timeout for the first chunk only
         let chunk_result = if !state.first_chunk_received {
             // First chunk - apply TTFT timeout if configured
             if let Some(timeout_secs) = state.ttft_timeout_secs {
-                match tokio::time::timeout(Duration::from_secs(timeout_secs), state.stream.next()).await {
+                match tokio::time::timeout(Duration::from_secs(timeout_secs), state.stream.next())
+                    .await
+                {
                     Ok(chunk) => chunk,
                     Err(_) => {
                         // TTFT timeout - send error event and terminate stream
@@ -222,18 +250,20 @@ pub async fn create_sse_stream(
                                 "code": "ttft_timeout"
                             }
                         });
-                        let error_message = format!(
-                            "event: error\ndata: {}\n\ndata: [DONE]\n\n",
-                            error_event
-                        );
-                        
+                        let error_message =
+                            format!("event: error\ndata: {}\n\ndata: [DONE]\n\n", error_event);
+
                         // Terminate the stream
-                        let terminated_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
-                            Box::pin(futures::stream::empty());
+                        let terminated_stream: Pin<
+                            Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>,
+                        > = Box::pin(futures::stream::empty());
                         state.stream = terminated_stream;
                         state.first_chunk_received = true;
-                        
-                        return Some((Ok::<Vec<u8>, std::io::Error>(error_message.into_bytes()), state));
+
+                        return Some((
+                            Ok::<Vec<u8>, std::io::Error>(error_message.into_bytes()),
+                            state,
+                        ));
                     }
                 }
             } else {
@@ -243,7 +273,7 @@ pub async fn create_sse_stream(
             // Subsequent chunks - no timeout
             state.stream.next().await
         };
-        
+
         match chunk_result {
             Some(Ok(bytes)) => {
                 state.first_chunk_received = true;
@@ -259,16 +289,15 @@ pub async fn create_sse_stream(
                         "code": "provider_error"
                     }
                 });
-                let error_message = format!(
-                    "event: error\ndata: {}\n\ndata: [DONE]\n\n",
-                    error_event
-                );
-                
-                let terminated_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>> =
-                    Box::pin(futures::stream::empty());
+                let error_message =
+                    format!("event: error\ndata: {}\n\ndata: [DONE]\n\n", error_event);
+
+                let terminated_stream: Pin<
+                    Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>,
+                > = Box::pin(futures::stream::empty());
                 state.stream = terminated_stream;
                 state.first_chunk_received = true;
-                
+
                 Some((Ok(error_message.into_bytes()), state))
             }
             None => {
@@ -292,43 +321,88 @@ pub async fn create_sse_stream(
 
 /// Process a chunk of streaming data
 fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
+    // Log stream start on first chunk
+    if !state.stream_start_logged {
+        state.stream_start_logged = true;
+        tracing::debug!(
+            provider = %state.provider_name,
+            model = %state.original_model,
+            "[Stream Start] Streaming response started"
+        );
+    }
+
+    // Increment chunk counter
+    state.chunk_count += 1;
+
     // Fast check: Does this chunk contain SSE data?
     let has_data_line = bytes.windows(6).any(|w| w == b"data: ");
     if !has_data_line {
+        // Log non-SSE chunk at TRACE level
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let chunk_str = String::from_utf8_lossy(&bytes);
+            tracing::trace!(
+                provider = %state.provider_name,
+                chunk_num = state.chunk_count,
+                "[Stream Chunk #{}] (non-SSE) {}",
+                state.chunk_count,
+                chunk_str.trim()
+            );
+        }
         return bytes.to_vec();
     }
-    
+
     // Parse and process chunk, rewrite model field
     let chunk_str = String::from_utf8_lossy(&bytes);
+
+    // Log SSE chunk at DEBUG level
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        // Log each data line separately for better readability
+        for line in chunk_str.lines() {
+            if line.starts_with("data: ") {
+                tracing::debug!(
+                    provider = %state.provider_name,
+                    "[Stream Chunk #{}] {}",
+                    state.chunk_count,
+                    line
+                );
+            }
+        }
+    }
+
     let mut rewritten_lines = Vec::new();
     let mut chunk_modified = false;
-    
+
     for line in chunk_str.split('\n') {
         if !line.starts_with("data: ") || line == "data: [DONE]" {
             rewritten_lines.push(line.to_string());
             continue;
         }
-        
+
         let json_str = line[6..].trim();
         if json_str.is_empty() || !json_str.ends_with('}') {
             rewritten_lines.push(line.to_string());
             continue;
         }
-        
+
         if let Ok(mut json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
             // Rewrite model field to original model (like Python does)
             if json_obj.get("model").is_some() {
                 json_obj["model"] = serde_json::Value::String(state.original_model.clone());
                 chunk_modified = true;
             }
-            
+
             // Check for usage first
             if !state.usage_found {
                 if let Some(usage_value) = json_obj.get("usage") {
                     if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
-                        record_token_usage(&usage, &state.original_model, &state.provider_name, &state.api_key_name);
+                        record_token_usage(
+                            &usage,
+                            &state.original_model,
+                            &state.provider_name,
+                            &state.api_key_name,
+                        );
                         state.usage_found = true;
-                        
+
                         // Capture usage for Langfuse
                         if let Some(ref mut gen_data) = state.generation_data {
                             gen_data.prompt_tokens = usage.prompt_tokens;
@@ -338,10 +412,10 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                     }
                 }
             }
-            
+
             // Extract content and finish_reason for token counting and Langfuse
             let contents = extract_stream_text(&json_obj);
-            
+
             // Capture finish_reason for Langfuse
             if let Some(choices) = json_obj.get("choices").and_then(|c| c.as_array()) {
                 for choice in choices {
@@ -350,52 +424,69 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                     }
                 }
             }
-            
+
             if !contents.is_empty() {
                 let now = Instant::now();
-                
+
                 // Record provider TTFT
                 if state.provider_first_token_time.is_none() {
                     state.provider_first_token_time = Some(now);
                     let provider_ttft = (now - state.start_time).as_secs_f64();
                     let metrics = get_metrics();
-                    metrics.ttft.with_label_values(&["provider", &state.original_model, &state.provider_name]).observe(provider_ttft);
-                    
+                    metrics
+                        .ttft
+                        .with_label_values(&[
+                            "provider",
+                            &state.original_model,
+                            &state.provider_name,
+                        ])
+                        .observe(provider_ttft);
+
                     tracing::debug!(
                         "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
                         state.original_model,
                         state.provider_name,
                         provider_ttft
                     );
-                    
+
                     // Capture TTFT for Langfuse
                     if let Some(ref mut gen_data) = state.generation_data {
                         gen_data.ttft_time = Some(Utc::now());
                     }
                 }
-                
+
                 // Accumulate tokens and output content
                 for content in contents {
                     // Token counting for fallback (only if usage not found)
                     if !state.usage_found {
                         state.output_tokens += count_tokens(&content, &state.original_model);
                     }
-                    
+
                     // Accumulate output for Langfuse
                     if state.generation_data.is_some() {
                         state.accumulated_output.push(content);
                     }
                 }
             }
-            
+
+            // Accumulate raw SSE data for JSONL logging
+            if !state.request_id.is_empty() {
+                let rewritten_json =
+                    serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
+                state
+                    .accumulated_sse_data
+                    .push(format!("data: {}", rewritten_json));
+            }
+
             // Rebuild the line with rewritten JSON
-            let rewritten_json = serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
+            let rewritten_json =
+                serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
             rewritten_lines.push(format!("data: {}", rewritten_json));
         } else {
             rewritten_lines.push(line.to_string());
         }
     }
-    
+
     // Return rewritten chunk if modified, otherwise original
     if chunk_modified {
         rewritten_lines.join("\n").into_bytes()
@@ -406,6 +497,14 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
 
 /// Finalize stream and record metrics
 fn finalize_stream(state: &StreamState) {
+    // Log stream end
+    tracing::debug!(
+        provider = %state.provider_name,
+        model = %state.original_model,
+        chunks = state.chunk_count,
+        "[Stream End] Streaming completed"
+    );
+
     // Record fallback token usage if provider didn't send usage
     if !state.usage_found && state.output_tokens > 0 {
         record_fallback_token_usage(
@@ -416,12 +515,12 @@ fn finalize_stream(state: &StreamState) {
             &state.api_key_name,
         );
     }
-    
+
     // Calculate and record TPS
     let total_duration = state.start_time.elapsed().as_secs_f64();
     if total_duration > 0.0 && state.output_tokens > 0 {
         let metrics = get_metrics();
-        
+
         // Provider TPS
         if let Some(provider_first_time) = state.provider_first_token_time {
             let provider_duration = provider_first_time.elapsed().as_secs_f64();
@@ -431,7 +530,7 @@ fn finalize_stream(state: &StreamState) {
                     .tokens_per_second
                     .with_label_values(&["provider", &state.original_model, &state.provider_name])
                     .observe(provider_tps);
-                
+
                 tracing::info!(
                     "Provider TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
                     state.original_model,
@@ -443,27 +542,47 @@ fn finalize_stream(state: &StreamState) {
             }
         }
     }
-    
+
     // Record Langfuse generation
     if let Some(ref gen_data) = state.generation_data {
         let mut final_gen_data = gen_data.clone();
-        
+
         // Set output content from accumulated output
         final_gen_data.output_content = Some(state.accumulated_output.join(""));
         final_gen_data.finish_reason = state.finish_reason.clone();
         final_gen_data.end_time = Some(Utc::now());
-        
+
         // Set token usage (from provider or fallback)
         if !state.usage_found {
             final_gen_data.prompt_tokens = state.input_tokens as u32;
             final_gen_data.completion_tokens = state.output_tokens as u32;
             final_gen_data.total_tokens = (state.input_tokens + state.output_tokens) as u32;
         }
-        
+
         // Send to Langfuse (non-blocking)
         if let Ok(service) = get_langfuse_service().read() {
             service.trace_generation(final_gen_data);
         }
+    }
+
+    // Log streaming response to JSONL if enabled and request_id is set
+    if !state.request_id.is_empty() {
+        // Log client-facing streaming response
+        log_streaming_response(
+            &state.request_id,
+            200, // Streaming responses are always 200 if we reach finalize
+            None,
+            state.accumulated_sse_data.clone(),
+        );
+
+        // Log provider streaming response (raw SSE data from provider)
+        log_provider_streaming_response(
+            &state.request_id,
+            &state.provider_name,
+            200,
+            None,
+            state.accumulated_sse_data.clone(),
+        );
     }
 }
 
@@ -496,6 +615,7 @@ fn extract_stream_text(chunk_obj: &Value) -> Vec<String> {
     if let Some(choices) = chunk_obj.get("choices").and_then(|c| c.as_array()) {
         for choice in choices {
             if let Some(delta) = choice.get("delta") {
+                // Extract content field
                 if let Some(content_field) = delta.get("content") {
                     match content_field {
                         Value::String(text) => contents.push(text.clone()),
@@ -509,6 +629,10 @@ fn extract_stream_text(chunk_obj: &Value) -> Vec<String> {
                         }
                         _ => {}
                     }
+                }
+                // Extract reasoning_content field (for OpenAI-compatible APIs like Grok)
+                if let Some(reasoning) = delta.get("reasoning_content").and_then(|r| r.as_str()) {
+                    contents.push(reasoning.to_string());
                 }
             }
         }
@@ -645,7 +769,7 @@ mod tests {
             Some(30), // ttft_timeout_secs
             None,     // generation_data (Langfuse disabled)
         );
-        
+
         assert_eq!(state.input_tokens, 100);
         assert_eq!(state.output_tokens, 0);
         assert!(!state.usage_found);
@@ -662,7 +786,7 @@ mod tests {
     fn test_stream_state_with_langfuse() {
         use futures::stream;
         let empty_stream = stream::empty();
-        
+
         let gen_data = GenerationData {
             trace_id: "test-trace-id".to_string(),
             request_id: "test-request-id".to_string(),
@@ -670,7 +794,7 @@ mod tests {
             endpoint: "/v1/chat/completions".to_string(),
             ..Default::default()
         };
-        
+
         let state = StreamState::new(
             empty_stream,
             100,
@@ -680,7 +804,7 @@ mod tests {
             Some(30),
             Some(gen_data),
         );
-        
+
         assert!(state.generation_data.is_some());
         let gen = state.generation_data.as_ref().unwrap();
         assert_eq!(gen.trace_id, "test-trace-id");

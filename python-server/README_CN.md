@@ -29,6 +29,8 @@
 - ✅ **加权负载均衡** - 智能的加权轮询算法，支持按权重分配请求
 - ✅ **流式响应** - 完整的 SSE 流式响应支持
 - ✅ **OpenAI 兼容** - 100% 兼容 OpenAI API 格式
+- ✅ **跨协议转换** - 接受任意协议格式（OpenAI、Anthropic、Response API）并路由到任意提供商
+- ✅ **V2 API 端点** - 新增支持完整跨协议转换的端点
 - ✅ **模型映射** - 灵活的模型名称转换和路由
 - ✅ **Prometheus 监控** - 完整的指标收集和导出
 - ✅ **Grafana 可视化** - 预配置的仪表盘和告警
@@ -40,6 +42,8 @@
 - ✅ **速率限制** - 可选的按 Key 速率限制
 - ✅ **动态配置** - 基于 PostgreSQL 的热重载配置
 - ✅ **异步处理** - FastAPI + httpx 全异步架构
+- ✅ **Langfuse 集成** - 可选的 LLM 可观测性和追踪
+- ✅ **JSONL 日志** - 可选的异步 JSONL 文件日志用于调试
 
 ## 🔧 技术栈
 
@@ -236,13 +240,68 @@ curl http://localhost:18000/health/detailed
 
 ### 支持的端点
 
+**V1 API（传统）**
 - `/v1/chat/completions` - Chat 接口
 - `/v1/completions` - Completions 接口
 - `/v1/models` - 列出所有可用模型
+
+**V2 API（跨协议支持）**
+- `/v2/chat/completions` - OpenAI 兼容，支持跨协议转换
+- `/v2/messages` - Anthropic 兼容，支持跨协议转换
+- `/v2/responses` - Response API，支持跨协议转换
+
+**其他端点**
 - `/health` - 基础健康检查
 - `/health/detailed` - 详细健康检查（测试所有 provider）
 - `/metrics` - Prometheus 指标端点
 - `/docs` - OpenAPI 文档
+
+### V2 API：跨协议转换
+
+V2 API 端点支持跨协议转换，允许您以任何支持的格式发送请求并路由到任何提供商：
+
+```bash
+# 向 Anthropic 提供商发送 OpenAI 请求
+curl http://localhost:18000/v2/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $YOUR_CREDENTIAL_KEY" \
+  -d '{
+    "model": "claude-3-opus",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# 向 OpenAI 提供商发送 Anthropic 请求
+curl http://localhost:18000/v2/messages \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $YOUR_CREDENTIAL_KEY" \
+  -d '{
+    "model": "gpt-4",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# 向任意提供商发送 Response API 请求
+curl http://localhost:18000/v2/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $YOUR_CREDENTIAL_KEY" \
+  -d '{
+    "model": "gpt-4",
+    "instructions": "You are a helpful assistant.",
+    "input": "Hello!",
+    "max_output_tokens": 1000
+  }'
+```
+
+**工作原理：**
+1. 代理从请求格式检测客户端协议
+2. 将请求转换为提供商的原生协议
+3. 将请求转发到选定的提供商
+4. 将响应转换回客户端期望的格式
+
+**性能：**
+- 同协议请求使用旁路优化（最小开销）
+- 跨协议请求使用完整转换管道
+- 指标跟踪旁路与跨协议使用情况
 
 ## 🔑 Admin API
 
@@ -360,6 +419,135 @@ curl -X POST http://localhost:18000/admin/v1/credentials \
 - **生产环境 Key**：设置合理的速率限制，防止滥用
 - **开发/测试 Key**：可以不设置速率限制，方便开发调试
 - **特殊用途 Key**：根据实际需求灵活配置
+
+## 🔍 Langfuse 集成
+
+LLM Proxy 支持可选的 [Langfuse](https://langfuse.com) 集成，用于 LLM 可观测性和追踪。
+
+### 功能特性
+
+- **请求追踪**：捕获提供商信息、请求/响应数据、token 使用量
+- **TTFT 追踪**：流式请求的首 token 时间指标
+- **采样支持**：可配置的采样率，适用于高流量场景
+- **后台批处理**：异步批处理，最小化延迟影响
+
+### 配置
+
+设置以下环境变量以启用 Langfuse：
+
+| 变量 | 描述 | 默认值 |
+|------|------|--------|
+| `LANGFUSE_ENABLED` | 启用 Langfuse 追踪 | `false` |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse 公钥（启用时必需） | - |
+| `LANGFUSE_SECRET_KEY` | Langfuse 密钥（启用时必需） | - |
+| `LANGFUSE_HOST` | Langfuse 服务器 URL | `https://cloud.langfuse.com` |
+| `LANGFUSE_SAMPLE_RATE` | 采样率（0.0-1.0） | `1.0` |
+| `LANGFUSE_FLUSH_INTERVAL` | 刷新间隔（秒） | `5` |
+| `LANGFUSE_DEBUG` | 启用调试日志 | `false` |
+
+### 启用 Langfuse
+
+1. 在 [Langfuse](https://langfuse.com) 注册并创建项目
+2. 从项目设置中获取公钥和密钥
+3. 设置环境变量：
+
+```bash
+export LANGFUSE_ENABLED=true
+export LANGFUSE_PUBLIC_KEY=pk-lf-...
+export LANGFUSE_SECRET_KEY=sk-lf-...
+```
+
+4. 重启服务器
+
+追踪将出现在您的 Langfuse 仪表板中，包含：
+- 提供商信息（哪个提供商处理了请求）
+- 模型映射（原始模型名 vs 映射模型名）
+- Token 使用量（提示、完成、总计）
+- 时间指标（持续时间、流式的 TTFT）
+- 错误详情（如果请求失败）
+
+## 📝 JSONL 日志
+
+LLM Proxy 支持可选的 JSONL 文件日志，用于调试和分析。请求和响应记录为单独的 JSONL 行，通过 `request_id` 关联。
+
+### 功能特性
+
+- **异步日志**：非阻塞的缓冲写入，定期刷新
+- **独立记录**：客户端请求、提供商请求和响应分别记录
+- **流式支持**：捕获流式响应的完整块序列
+- **关联记录**：所有记录共享相同的 `request_id` 以便关联
+
+### 配置
+
+设置以下环境变量以启用 JSONL 日志：
+
+| 变量 | 描述 | 默认值 |
+|------|------|--------|
+| `JSONL_LOG_ENABLED` | 启用 JSONL 日志 | `false` |
+| `JSONL_LOG_PATH` | JSONL 日志文件路径 | `./logs/requests.jsonl` |
+| `JSONL_LOG_BUFFER_SIZE` | 队列缓冲区大小 | `1000` |
+
+### 启用 JSONL 日志
+
+```bash
+export JSONL_LOG_ENABLED=true
+export JSONL_LOG_PATH=./logs/requests.jsonl
+export JSONL_LOG_BUFFER_SIZE=1000
+```
+
+### 日志记录类型
+
+每个 JSONL 行包含以下记录类型之一：
+
+1. **`request`** - 收到客户端请求
+   ```json
+   {
+     "type": "request",
+     "timestamp": "2026-01-23T19:30:00.000Z",
+     "request_id": "req-123",
+     "endpoint": "/v2/chat/completions",
+     "provider": "openai-main",
+     "payload": {...}
+   }
+   ```
+
+2. **`provider_request`** - 发送到提供商的请求
+   ```json
+   {
+     "type": "provider_request",
+     "timestamp": "2026-01-23T19:30:00.100Z",
+     "request_id": "req-123",
+     "provider": "openai-main",
+     "api_base": "https://api.openai.com/v1",
+     "endpoint": "/chat/completions",
+     "payload": {...}
+   }
+   ```
+
+3. **`provider_response`** - 来自提供商的响应
+   ```json
+   {
+     "type": "provider_response",
+     "timestamp": "2026-01-23T19:30:01.000Z",
+     "request_id": "req-123",
+     "provider": "openai-main",
+     "status_code": 200,
+     "body": {...}
+   }
+   ```
+
+4. **`response`** - 发送给客户端的响应
+   ```json
+   {
+     "type": "response",
+     "timestamp": "2026-01-23T19:30:01.100Z",
+     "request_id": "req-123",
+     "status_code": 200,
+     "body": {...}
+   }
+   ```
+
+对于流式响应，`body` 被替换为包含所有 SSE 块的 `chunk_sequence`。
 
 ## 📊 监控
 

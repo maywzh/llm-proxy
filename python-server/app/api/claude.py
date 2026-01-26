@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from app.api.dependencies import verify_auth, get_provider_svc
+from app.api.proxy import _strip_provider_suffix
 from app.services.provider_service import ProviderService
 from app.services.langfuse_service import (
     get_langfuse_service,
@@ -109,9 +110,15 @@ async def create_message(
             f"stream={claude_request.stream}"
         )
 
-        # Select provider based on model
+        # Strip provider suffix before selecting provider (P0 fix: ensure consistency with Rust v1)
+        effective_model = _strip_provider_suffix(claude_request.model)
+        logger.debug(
+            f"Effective model after stripping provider suffix: {effective_model}"
+        )
+
+        # Select provider based on effective model
         try:
-            provider = provider_svc.get_next_provider(model=claude_request.model)
+            provider = provider_svc.get_next_provider(model=effective_model)
         except ValueError as e:
             logger.error(f"Provider selection failed: {str(e)}")
             generation_data.is_error = True
@@ -149,12 +156,20 @@ async def create_message(
         request.state.model = claude_request.model
         request.state.provider = provider.name
 
+        # P0 fix: Use x-api-key header for Anthropic protocol
         headers = {
             "Authorization": f"Bearer {provider.api_key}",
             "Content-Type": "application/json",
         }
 
-        url = f"{provider.api_base}/chat/completions"
+        # Check if provider is Anthropic type and adjust headers
+        if hasattr(provider, 'provider_type') and provider.provider_type == 'anthropic':
+            headers["anthropic-version"] = "2023-06-01"
+            headers["x-api-key"] = provider.api_key
+            del headers["Authorization"]
+            url = f"{provider.api_base}/v1/messages"
+        else:
+            url = f"{provider.api_base}/chat/completions"
 
         try:
             set_provider_context(provider.name)

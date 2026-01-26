@@ -18,6 +18,7 @@ fn provider_config_strategy() -> impl Strategy<Value = ProviderConfig> {
         api_key: format!("key_{}", key),
         weight,
         model_mapping: HashMap::new(),
+        provider_type: "openai".to_string(),
     })
 }
 
@@ -93,6 +94,7 @@ proptest! {
                     api_key: "key1".to_string(),
                     weight: weight1,
                     model_mapping: HashMap::new(),
+                    provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
                     name: "Provider2".to_string(),
@@ -100,6 +102,7 @@ proptest! {
                     api_key: "key2".to_string(),
                     weight: weight2,
                     model_mapping: HashMap::new(),
+                    provider_type: "openai".to_string(),
                 },
             ],
             server: ServerConfig::default(),
@@ -188,6 +191,7 @@ proptest! {
                     api_key: "key".to_string(),
                     weight: 1,
                     model_mapping,
+                    provider_type: "openai".to_string(),
                 },
             ],
             server: ServerConfig::default(),
@@ -247,6 +251,7 @@ proptest! {
                     api_key: "key".to_string(),
                     weight,
                     model_mapping: HashMap::new(),
+                    provider_type: "openai".to_string(),
                 },
             ],
             server: ServerConfig::default(),
@@ -288,7 +293,7 @@ proptest! {
         // Calculate total weight and minimum expected selections for lowest weight provider
         let total_weight: u32 = config.providers.iter().map(|p| p.weight).sum();
         let min_weight: u32 = config.providers.iter().map(|p| p.weight).min().unwrap();
-        
+
         // Calculate how many samples we need to have a reasonable chance of seeing all providers
         // With weight ratio of min_weight/total_weight, we need enough samples
         // Use a larger sample size to account for extreme weight ratios
@@ -346,6 +351,7 @@ mod quickcheck_tests {
                 api_key: format!("key{}", i),
                 weight,
                 model_mapping: HashMap::new(),
+                provider_type: "openai".to_string(),
             })
             .collect();
 
@@ -381,6 +387,7 @@ mod quickcheck_tests {
                 api_key: format!("key{}", i),
                 weight: 1,
                 model_mapping: HashMap::new(),
+                provider_type: "openai".to_string(),
             })
             .collect();
 
@@ -438,6 +445,7 @@ mod complex_multi_provider_tests {
                         map.insert("model-c".to_string(), "provider0-model-c".to_string());
                         map
                     },
+                    provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
                     name: "provider1".to_string(),
@@ -451,6 +459,7 @@ mod complex_multi_provider_tests {
                         map.insert("model-d".to_string(), "provider1-model-d".to_string());
                         map
                     },
+                    provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
                     name: "provider2".to_string(),
@@ -463,6 +472,7 @@ mod complex_multi_provider_tests {
                         map.insert("model-d".to_string(), "provider2-model-d".to_string());
                         map
                     },
+                    provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
                     name: "provider3".to_string(),
@@ -474,6 +484,7 @@ mod complex_multi_provider_tests {
                         map.insert("model-c".to_string(), "provider3-model-c".to_string());
                         map
                     },
+                    provider_type: "openai".to_string(),
                 },
             ],
             server: ServerConfig::default(),

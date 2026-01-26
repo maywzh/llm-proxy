@@ -4,6 +4,34 @@
 
 ### Added
 
+- **Transformer Pipeline**: Cross-protocol transformation system for LLM API formats
+  - 4-Hook transformation model: `transform_request_out`, `transform_request_in`, `transform_response_in`, `transform_response_out`
+  - Unified Internal Format (UIF) as lingua franca for protocol conversions
+  - Support for OpenAI, Anthropic, and Response API protocols
+  - Protocol auto-detection from request structure
+  - Same-protocol bypass optimization for minimal overhead
+  - Implemented in [`app/transformer/`](app/transformer/) module
+
+- **V2 API Endpoints**: New endpoints with cross-protocol support
+  - `POST /v2/chat/completions` - OpenAI-compatible with cross-protocol transformation
+  - `POST /v2/messages` - Anthropic-compatible with cross-protocol transformation
+  - `POST /v2/responses` - Response API with cross-protocol transformation
+  - Enables sending OpenAI requests to Anthropic providers and vice versa
+  - Implemented in [`app/api/proxy.py`](app/api/proxy.py)
+
+- **JSONL Logging**: Async JSONL file logging for request/response debugging
+  - Separate records for client requests, provider requests, and responses
+  - Streaming and non-streaming response support
+  - Configurable via `JSONL_LOG_ENABLED`, `JSONL_LOG_PATH`, `JSONL_LOG_BUFFER_SIZE`
+  - Buffered writes with periodic flushing for performance
+  - Implemented in [`app/core/jsonl_logger.py`](app/core/jsonl_logger.py)
+
+- **Bypass Metrics**: New Prometheus metrics for transformation optimization
+  - `llm_proxy_bypass_requests_total` - Count of same-protocol bypass requests
+  - `llm_proxy_bypass_streaming_bytes_total` - Bytes passed through without transformation
+  - `llm_proxy_cross_protocol_requests_total` - Count of cross-protocol transformations
+  - Labels: `client_protocol`, `provider_protocol`, `provider`
+
 - **Provider Health Check API**: New endpoint `POST /admin/v1/providers/{id}/health` for checking provider health
   - Test all mapped models or specific models with configurable concurrency
   - Configurable timeout and concurrent request limits

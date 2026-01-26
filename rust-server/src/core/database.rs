@@ -211,7 +211,10 @@ impl Database {
     }
 
     /// Get provider by provider_key (unique string identifier)
-    pub async fn get_provider_by_key(&self, provider_key: &str) -> Result<Option<ProviderEntity>, sqlx::Error> {
+    pub async fn get_provider_by_key(
+        &self,
+        provider_key: &str,
+    ) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let provider = sqlx::query_as::<_, ProviderEntity>(
             r#"
             SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
@@ -226,7 +229,10 @@ impl Database {
     }
 
     /// Create a new provider
-    pub async fn create_provider(&self, provider: &CreateProvider) -> Result<ProviderEntity, sqlx::Error> {
+    pub async fn create_provider(
+        &self,
+        provider: &CreateProvider,
+    ) -> Result<ProviderEntity, sqlx::Error> {
         let entity = sqlx::query_as::<_, ProviderEntity>(
             r#"
             INSERT INTO providers (provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled)
@@ -247,7 +253,11 @@ impl Database {
     }
 
     /// Update an existing provider
-    pub async fn update_provider(&self, id: i32, update: &UpdateProvider) -> Result<Option<ProviderEntity>, sqlx::Error> {
+    pub async fn update_provider(
+        &self,
+        id: i32,
+        update: &UpdateProvider,
+    ) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let entity = sqlx::query_as::<_, ProviderEntity>(
             r#"
             UPDATE providers
@@ -328,7 +338,10 @@ impl Database {
     }
 
     /// Get credential by credential_key hash (for authentication)
-    pub async fn get_credential_by_key(&self, credential_key: &str) -> Result<Option<CredentialEntity>, sqlx::Error> {
+    pub async fn get_credential_by_key(
+        &self,
+        credential_key: &str,
+    ) -> Result<Option<CredentialEntity>, sqlx::Error> {
         let credential = sqlx::query_as::<_, CredentialEntity>(
             r#"
             SELECT id, credential_key, name, allowed_models, rate_limit, is_enabled, created_at, updated_at
@@ -343,7 +356,10 @@ impl Database {
     }
 
     /// Create a new credential
-    pub async fn create_credential(&self, credential: &CreateCredential) -> Result<CredentialEntity, sqlx::Error> {
+    pub async fn create_credential(
+        &self,
+        credential: &CreateCredential,
+    ) -> Result<CredentialEntity, sqlx::Error> {
         let credential_key = hash_key(&credential.key);
         let entity = sqlx::query_as::<_, CredentialEntity>(
             r#"
@@ -363,7 +379,11 @@ impl Database {
     }
 
     /// Update an existing credential
-    pub async fn update_credential(&self, id: i32, update: &UpdateCredential) -> Result<Option<CredentialEntity>, sqlx::Error> {
+    pub async fn update_credential(
+        &self,
+        id: i32,
+        update: &UpdateCredential,
+    ) -> Result<Option<CredentialEntity>, sqlx::Error> {
         let credential_key = update.key.as_ref().map(|k| hash_key(k));
         let entity = sqlx::query_as::<_, CredentialEntity>(
             r#"
@@ -664,10 +684,10 @@ mod tests {
         let key = "sk-test-key-12345";
         let hash = hash_key(key);
         assert_eq!(hash.len(), 64);
-        
+
         let hash2 = hash_key(key);
         assert_eq!(hash, hash2);
-        
+
         let different_hash = hash_key("different-key");
         assert_ne!(hash, different_hash);
     }
@@ -732,7 +752,10 @@ mod tests {
         assert_eq!(encode_password("simple"), "simple");
         assert_eq!(encode_password("EPVr$mtFHghus^Qx"), "EPVr%24mtFHghus%5EQx");
         assert_eq!(encode_password("p@ss#word"), "p%40ss%23word");
-        assert_eq!(encode_password("a&b=c+d/e?f%g"), "a%26b%3Dc%2Bd%2Fe%3Ff%25g");
+        assert_eq!(
+            encode_password("a&b=c+d/e?f%g"),
+            "a%26b%3Dc%2Bd%2Fe%3Ff%25g"
+        );
         assert_eq!(encode_password("with space"), "with%20space");
         assert_eq!(encode_password("user:pass"), "user%3Apass");
     }

@@ -392,6 +392,7 @@ class DynamicConfig:
                 api_key=p.api_key,
                 weight=p.weight,
                 model_mapping=p.get_model_mapping(),
+                provider_type=p.provider_type,
             )
             for p in versioned_config.providers
         ]

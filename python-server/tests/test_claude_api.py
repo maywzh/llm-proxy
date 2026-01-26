@@ -1247,3 +1247,96 @@ class TestToolResultWithError:
         tool_msg = openai_request["messages"][2]
         assert tool_msg["role"] == "tool"
         assert tool_msg["content"] == "Cloudy, 65°F"
+
+
+@pytest.mark.unit
+class TestBillingHeaderStripping:
+    """Test x-anthropic-billing-header prefix stripping from system prompts."""
+
+    def test_strip_billing_header_from_string_system(self):
+        """Test stripping billing header from string system prompt."""
+        claude_request = ClaudeMessagesRequest(
+            model="claude-3-opus-20240229",
+            max_tokens=1024,
+            messages=[ClaudeMessage(role="user", content="Hello!")],
+            system="x-anthropic-billing-header: cc_version=2.1.17.f12; cc_entrypoint=cli",
+        )
+
+        openai_request = claude_to_openai_request(claude_request)
+
+        assert len(openai_request["messages"]) == 2
+        assert openai_request["messages"][0]["role"] == "system"
+        assert (
+            openai_request["messages"][0]["content"]
+            == "cc_version=2.1.17.f12; cc_entrypoint=cli"
+        )
+
+    def test_strip_billing_header_from_list_system(self):
+        """Test stripping billing header from list system prompt."""
+        claude_request = ClaudeMessagesRequest(
+            model="claude-3-opus-20240229",
+            max_tokens=1024,
+            messages=[ClaudeMessage(role="user", content="Hello!")],
+            system=[
+                {
+                    "type": "text",
+                    "text": "x-anthropic-billing-header: cc_version=2.1.17.f12; cc_entrypoint=cli",
+                },
+                {"type": "text", "text": "You are a helpful assistant."},
+            ],
+        )
+
+        openai_request = claude_to_openai_request(claude_request)
+
+        assert len(openai_request["messages"]) == 2
+        assert openai_request["messages"][0]["role"] == "system"
+        # First block should have header stripped, second should be unchanged
+        content = openai_request["messages"][0]["content"]
+        assert "cc_version=2.1.17.f12; cc_entrypoint=cli" in content
+        assert "You are a helpful assistant." in content
+        assert "x-anthropic-billing-header:" not in content
+
+    def test_no_stripping_when_no_header(self):
+        """Test that normal system prompts are not modified."""
+        claude_request = ClaudeMessagesRequest(
+            model="claude-3-opus-20240229",
+            max_tokens=1024,
+            messages=[ClaudeMessage(role="user", content="Hello!")],
+            system="You are a helpful assistant.",
+        )
+
+        openai_request = claude_to_openai_request(claude_request)
+
+        assert (
+            openai_request["messages"][0]["content"] == "You are a helpful assistant."
+        )
+
+    def test_strip_billing_header_with_extra_spaces(self):
+        """Test stripping billing header with extra spaces after colon."""
+        claude_request = ClaudeMessagesRequest(
+            model="claude-3-opus-20240229",
+            max_tokens=1024,
+            messages=[ClaudeMessage(role="user", content="Hello!")],
+            system="x-anthropic-billing-header:   cc_version=2.1.17.f12",
+        )
+
+        openai_request = claude_to_openai_request(claude_request)
+
+        assert openai_request["messages"][0]["content"] == "cc_version=2.1.17.f12"
+
+    def test_strip_billing_header_only_at_start(self):
+        """Test that billing header is only stripped from the start of text."""
+        claude_request = ClaudeMessagesRequest(
+            model="claude-3-opus-20240229",
+            max_tokens=1024,
+            messages=[ClaudeMessage(role="user", content="Hello!")],
+            system="Some text x-anthropic-billing-header: should not be stripped",
+        )
+
+        openai_request = claude_to_openai_request(claude_request)
+
+        # Header in the middle should not be stripped
+        assert (
+            openai_request["messages"][0]["content"]
+            == "Some text x-anthropic-billing-header: should not be stripped"
+        )
