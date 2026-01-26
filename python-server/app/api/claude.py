@@ -163,7 +163,7 @@ async def create_message(
         }
 
         # Check if provider is Anthropic type and adjust headers
-        if hasattr(provider, 'provider_type') and provider.provider_type == 'anthropic':
+        if hasattr(provider, "provider_type") and provider.provider_type == "anthropic":
             headers["anthropic-version"] = "2023-06-01"
             headers["x-api-key"] = provider.api_key
             del headers["Authorization"]
@@ -396,20 +396,21 @@ async def _handle_non_streaming_request(
         except Exception:
             error_json = {"error": {"message": response.text}}
 
+        # Handle both error formats: {"error": {"message": "..."}} and {"error": "..."}
+        error_obj = error_json.get("error", {})
+        if isinstance(error_obj, str):
+            error_message = error_obj
+        else:
+            error_message = error_obj.get("message", f"HTTP {response.status_code}")
+
         generation_data.is_error = True
-        generation_data.error_message = error_json.get("error", {}).get(
-            "message", f"HTTP {response.status_code}"
-        )
+        generation_data.error_message = error_message
         generation_data.end_time = datetime.now(timezone.utc)
         if trace_id:
             langfuse_service.trace_generation(generation_data)
 
         return JSONResponse(
-            content=_build_claude_error_response(
-                error_json.get("error", {}).get(
-                    "message", f"HTTP {response.status_code}"
-                )
-            ),
+            content=_build_claude_error_response(error_message),
             status_code=response.status_code,
         )
 

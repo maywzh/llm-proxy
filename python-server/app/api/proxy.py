@@ -239,9 +239,12 @@ def _record_bypass_streaming_bytes(provider: str, byte_count: int) -> None:
 
 
 async def _cleanup_stream_context(
-    stream_ctx, ctx: TransformContext, generation_data: GenerationData,
-    trace_id: Optional[str], langfuse_service: LangfuseService,
-    chunk_collector: list[str]
+    stream_ctx,
+    ctx: TransformContext,
+    generation_data: GenerationData,
+    trace_id: Optional[str],
+    langfuse_service: LangfuseService,
+    chunk_collector: list[str],
 ):
     """Cleanup streaming context and finalize logging.
 
@@ -565,10 +568,16 @@ async def _handle_streaming_request(
             )
 
             generation_data.is_error = True
-            generation_data.error_message = (
-                error_json.get("error", {}).get("message", "")
-                or f"HTTP {response.status_code}"
-            )
+            # Handle both error formats: {"error": {"message": "..."}} and {"error": "..."}
+            error_field = error_json.get("error", {})
+            if isinstance(error_field, str):
+                generation_data.error_message = error_field
+            elif isinstance(error_field, dict):
+                generation_data.error_message = (
+                    error_field.get("message", "") or f"HTTP {response.status_code}"
+                )
+            else:
+                generation_data.error_message = f"HTTP {response.status_code}"
             generation_data.end_time = datetime.now(timezone.utc)
             if trace_id:
                 langfuse_service.trace_generation(generation_data)
@@ -824,8 +833,12 @@ async def handle_proxy_request(
 
     # Select provider
     provider, error_response = _select_provider(
-        provider_svc, effective_model, generation_data, trace_id, langfuse_service,
-        client_protocol
+        provider_svc,
+        effective_model,
+        generation_data,
+        trace_id,
+        langfuse_service,
+        client_protocol,
     )
 
     # Return protocol-aware error if provider selection failed

@@ -2,6 +2,12 @@
 
 This module provides the LangfuseService for creating and managing Langfuse traces.
 All Langfuse operations are async and non-blocking to avoid impacting request latency.
+
+Updated for Langfuse SDK v3 (OpenTelemetry-based):
+- Traces are now implicit; use start_observation(as_type="span") for root spans
+- Must call .end() on manual observations
+- Parameter renames: host -> base_url, usage -> usage_details
+- Use span.update_trace() for trace-level attributes
 """
 
 import asyncio
@@ -199,6 +205,11 @@ class LangfuseService:
     - Graceful shutdown with flush
 
     All operations are designed to be non-blocking and fail gracefully.
+
+    Updated for Langfuse SDK v3:
+    - Uses start_observation(as_type="span") instead of trace()
+    - Stores active spans for later updates and ending
+    - Uses span.update_trace() for trace-level attributes
     """
 
     def __init__(self) -> None:
@@ -206,6 +217,8 @@ class LangfuseService:
         self._client: Optional[Any] = None
         self._config: Optional[LangfuseConfig] = None
         self._initialized: bool = False
+        # Store active spans by trace_id for later updates
+        self._active_spans: Dict[str, Any] = {}
 
     def initialize(self, config: Optional[LangfuseConfig] = None) -> None:
         """Initialize the Langfuse client.
@@ -223,15 +236,16 @@ class LangfuseService:
         try:
             from langfuse import Langfuse
 
+            # v3 API: 'host' renamed to 'base_url'
             self._client = Langfuse(
                 public_key=self._config.public_key,
                 secret_key=self._config.secret_key,
-                host=self._config.host,
+                base_url=self._config.host,  # v3: host -> base_url
                 debug=self._config.debug,
                 flush_interval=self._config.flush_interval,
             )
             self._initialized = True
-            logger.info(f"Langfuse client initialized, host={self._config.host}")
+            logger.info(f"Langfuse client initialized, base_url={self._config.host}")
         except ImportError:
             logger.warning("Langfuse package not installed, tracing disabled")
             self._initialized = True
@@ -271,6 +285,10 @@ class LangfuseService:
     ) -> Optional[str]:
         """Create a new trace and return its ID.
 
+        In Langfuse v3, traces are implicit. We create a root span using
+        start_observation(as_type="span") and use span.update_trace() for
+        trace-level attributes.
+
         Args:
             request_id: Internal request ID
             credential_name: Name of the credential used
@@ -297,13 +315,22 @@ class LangfuseService:
             if client_metadata:
                 metadata.update(client_metadata)
 
-            self._client.trace(
-                id=trace_id,
+            # v3 API: Create a root span (trace is implicit)
+            span = self._client.start_observation(
                 name="llm-proxy-request",
+                as_type="span",
                 metadata=metadata,
-                tags=tags or [],
-                user_id=credential_name,
             )
+
+            # v3 API: Set trace-level attributes using update_trace()
+            span.update_trace(
+                user_id=credential_name,
+                tags=tags or [],
+            )
+
+            # Store the span for later updates and ending
+            self._active_spans[trace_id] = span
+
             logger.debug(f"Created Langfuse trace: {trace_id}")
             return trace_id
         except Exception as e:
@@ -322,6 +349,8 @@ class LangfuseService:
         This method updates the trace metadata with provider info after provider selection.
         It also adds provider and model as tags.
 
+        In Langfuse v3, we update the stored span's metadata and trace tags.
+
         Args:
             trace_id: The trace ID to update
             provider_key: The selected provider key
@@ -332,20 +361,24 @@ class LangfuseService:
             return
 
         try:
-            # Update trace with provider info in metadata and tags
-            self._client.trace(
-                id=trace_id,
-                metadata={
-                    "provider_key": provider_key,
-                    "provider_api_base": provider_api_base,
-                    "model": model,
-                },
-                tags=[
-                    f"provider:{provider_key}",
-                    f"model:{model}",
-                ],
-            )
-            logger.debug(f"Updated Langfuse trace with provider: {provider_key}")
+            span = self._active_spans.get(trace_id)
+            if span:
+                # v3 API: Update span metadata
+                span.update(
+                    metadata={
+                        "provider_key": provider_key,
+                        "provider_api_base": provider_api_base,
+                        "model": model,
+                    },
+                )
+                # v3 API: Update trace-level tags
+                span.update_trace(
+                    tags=[
+                        f"provider:{provider_key}",
+                        f"model:{model}",
+                    ],
+                )
+                logger.debug(f"Updated Langfuse trace with provider: {provider_key}")
         except Exception as e:
             logger.warning(f"Failed to update Langfuse trace: {e}")
 
@@ -354,6 +387,11 @@ class LangfuseService:
 
         This method is called after a request completes (success or error).
         It creates a generation span in Langfuse with all collected data.
+
+        In Langfuse v3:
+        - Uses span.start_observation(as_type="generation") for child generations
+        - Uses usage_details instead of usage for token tracking
+        - Must call .end() on manual observations
 
         Args:
             data: GenerationData containing all trace information
@@ -365,13 +403,12 @@ class LangfuseService:
             # Determine level based on error status
             level = "ERROR" if data.is_error else "DEFAULT"
 
-            # Build usage dict
-            usage = None
+            # v3 API: Build usage_details dict (renamed from usage)
+            usage_details = None
             if data.prompt_tokens > 0 or data.completion_tokens > 0:
-                usage = {
-                    "prompt_tokens": data.prompt_tokens,
-                    "completion_tokens": data.completion_tokens,
-                    "total_tokens": data.total_tokens,
+                usage_details = {
+                    "input_tokens": data.prompt_tokens,  # v3: prompt_tokens -> input_tokens
+                    "output_tokens": data.completion_tokens,  # v3: completion_tokens -> output_tokens
                 }
 
             # Build metadata
@@ -386,28 +423,70 @@ class LangfuseService:
             if data.finish_reason:
                 metadata["finish_reason"] = data.finish_reason
 
-            # Create generation
-            self._client.generation(
-                id=data.generation_id,
-                trace_id=data.trace_id,
-                name=data.name,
-                model=data.original_model,
-                model_parameters=(
-                    data.model_parameters if data.model_parameters else None
-                ),
-                input=(
-                    {"messages": data.input_messages} if data.input_messages else None
-                ),
-                output=data.output_content if data.output_content else None,
-                usage=usage,
-                metadata=metadata,
-                start_time=data.start_time,
-                end_time=data.end_time,
-                completion_start_time=data.ttft_time,
-                level=level,
-                status_message=data.error_message,
-            )
-            logger.debug(f"Created Langfuse generation: {data.generation_id}")
+            # Get the parent span for this trace
+            span = self._active_spans.get(data.trace_id)
+            if span:
+                # v3 API: Create a child generation from the parent span
+                generation = span.start_observation(
+                    name=data.name,
+                    as_type="generation",
+                    model=data.original_model,
+                    model_parameters=(
+                        data.model_parameters if data.model_parameters else None
+                    ),
+                    input=(
+                        {"messages": data.input_messages}
+                        if data.input_messages
+                        else None
+                    ),
+                )
+
+                # v3 API: Update generation with output and usage
+                generation.update(
+                    output=data.output_content if data.output_content else None,
+                    usage_details=usage_details,  # v3: usage -> usage_details
+                    metadata=metadata,
+                    level=level,
+                    status_message=data.error_message,
+                )
+
+                # v3 API: Must call .end() for manual observations
+                generation.end()
+
+                # End the parent span as well
+                span.end()
+
+                # Remove from active spans
+                del self._active_spans[data.trace_id]
+
+                logger.debug(f"Created Langfuse generation: {data.generation_id}")
+            else:
+                # Fallback: Create a standalone generation if no parent span found
+                # This shouldn't happen in normal flow but provides resilience
+                generation = self._client.start_observation(
+                    name=data.name,
+                    as_type="generation",
+                    model=data.original_model,
+                    model_parameters=(
+                        data.model_parameters if data.model_parameters else None
+                    ),
+                    input=(
+                        {"messages": data.input_messages}
+                        if data.input_messages
+                        else None
+                    ),
+                )
+                generation.update(
+                    output=data.output_content if data.output_content else None,
+                    usage_details=usage_details,
+                    metadata=metadata,
+                    level=level,
+                    status_message=data.error_message,
+                )
+                generation.end()
+                logger.debug(
+                    f"Created standalone Langfuse generation: {data.generation_id}"
+                )
         except Exception as e:
             logger.warning(f"Failed to create Langfuse generation: {e}")
 
