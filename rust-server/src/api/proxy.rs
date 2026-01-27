@@ -377,16 +377,27 @@ pub async fn handle_proxy_request(
                 // P0 fix: Handle Anthropic protocol with x-api-key header instead of Authorization Bearer
                 let response = match if provider_protocol == Protocol::Anthropic {
                     // Anthropic API requires x-api-key header and anthropic-version header
-                    state
+                    let anthropic_version = headers
+                        .get("anthropic-version")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("2023-06-01");
+
+                    let mut req = state
                         .app_state
                         .http_client
                         .post(&url)
                         .header("x-api-key", &provider.api_key)
-                        .header("anthropic-version", "2023-06-01")
-                        .header("Content-Type", "application/json")
-                        .json(&provider_payload)
-                        .send()
-                        .await
+                        .header("anthropic-version", anthropic_version)
+                        .header("Content-Type", "application/json");
+
+                    // Forward anthropic-beta header if provided by client
+                    if let Some(beta) = headers.get("anthropic-beta") {
+                        if let Ok(beta_str) = beta.to_str() {
+                            req = req.header("anthropic-beta", beta_str);
+                        }
+                    }
+
+                    req.json(&provider_payload).send().await
                 } else {
                     // OpenAI and other protocols use Authorization Bearer header
                     state
