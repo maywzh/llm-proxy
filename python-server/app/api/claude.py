@@ -164,8 +164,16 @@ async def create_message(
 
         # Check if provider is Anthropic type and adjust headers
         if hasattr(provider, "provider_type") and provider.provider_type == "anthropic":
-            headers["anthropic-version"] = "2023-06-01"
+            headers["anthropic-version"] = request.headers.get(
+                "anthropic-version", "2023-06-01"
+            )
             headers["x-api-key"] = provider.api_key
+
+            # Forward anthropic-beta header if provided
+            anthropic_beta = request.headers.get("anthropic-beta")
+            if anthropic_beta:
+                headers["anthropic-beta"] = anthropic_beta
+
             del headers["Authorization"]
             url = f"{provider.api_base}/v1/messages"
         else:
