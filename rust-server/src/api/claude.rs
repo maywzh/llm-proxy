@@ -268,7 +268,7 @@ pub async fn create_message(
 
         // Capture provider info for Langfuse
         generation_data.provider_key = provider.name.clone();
-        generation_data.provider_type = "openai".to_string();
+        generation_data.provider_type = provider.provider_type.clone();
         generation_data.provider_api_base = provider.api_base.clone();
         // Use pattern-aware model mapping
         let mapped_model = provider.get_mapped_model(&model_label);
@@ -311,7 +311,13 @@ pub async fn create_message(
             }
         }
 
-        let url = format!("{}/chat/completions", provider.api_base);
+        // Determine URL based on provider_type
+        let is_anthropic = provider.provider_type == "anthropic";
+        let url = if is_anthropic {
+            format!("{}/v1/messages", provider.api_base)
+        } else {
+            format!("{}/chat/completions", provider.api_base)
+        };
 
         // Execute request within provider context scope
         PROVIDER_CONTEXT
@@ -319,6 +325,7 @@ pub async fn create_message(
                 tracing::debug!(
                     request_id = %request_id,
                     provider = %provider.name,
+                    provider_type = ?provider.provider_type,
                     model = %model_label,
                     stream = claude_request.stream,
                     "Processing Claude completion request"
@@ -337,23 +344,51 @@ pub async fn create_message(
                 // Get api_key_name from context for use in closures
                 let api_key_name = get_api_key_name();
 
-                // Log provider request to JSONL (the OpenAI-format request sent to provider)
+                // Log provider request to JSONL
+                let provider_endpoint = if is_anthropic { "/v1/messages" } else { "/chat/completions" };
                 log_provider_request(
                     &request_id,
                     &provider.name,
                     &provider.api_base,
-                    "/chat/completions",
-                    &openai_request,
+                    provider_endpoint,
+                    if is_anthropic { &claude_request_value } else { &openai_request },
                 );
 
-                let response = match state
-                    .http_client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", provider.api_key))
-                    .header("Content-Type", "application/json")
-                    .json(&openai_request)
-                    .send()
-                    .await
+                // Build and send request based on provider_type
+                let response = if is_anthropic {
+                    // Anthropic protocol: use x-api-key and forward anthropic-specific headers
+                    let mut req = state
+                        .http_client
+                        .post(&url)
+                        .header("x-api-key", &provider.api_key)
+                        .header("Content-Type", "application/json");
+
+                    // Forward anthropic-version header (use client value or default)
+                    let anthropic_version = headers
+                        .get("anthropic-version")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("2023-06-01");
+                    req = req.header("anthropic-version", anthropic_version);
+
+                    // Forward anthropic-beta header if provided by client
+                    if let Some(beta) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
+                        req = req.header("anthropic-beta", beta);
+                    }
+
+                    req.json(&claude_request).send().await
+                } else {
+                    // OpenAI protocol: use Authorization Bearer
+                    state
+                        .http_client
+                        .post(&url)
+                        .header("Authorization", format!("Bearer {}", provider.api_key))
+                        .header("Content-Type", "application/json")
+                        .json(&openai_request)
+                        .send()
+                        .await
+                };
+
+                let response = match response
                 {
                     Ok(resp) => resp,
                     Err(e) => {
