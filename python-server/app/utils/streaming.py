@@ -68,34 +68,119 @@ def calculate_message_tokens(messages: list, model: str) -> int:
     return total_tokens
 
 
-async def rewrite_sse_chunk(chunk: bytes, original_model: Optional[str]) -> bytes:
-    """Rewrite model field in SSE chunk"""
-    if not original_model:
-        return chunk
+async def rewrite_sse_chunk_with_usage(
+    chunk: bytes,
+    original_model: Optional[str],
+    state: Dict[str, Any],
+) -> bytes:
+    """Rewrite model field and inject fallback usage into finish_reason chunk
 
+    Args:
+        chunk: SSE chunk bytes
+        original_model: Original model name to rewrite
+        state: Mutable state dict with keys:
+            - input_tokens: int
+            - output_tokens: int (accumulated in real-time)
+            - usage_found: bool
+            - usage_chunk_sent: bool
+
+    Returns:
+        Rewritten chunk bytes
+    """
     chunk_str = chunk.decode("utf-8", errors="ignore")
-    if '"model":' not in chunk_str:
+
+    # Early return if nothing to rewrite
+    if not original_model and state["usage_found"]:
         return chunk
 
-    lines = chunk_str.split("\n")
+    # Split by SSE event delimiter (\n\n) to preserve event boundaries
     rewritten_lines = []
+    chunk_modified = False
+    has_done = False
 
-    for line in lines:
-        if line.startswith("data: ") and line != "data: [DONE]":
+    for event in chunk_str.split("\n\n"):
+        event = event.strip()
+        if not event:
+            continue
+
+        # Process each line in the event
+        event_lines = []
+        event_has_data = False
+
+        for line in event.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Check for [DONE] marker
+            if line == "data: [DONE]":
+                has_done = True
+                continue
+
+            if not line.startswith("data: "):
+                event_lines.append(line)
+                continue
+
+            event_has_data = True
+            json_str = line[6:].strip()
+
+            # Skip empty or incomplete JSON
+            if not json_str or not json_str.endswith('}'):
+                event_lines.append(line)
+                continue
+
             try:
-                json_str = line[6:]
                 json_obj = json.loads(json_str)
-                if "model" in json_obj:
-                    json_obj["model"] = original_model
-                rewritten_lines.append(
-                    "data: " + json.dumps(json_obj, separators=(", ", ": "))
-                )
-            except:
-                rewritten_lines.append(line)
-        else:
-            rewritten_lines.append(line)
 
-    return "\n".join(rewritten_lines).encode("utf-8")
+                # Rewrite model field to original model
+                if original_model and "model" in json_obj:
+                    json_obj["model"] = original_model
+                    chunk_modified = True
+
+                # Check for finish_reason
+                has_finish_reason = False
+                if "choices" in json_obj:
+                    for choice in json_obj["choices"]:
+                        if choice.get("finish_reason"):
+                            has_finish_reason = True
+                            break
+
+                # Inject fallback usage into finish_reason chunk if provider didn't provide it
+                if (has_finish_reason and
+                    not state["usage_found"] and
+                    not state["usage_chunk_sent"] and
+                    (state["input_tokens"] > 0 or state["output_tokens"] > 0)):
+                    json_obj["usage"] = {
+                        "prompt_tokens": state["input_tokens"],
+                        "completion_tokens": state["output_tokens"],
+                        "total_tokens": state["input_tokens"] + state["output_tokens"]
+                    }
+                    state["usage_chunk_sent"] = True
+                    chunk_modified = True
+
+                # Rebuild the line with rewritten JSON
+                rewritten_json = json.dumps(json_obj, separators=(", ", ": "))
+                event_lines.append(f"data: {rewritten_json}")
+            except json.JSONDecodeError:
+                event_lines.append(line)
+
+        # Add event to rewritten_lines if it had data
+        if event_has_data and event_lines:
+            rewritten_lines.append("\n".join(event_lines))
+
+    # Add [DONE] if it was detected
+    if has_done:
+        rewritten_lines.append("data: [DONE]")
+        chunk_modified = True
+
+    # Return rewritten chunk with proper SSE formatting (\n\n between events)
+    if chunk_modified:
+        result = "\n\n".join(rewritten_lines)
+        if result:
+            result += "\n\n"
+        return result.encode("utf-8")
+    else:
+        return chunk
 
 
 async def stream_response(
@@ -309,7 +394,25 @@ async def stream_response(
             except Exception as e:
                 logger.debug(f"Failed to count tokens for TPS: {e}")
 
-            yield await rewrite_sse_chunk(chunk, original_model)
+            # Create state dict for usage injection
+            rewrite_state = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "usage_found": usage_found,
+                "usage_chunk_sent": False
+            }
+
+            # Rewrite chunk with model and inject fallback usage if needed
+            rewritten_chunk = await rewrite_sse_chunk_with_usage(
+                chunk,
+                original_model,
+                rewrite_state
+            )
+
+            # Update output_tokens from state (may be modified during rewrite)
+            output_tokens = rewrite_state["output_tokens"]
+
+            yield rewritten_chunk
 
         # If no usage was provided by provider, use calculated values (fallback)
         if not usage_found and request_data:
