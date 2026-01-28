@@ -243,6 +243,8 @@ struct StreamingState {
     ping_emitted: bool,
     /// Whether text content_block_start has been emitted (on-demand synthesis)
     text_block_started: bool,
+    /// Whether provider returned usage (bypass fallback if true)
+    usage_found: bool,
 }
 
 /// State for tracking tool calls during streaming.
@@ -269,6 +271,7 @@ struct ToolCallState {
 pub fn convert_openai_streaming_to_claude(
     openai_stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     original_model: String,
+    fallback_input_tokens: Option<usize>,
 ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
     let message_id = format!("msg_{}", &Uuid::new_v4().simple().to_string()[..24]);
 
@@ -279,13 +282,19 @@ pub fn convert_openai_streaming_to_claude(
         tool_block_counter: 0,
         current_tool_calls: HashMap::new(),
         final_stop_reason: constants::STOP_END_TURN.to_string(),
-        usage_data: ClaudeUsage::default(),
+        usage_data: ClaudeUsage {
+            input_tokens: fallback_input_tokens.unwrap_or(0) as i32,
+            output_tokens: 0,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
         thinking_block_started: false,
         thinking_block_index: -1, // Will be set to 0 when thinking starts
         // On-demand synthesis: start with nothing emitted
         message_started: false,
         ping_emitted: false,
         text_block_started: false,
+        usage_found: false,
     };
 
     // No pre-generated events - use on-demand synthesis pattern (V2 style)
@@ -351,9 +360,14 @@ pub fn convert_openai_streaming_to_claude(
 
                             match serde_json::from_str::<Value>(chunk_data) {
                                 Ok(chunk_json) => {
-                                    // Extract usage if present
+                                    // Extract usage if present AND valid (input_tokens > 0)
+                                    // Only bypass fallback if provider returns meaningful usage
                                     if let Some(usage) = chunk_json.get("usage") {
-                                        state.usage_data = extract_usage_data(usage);
+                                        let extracted_usage = extract_usage_data(usage);
+                                        if extracted_usage.input_tokens > 0 {
+                                            state.usage_data = extracted_usage;
+                                            state.usage_found = true;
+                                        }
                                     }
 
                                     let choices =
@@ -383,7 +397,7 @@ pub fn convert_openai_streaming_to_claude(
                                         if has_content && !state.message_started {
                                             let mut init_events = Vec::new();
 
-                                            // Synthesize message_start
+                                            // Synthesize message_start with fallback input_tokens
                                             init_events.push(format_sse_event(
                                                 constants::EVENT_MESSAGE_START,
                                                 &json!({
@@ -396,7 +410,7 @@ pub fn convert_openai_streaming_to_claude(
                                                         "content": [],
                                                         "stop_reason": null,
                                                         "stop_sequence": null,
-                                                        "usage": {"input_tokens": 0, "output_tokens": 0}
+                                                        "usage": {"input_tokens": state.usage_data.input_tokens, "output_tokens": 0}
                                                     }
                                                 }),
                                             ));
@@ -441,6 +455,13 @@ pub fn convert_openai_streaming_to_claude(
                                                         }
                                                     }),
                                                 ));
+                                            }
+
+                                            // Fallback: accumulate output tokens if provider doesn't return usage
+                                            if !state.usage_found && !reasoning.is_empty() {
+                                                use crate::api::streaming::count_tokens;
+                                                state.usage_data.output_tokens +=
+                                                    count_tokens(reasoning, &state.original_model) as i32;
                                             }
 
                                             // Emit thinking delta
@@ -491,6 +512,13 @@ pub fn convert_openai_streaming_to_claude(
                                                     }),
                                                 ));
                                                 state.text_block_started = true;
+                                            }
+
+                                            // Fallback: accumulate output tokens if provider doesn't return usage
+                                            if !state.usage_found && !content.is_empty() {
+                                                use crate::api::streaming::count_tokens;
+                                                state.usage_data.output_tokens +=
+                                                    count_tokens(content, &state.original_model) as i32;
                                             }
 
                                             // Send text delta even if empty to match Python/claude-code-proxy behavior

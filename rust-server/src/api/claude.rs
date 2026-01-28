@@ -5,7 +5,8 @@
 //! and converting responses back to Claude format.
 
 use crate::api::claude_models::{
-    ClaudeErrorResponse, ClaudeMessagesRequest, ClaudeTokenCountRequest, ClaudeTokenCountResponse,
+    ClaudeContentBlock, ClaudeErrorResponse, ClaudeMessageContent, ClaudeMessagesRequest,
+    ClaudeSystemPrompt, ClaudeTokenCountRequest, ClaudeTokenCountResponse,
 };
 use crate::api::handlers::AppState;
 use crate::api::streaming::count_tokens as tiktoken_count;
@@ -488,6 +489,14 @@ pub async fn create_message(
                 }
 
                 if claude_request.stream {
+                    // Calculate input tokens for fallback (only used if provider doesn't return usage)
+                    let fallback_input_tokens = Some(calculate_claude_input_tokens(&claude_request));
+                    tracing::info!(
+                        "[USAGE_DEBUG] Calculated fallback_input_tokens: {:?} for model: {}",
+                        fallback_input_tokens,
+                        claude_request.model
+                    );
+
                     // Handle streaming response
                     handle_streaming_response(
                         response,
@@ -499,6 +508,7 @@ pub async fn create_message(
                         trace_id,
                         request_id.clone(),
                         serde_json::to_value(&claude_request).unwrap_or_default(),
+                        fallback_input_tokens,
                     )
                     .await
                 } else {
@@ -533,12 +543,17 @@ async fn handle_streaming_response(
     trace_id: Option<String>,
     request_id: String,
     request_payload: serde_json::Value,
+    fallback_input_tokens: Option<usize>,
 ) -> Result<Response> {
     let stream = response.bytes_stream();
     let start_time = std::time::Instant::now();
 
     // Convert OpenAI streaming to Claude streaming format
-    let claude_stream = convert_openai_streaming_to_claude(Box::pin(stream), original_model);
+    let claude_stream = convert_openai_streaming_to_claude(
+        Box::pin(stream),
+        original_model,
+        fallback_input_tokens,
+    );
 
     // Wrap the stream to capture output for Langfuse and JSONL logging
     let model_label_clone = model_label.clone();
@@ -957,6 +972,69 @@ pub async fn count_tokens(
             }))
         })
         .await
+}
+
+// ============================================================================
+// Token Counting Helpers
+// ============================================================================
+
+/// Calculate input tokens for Claude request using tiktoken (for streaming fallback).
+///
+/// This function is used to provide a fallback token count when the upstream
+/// provider doesn't return usage information in streaming responses.
+fn calculate_claude_input_tokens(request: &ClaudeMessagesRequest) -> usize {
+    use crate::api::streaming::count_tokens;
+
+    let model = &request.model;
+    let mut total = 0;
+
+    // System prompt tokens
+    if let Some(ref system) = request.system {
+        match system {
+            ClaudeSystemPrompt::Text(text) => {
+                total += count_tokens(text, model);
+            }
+            ClaudeSystemPrompt::Blocks(blocks) => {
+                for block in blocks {
+                    total += count_tokens(&block.text, model);
+                }
+            }
+        }
+    }
+
+    // Message tokens
+    for msg in &request.messages {
+        // Role tokens
+        total += count_tokens(&msg.role, model);
+
+        // Content tokens
+        match &msg.content {
+            ClaudeMessageContent::Text(text) => {
+                total += count_tokens(text, model);
+            }
+            ClaudeMessageContent::Blocks(blocks) => {
+                for block in blocks {
+                    if let ClaudeContentBlock::Text(text_block) = block {
+                        total += count_tokens(&text_block.text, model);
+                    }
+                }
+            }
+        }
+
+        // Per-message overhead
+        total += 4;
+    }
+
+    // Conversation overhead
+    total += 2;
+
+    // Tools tokens (if any)
+    if let Some(tools) = &request.tools {
+        let tools_str = serde_json::to_string(tools).unwrap_or_default();
+        total += count_tokens(&tools_str, model);
+    }
+
+    total
 }
 
 // ============================================================================

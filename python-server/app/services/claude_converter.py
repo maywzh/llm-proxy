@@ -227,6 +227,7 @@ def convert_openai_tool_calls_to_claude(
 async def convert_openai_streaming_to_claude(
     openai_stream: AsyncIterator[bytes],
     original_model: str,
+    fallback_input_tokens: Optional[int] = None,
 ) -> AsyncIterator[str]:
     """Convert OpenAI streaming response to Claude streaming format.
 
@@ -236,6 +237,7 @@ async def convert_openai_streaming_to_claude(
     Args:
         openai_stream: Async iterator of OpenAI SSE chunks (bytes)
         original_model: The original Claude model name from request
+        fallback_input_tokens: Optional pre-calculated input tokens for fallback
 
     Yields:
         Claude-formatted SSE event strings
@@ -256,7 +258,11 @@ async def convert_openai_streaming_to_claude(
     tool_block_counter = 0
     current_tool_calls: Dict[int, Dict[str, Any]] = {}
     final_stop_reason = ClaudeConstants.STOP_END_TURN
-    usage_data = {"input_tokens": 0, "output_tokens": 0}
+    usage_data = {
+        "input_tokens": fallback_input_tokens or 0,
+        "output_tokens": 0
+    }
+    usage_found = False
     stream_done = False
 
     buffer = StringIO()
@@ -294,10 +300,14 @@ async def convert_openai_streaming_to_claude(
                         try:
                             chunk_json = json.loads(chunk_data)
 
-                            # Extract usage if present
+                            # Extract usage if present AND valid (input_tokens > 0)
+                            # Only bypass fallback if provider returns meaningful usage
                             usage = chunk_json.get("usage")
-                            if usage:
-                                usage_data = _extract_usage_data(usage)
+                            if usage and not usage_found:
+                                extracted_usage = _extract_usage_data(usage)
+                                if extracted_usage.get("input_tokens", 0) > 0:
+                                    usage_data = extracted_usage
+                                    usage_found = True
 
                             choices = chunk_json.get("choices", [])
                             if not choices:
@@ -341,7 +351,7 @@ async def convert_openai_streaming_to_claude(
                                         "content": [],
                                         "stop_reason": None,
                                         "stop_sequence": None,
-                                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                                        "usage": {"input_tokens": usage_data["input_tokens"], "output_tokens": 0},
                                     },
                                 },
                             )
@@ -392,6 +402,11 @@ async def convert_openai_streaming_to_claude(
                         # Handle text delta
                         text_content = delta.get("content")
                         if text_content is not None:
+                            # Accumulate output tokens if provider didn't provide usage
+                            if not usage_found and text_content:
+                                from app.utils.streaming import count_tokens
+                                usage_data["output_tokens"] += count_tokens(text_content, original_model)
+
                             # On-demand synthesis: emit content_block_start for text if not yet emitted
                             if not text_block_started:
                                 yield _format_sse_event(

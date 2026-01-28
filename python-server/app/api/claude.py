@@ -43,6 +43,60 @@ router = APIRouter(prefix="/v1", tags=["claude"])
 logger = get_logger()
 
 
+def _calculate_claude_input_tokens(request: ClaudeMessagesRequest) -> int:
+    """Calculate input tokens for Claude request using tiktoken
+
+    Args:
+        request: Claude Messages API request
+
+    Returns:
+        Estimated input tokens count
+    """
+    model = request.model
+    total = 0
+
+    # Count system prompt tokens
+    if request.system:
+        if isinstance(request.system, str):
+            total += tiktoken_count(request.system, model)
+        elif isinstance(request.system, list):
+            for block in request.system:
+                if hasattr(block, 'text'):
+                    total += tiktoken_count(block.text, model)
+                elif isinstance(block, dict) and 'text' in block:
+                    total += tiktoken_count(block['text'], model)
+
+    # Count message tokens (role + content + overhead)
+    for msg in request.messages:
+        # Role tokens
+        total += tiktoken_count(msg.role, model)
+
+        # Content tokens
+        if isinstance(msg.content, str):
+            total += tiktoken_count(msg.content, model)
+        elif isinstance(msg.content, list):
+            for block in msg.content:
+                if hasattr(block, 'type'):
+                    if block.type == 'text' and hasattr(block, 'text'):
+                        total += tiktoken_count(block.text, model)
+                elif isinstance(block, dict):
+                    if block.get('type') == 'text' and 'text' in block:
+                        total += tiktoken_count(block['text'], model)
+
+        # Message format overhead
+        total += 4
+
+    # Conversation overhead
+    total += 2
+
+    # Count tools tokens
+    if request.tools:
+        tools_str = json.dumps([t.dict() if hasattr(t, 'dict') else t for t in request.tools])
+        total += tiktoken_count(tools_str, model)
+
+    return total
+
+
 async def _close_stream_resources(stream_ctx):
     """Close streaming context."""
     await stream_ctx.__aexit__(None, None, None)
@@ -303,6 +357,9 @@ async def _handle_streaming_request(
     usage_data: dict = {}
     first_token_received = False
 
+    # Pre-calculate input tokens for fallback
+    fallback_input_tokens = _calculate_claude_input_tokens(claude_request)
+
     async def stream_generator():
         nonlocal accumulated_output, finish_reason, usage_data, first_token_received
 
@@ -310,6 +367,7 @@ async def _handle_streaming_request(
             async for event in convert_openai_streaming_to_claude(
                 response.aiter_bytes(),
                 claude_request.model,
+                fallback_input_tokens=fallback_input_tokens,
             ):
                 # Track TTFT
                 if not first_token_received and trace_id:
