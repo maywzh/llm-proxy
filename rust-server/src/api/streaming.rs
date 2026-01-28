@@ -53,6 +53,7 @@ struct StreamState {
     stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     output_tokens: usize,
     usage_found: bool,
+    usage_chunk_sent: bool,  // Track if fallback usage chunk has been sent
     start_time: Instant,
     provider_first_token_time: Option<Instant>,
     input_tokens: usize,
@@ -93,6 +94,7 @@ impl StreamState {
             stream: Box::pin(stream),
             output_tokens: 0,
             usage_found: false,
+            usage_chunk_sent: false,
             start_time: Instant::now(),
             provider_first_token_time: None,
             input_tokens,
@@ -301,6 +303,7 @@ pub async fn create_sse_stream(
                 Some((Ok(error_message.into_bytes()), state))
             }
             None => {
+                // Finalize and end stream
                 finalize_stream(&state);
                 None
             }
@@ -371,18 +374,41 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
 
     let mut rewritten_lines = Vec::new();
     let mut chunk_modified = false;
+    let mut has_done = false;
 
-    for line in chunk_str.split('\n') {
-        if !line.starts_with("data: ") || line == "data: [DONE]" {
-            rewritten_lines.push(line.to_string());
+    // Split by SSE event delimiter (\n\n) to preserve event boundaries
+    for event in chunk_str.split("\n\n") {
+        if event.trim().is_empty() {
             continue;
         }
 
-        let json_str = line[6..].trim();
-        if json_str.is_empty() || !json_str.ends_with('}') {
-            rewritten_lines.push(line.to_string());
-            continue;
-        }
+        // Process each line in the event
+        let mut event_lines = Vec::new();
+        let mut event_has_data = false;
+
+        for line in event.split('\n') {
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Check for [DONE] marker
+            if line == "data: [DONE]" {
+                has_done = true;
+                // Don't push [DONE] yet
+                continue;
+            }
+
+            if !line.starts_with("data: ") {
+                event_lines.push(line.to_string());
+                continue;
+            }
+
+            event_has_data = true;
+            let json_str = line[6..].trim();
+            if json_str.is_empty() || !json_str.ends_with('}') {
+                event_lines.push(line.to_string());
+                continue;
+            }
 
         if let Ok(mut json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
             // Rewrite model field to original model (like Python does)
@@ -391,23 +417,26 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                 chunk_modified = true;
             }
 
-            // Check for usage first
+            // Check for usage first - only accept if prompt_tokens > 0
             if !state.usage_found {
                 if let Some(usage_value) = json_obj.get("usage") {
                     if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
-                        record_token_usage(
-                            &usage,
-                            &state.original_model,
-                            &state.provider_name,
-                            &state.api_key_name,
-                        );
-                        state.usage_found = true;
+                        // Only accept valid usage (prompt_tokens > 0), otherwise keep fallback
+                        if usage.prompt_tokens > 0 {
+                            record_token_usage(
+                                &usage,
+                                &state.original_model,
+                                &state.provider_name,
+                                &state.api_key_name,
+                            );
+                            state.usage_found = true;
 
-                        // Capture usage for Langfuse
-                        if let Some(ref mut gen_data) = state.generation_data {
-                            gen_data.prompt_tokens = usage.prompt_tokens;
-                            gen_data.completion_tokens = usage.completion_tokens;
-                            gen_data.total_tokens = usage.total_tokens;
+                            // Capture usage for Langfuse
+                            if let Some(ref mut gen_data) = state.generation_data {
+                                gen_data.prompt_tokens = usage.prompt_tokens;
+                                gen_data.completion_tokens = usage.completion_tokens;
+                                gen_data.total_tokens = usage.total_tokens;
+                            }
                         }
                     }
                 }
@@ -416,13 +445,26 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
             // Extract content and finish_reason for token counting and Langfuse
             let contents = extract_stream_text(&json_obj);
 
-            // Capture finish_reason for Langfuse
+            // Capture finish_reason for Langfuse and check if we need to inject usage
+            let mut has_finish_reason = false;
             if let Some(choices) = json_obj.get("choices").and_then(|c| c.as_array()) {
                 for choice in choices {
                     if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
                         state.finish_reason = Some(reason.to_string());
+                        has_finish_reason = true;
                     }
                 }
+            }
+
+            // Inject fallback usage into finish_reason chunk if provider didn't provide it
+            if has_finish_reason && !state.usage_found && (state.input_tokens > 0 || state.output_tokens > 0) {
+                json_obj["usage"] = json!({
+                    "prompt_tokens": state.input_tokens,
+                    "completion_tokens": state.output_tokens,
+                    "total_tokens": state.input_tokens + state.output_tokens
+                });
+                chunk_modified = true;
+                state.usage_chunk_sent = true;
             }
 
             if !contents.is_empty() {
@@ -481,18 +523,34 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
             // Rebuild the line with rewritten JSON
             let rewritten_json =
                 serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
-            rewritten_lines.push(format!("data: {}", rewritten_json));
+            event_lines.push(format!("data: {}", rewritten_json));
         } else {
-            rewritten_lines.push(line.to_string());
+            event_lines.push(line.to_string());
         }
     }
 
-    // Return rewritten chunk if modified, otherwise original
-    if chunk_modified {
-        rewritten_lines.join("\n").into_bytes()
-    } else {
-        bytes.to_vec()
+    // Add event to rewritten_lines if it had data
+    if event_has_data && !event_lines.is_empty() {
+        rewritten_lines.push(event_lines.join("\n"));
     }
+}
+
+// Now add [DONE] if it was detected
+if has_done {
+    rewritten_lines.push("data: [DONE]".to_string());
+    chunk_modified = true;
+}
+
+// Return rewritten chunk with proper SSE formatting (\n\n between events)
+if chunk_modified {
+    let mut result = rewritten_lines.join("\n\n");
+    if !result.is_empty() {
+        result.push_str("\n\n");
+    }
+    result.into_bytes()
+} else {
+    bytes.to_vec()
+}
 }
 
 /// Finalize stream and record metrics
