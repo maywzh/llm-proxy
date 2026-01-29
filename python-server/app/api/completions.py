@@ -507,6 +507,37 @@ async def _handle_non_streaming_request(
         f"Non-streaming request to {provider.name} for model {effective_model}"
     )
 
+    # Pre-calculate input tokens for fallback (when provider doesn't return usage)
+    from app.utils.streaming import (
+        calculate_message_tokens,
+        calculate_tools_tokens,
+        count_tokens,
+    )
+
+    messages = data.get("messages", [])
+    tools = data.get("tools")
+    system = data.get("system")
+
+    # Calculate input tokens
+    fallback_input_tokens = calculate_message_tokens(messages, effective_model or "gpt-3.5-turbo")
+
+    # Add system prompt tokens
+    if system:
+        if isinstance(system, str):
+            fallback_input_tokens += count_tokens(system, effective_model or "gpt-3.5-turbo")
+        elif isinstance(system, list):
+            for block in system:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    fallback_input_tokens += count_tokens(
+                        block.get("text", ""), effective_model or "gpt-3.5-turbo"
+                    )
+
+    # Add tools tokens
+    if tools:
+        fallback_input_tokens += calculate_tools_tokens(tools, effective_model or "gpt-3.5-turbo")
+
+    logger.debug(f"Pre-calculated fallback input tokens: {fallback_input_tokens}")
+
     headers = {
         "Authorization": f"Bearer {provider.api_key}",
         "Content-Type": "application/json",
@@ -600,6 +631,23 @@ async def _handle_non_streaming_request(
         model_name = effective_model or "unknown"
         _record_token_metrics(
             response_data["usage"],
+            model_name,
+            provider.name,
+            generation_data,
+        )
+    else:
+        # Use fallback token calculation when provider doesn't return usage
+        logger.warning(
+            f"Provider {provider.name} didn't return usage, using fallback calculation"
+        )
+        fallback_usage = {
+            "prompt_tokens": fallback_input_tokens,
+            "completion_tokens": 0,  # Cannot calculate without response text
+            "total_tokens": fallback_input_tokens,
+        }
+        model_name = effective_model or "unknown"
+        _record_token_metrics(
+            fallback_usage,
             model_name,
             provider.name,
             generation_data,

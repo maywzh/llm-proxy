@@ -454,6 +454,65 @@ pub async fn handle_proxy_request(
 
                 // Handle successful response
                 if generation_data.is_streaming {
+                    // Pre-calculate input tokens for usage fallback
+                    let input_tokens = if let Some(messages) = payload.get("messages") {
+                        if let Some(arr) = messages.as_array() {
+                            let model_label = &transform_ctx.mapped_model;
+                            let mut total_tokens =
+                                crate::api::streaming::calculate_message_tokens(arr, model_label);
+
+                            // Add system prompt tokens
+                            if let Some(system) = payload.get("system") {
+                                match system {
+                                    Value::String(s) => {
+                                        total_tokens +=
+                                            crate::api::streaming::count_tokens(s, model_label);
+                                    }
+                                    Value::Array(blocks) => {
+                                        for block in blocks {
+                                            if let Some(obj) = block.as_object() {
+                                                if obj
+                                                    .get("type")
+                                                    .and_then(|t| t.as_str())
+                                                    == Some("text")
+                                                {
+                                                    if let Some(text) =
+                                                        obj.get("text").and_then(|t| t.as_str())
+                                                    {
+                                                        total_tokens += crate::api::streaming::count_tokens(
+                                                            text, model_label,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Add tools tokens
+                            if let Some(tools) = payload.get("tools") {
+                                if let Some(arr) = tools.as_array() {
+                                    total_tokens +=
+                                        crate::api::streaming::calculate_tools_tokens(arr, model_label);
+                                }
+                            }
+
+                            tracing::debug!(
+                                request_id = %request_id,
+                                input_tokens = total_tokens,
+                                "Pre-calculated input tokens for V2 streaming request"
+                            );
+
+                            Some(total_tokens)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     handle_streaming_proxy_response(
                         response,
                         &state,
@@ -464,6 +523,7 @@ pub async fn handle_proxy_request(
                         payload.clone(),
                         request_start,
                         path,
+                        input_tokens,
                     )
                     .await
                 } else {
@@ -664,6 +724,7 @@ async fn handle_streaming_proxy_response(
     request_payload: Value,
     _request_start: Instant,
     endpoint: &str,
+    input_tokens: Option<usize>,
 ) -> Result<Response> {
     let client_protocol = ctx.client_protocol;
     let provider_protocol = ctx.provider_protocol;
@@ -684,7 +745,7 @@ async fn handle_streaming_proxy_response(
             response,
             model_label.clone(),
             provider_name.clone(),
-            None,
+            input_tokens,
             state.app_state.config.ttft_timeout_secs,
             langfuse_data,
             Some(request_id.clone()),
@@ -722,7 +783,7 @@ async fn handle_streaming_proxy_response(
 
         // Initialize stream state for cross-protocol transformation
         let stream_state = std::sync::Arc::new(std::sync::Mutex::new(
-            CrossProtocolStreamState::new(&model_label),
+            CrossProtocolStreamState::with_input_tokens(&model_label, input_tokens),
         ));
 
         let transform_stream = stream.map(move |chunk_result| {
