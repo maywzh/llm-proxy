@@ -124,8 +124,57 @@ pub fn calculate_message_tokens(messages: &[Value], model: &str) -> usize {
                     Value::String(text) => encoder.encode_with_special_tokens(text).len(),
                     Value::Array(parts) => parts
                         .iter()
-                        .flat_map(extract_text_segments)
-                        .map(|text| encoder.encode_with_special_tokens(&text).len())
+                        .map(|part| {
+                            if let Some(obj) = part.as_object() {
+                                match obj.get("type").and_then(|t| t.as_str()) {
+                                    // Text content
+                                    Some("text") => {
+                                        if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
+                                            encoder.encode_with_special_tokens(text).len()
+                                        } else {
+                                            0
+                                        }
+                                    }
+                                    // Image content (OpenAI format)
+                                    Some("image_url") => {
+                                        if let Some(image_url) = obj.get("image_url") {
+                                            let url = if let Some(url_str) = image_url.as_str() {
+                                                url_str
+                                            } else if let Some(url_obj) = image_url.as_object() {
+                                                url_obj
+                                                    .get("url")
+                                                    .and_then(|u| u.as_str())
+                                                    .unwrap_or("")
+                                            } else {
+                                                ""
+                                            };
+
+                                            let detail = if let Some(url_obj) = image_url.as_object() {
+                                                url_obj
+                                                    .get("detail")
+                                                    .and_then(|d| d.as_str())
+                                                    .unwrap_or("auto")
+                                            } else {
+                                                "auto"
+                                            };
+
+                                            calculate_image_tokens(url, detail)
+                                        } else {
+                                            0
+                                        }
+                                    }
+                                    _ => {
+                                        // Fallback: extract text segments
+                                        extract_text_segments(part)
+                                            .into_iter()
+                                            .map(|text| encoder.encode_with_special_tokens(&text).len())
+                                            .sum::<usize>()
+                                    }
+                                }
+                            } else {
+                                0
+                            }
+                        })
                         .sum::<usize>(),
                     Value::Object(_) => extract_text_segments(content)
                         .into_iter()
@@ -167,6 +216,57 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
         0
     }
 }
+
+/// Calculate tokens for tool definitions
+///
+/// Serializes tool definitions to JSON and counts tokens.
+///
+/// # Arguments
+/// * `tools` - Tool definitions array
+/// * `model` - Model name for encoder selection
+///
+/// # Returns
+/// Estimated tool definition tokens
+pub fn calculate_tools_tokens(tools: &[Value], model: &str) -> usize {
+    if tools.is_empty() {
+        return 0;
+    }
+
+    // Serialize to compact JSON
+    let tools_str = serde_json::to_string(tools).unwrap_or_default();
+
+    // Count tokens
+    count_tokens(&tools_str, model)
+}
+
+/// Calculate tokens for an image content block
+///
+/// OpenAI image token calculation:
+/// - low: 85 tokens (fixed)
+/// - high: 85 + (tiles * 170) tokens (conservative estimate: 4 tiles)
+/// - auto: low for images ≤512x512, otherwise high (conservative: use high)
+///
+/// # Arguments
+/// * `_image_url` - Image URL or base64 data URI (not used in basic implementation)
+/// * `detail` - Token calculation mode: "low", "high", or "auto"
+///
+/// # Returns
+/// Estimated image tokens
+pub fn calculate_image_tokens(_image_url: &str, detail: &str) -> usize {
+    // Low detail mode: fixed 85 tokens
+    if detail == "low" {
+        return 85;
+    }
+
+    // High detail mode with conservative estimate (4 tiles for 1024x1024)
+    if detail == "high" {
+        return 85 + 4 * 170; // 765 tokens
+    }
+
+    // Auto mode - use conservative high estimate
+    85 + 4 * 170 // 765 tokens
+}
+
 
 /// Create an SSE stream from a provider response with token counting and optional TTFT timeout.
 ///
@@ -813,6 +913,113 @@ mod tests {
         // Should include content + role + format overhead
         assert!(tokens > 10);
     }
+
+    #[test]
+    fn test_calculate_image_tokens_low() {
+        let tokens = calculate_image_tokens("https://example.com/image.jpg", "low");
+        assert_eq!(tokens, 85);
+    }
+
+    #[test]
+    fn test_calculate_image_tokens_high() {
+        let tokens = calculate_image_tokens("https://example.com/image.jpg", "high");
+        // Conservative estimate: 4 tiles
+        assert_eq!(tokens, 765); // 85 + 4 * 170
+    }
+
+    #[test]
+    fn test_calculate_image_tokens_auto() {
+        let tokens = calculate_image_tokens("https://example.com/image.jpg", "auto");
+        // Auto mode uses conservative high estimate
+        assert_eq!(tokens, 765);
+    }
+
+    #[test]
+    fn test_calculate_tools_tokens_empty() {
+        let tools: Vec<Value> = vec![];
+        let tokens = calculate_tools_tokens(&tools, "gpt-4");
+        assert_eq!(tokens, 0);
+    }
+
+    #[test]
+    fn test_calculate_tools_tokens_single() {
+        let tools = vec![serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get current weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string"}
+                    },
+                    "required": ["location"]
+                }
+            }
+        })];
+        let tokens = calculate_tools_tokens(&tools, "gpt-4");
+        assert!(tokens > 0);
+        // Should be roughly 50-80 tokens
+        assert!(tokens > 30 && tokens < 100);
+    }
+
+    #[test]
+    fn test_calculate_message_tokens_with_image() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What's in this image?"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/image.jpg",
+                        "detail": "low"
+                    }
+                }
+            ]
+        })];
+        let tokens = calculate_message_tokens(&messages, "gpt-4");
+        // Should include text tokens + 85 (image) + format overhead
+        assert!(tokens > 85);
+    }
+
+    #[test]
+    fn test_calculate_message_tokens_with_image_high_detail() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Analyze"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/image.jpg",
+                        "detail": "high"
+                    }
+                }
+            ]
+        })];
+        let tokens = calculate_message_tokens(&messages, "gpt-4");
+        // Should include text tokens + 765 (high detail image) + format overhead
+        assert!(tokens > 765);
+    }
+
+    #[test]
+    fn test_calculate_message_tokens_with_image_string_url() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Check this"},
+                {
+                    "type": "image_url",
+                    "image_url": "https://example.com/image.jpg"
+                }
+            ]
+        })];
+        let tokens = calculate_message_tokens(&messages, "gpt-4");
+        // Should handle string format (auto detail)
+        assert!(tokens > 765);
+    }
+
 
     #[test]
     fn test_stream_state_creation() {

@@ -76,12 +76,19 @@ def _calculate_claude_input_tokens(request: ClaudeMessagesRequest) -> int:
             total += tiktoken_count(msg.content, model)
         elif isinstance(msg.content, list):
             for block in msg.content:
-                if hasattr(block, 'type'):
-                    if block.type == 'text' and hasattr(block, 'text'):
-                        total += tiktoken_count(block.text, model)
-                elif isinstance(block, dict):
-                    if block.get('type') == 'text' and 'text' in block:
-                        total += tiktoken_count(block['text'], model)
+                block_dict = block.dict() if hasattr(block, 'dict') else block
+                block_type = block_dict.get('type') if isinstance(block_dict, dict) else None
+
+                # Text content
+                if block_type == 'text':
+                    text = block_dict.get('text', '')
+                    total += tiktoken_count(text, model)
+
+                # Image content (Claude format)
+                elif block_type == 'image':
+                    # Claude images use 'source' field with base64 data
+                    # Conservative estimate: 765 tokens per image
+                    total += 765
 
         # Message format overhead
         total += 4
@@ -91,8 +98,9 @@ def _calculate_claude_input_tokens(request: ClaudeMessagesRequest) -> int:
 
     # Count tools tokens
     if request.tools:
-        tools_str = json.dumps([t.dict() if hasattr(t, 'dict') else t for t in request.tools])
-        total += tiktoken_count(tools_str, model)
+        from app.utils.streaming import calculate_tools_tokens
+        tools_list = [t.dict() if hasattr(t, 'dict') else t for t in request.tools]
+        total += calculate_tools_tokens(tools_list, model)
 
     return total
 

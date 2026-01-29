@@ -983,7 +983,7 @@ pub async fn count_tokens(
 /// This function is used to provide a fallback token count when the upstream
 /// provider doesn't return usage information in streaming responses.
 fn calculate_claude_input_tokens(request: &ClaudeMessagesRequest) -> usize {
-    use crate::api::streaming::count_tokens;
+    use crate::api::streaming::{count_tokens, calculate_tools_tokens};
 
     let model = &request.model;
     let mut total = 0;
@@ -1014,8 +1014,17 @@ fn calculate_claude_input_tokens(request: &ClaudeMessagesRequest) -> usize {
             }
             ClaudeMessageContent::Blocks(blocks) => {
                 for block in blocks {
-                    if let ClaudeContentBlock::Text(text_block) = block {
-                        total += count_tokens(&text_block.text, model);
+                    match block {
+                        // Text content
+                        ClaudeContentBlock::Text(text_block) => {
+                            total += count_tokens(&text_block.text, model);
+                        }
+                        // Image content - conservative estimate
+                        ClaudeContentBlock::Image(_) => {
+                            total += 765; // Conservative estimate for images
+                        }
+                        // Other block types (tool use, tool result, etc.)
+                        _ => {}
                     }
                 }
             }
@@ -1030,8 +1039,12 @@ fn calculate_claude_input_tokens(request: &ClaudeMessagesRequest) -> usize {
 
     // Tools tokens (if any)
     if let Some(tools) = &request.tools {
-        let tools_str = serde_json::to_string(tools).unwrap_or_default();
-        total += count_tokens(&tools_str, model);
+        // Convert tools to Value array
+        let tools_value: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
+            .collect();
+        total += calculate_tools_tokens(&tools_value, model);
     }
 
     total
