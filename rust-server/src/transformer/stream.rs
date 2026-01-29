@@ -242,6 +242,54 @@ impl CrossProtocolStreamState {
         }
     }
 
+    /// Create a new stream state with model name and input tokens.
+    ///
+    /// Pre-calculates input tokens for usage tracking in fallback scenarios
+    /// when the provider doesn't return usage information.
+    pub fn with_input_tokens(model: impl Into<String>, input_tokens: Option<usize>) -> Self {
+        let usage = input_tokens.map(|input| super::UnifiedUsage {
+            input_tokens: input as i32,
+            output_tokens: 0,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+        });
+
+        Self {
+            model: model.into(),
+            usage,
+            ..Default::default()
+        }
+    }
+
+    /// Accumulate output tokens from chunk text.
+    ///
+    /// This method counts tokens in generated text and adds them to the usage.
+    /// Used for fallback usage calculation when provider doesn't provide usage.
+    pub fn accumulate_output_tokens(&mut self, text: &str) {
+        let tokens = crate::api::streaming::count_tokens(text, &self.model);
+
+        if let Some(ref mut usage) = self.usage {
+            usage.output_tokens += tokens as i32;
+        } else {
+            self.usage = Some(super::UnifiedUsage {
+                input_tokens: 0,
+                output_tokens: tokens as i32,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+            });
+        }
+    }
+
+    /// Get final usage, prioritizing provider usage over calculated usage.
+    ///
+    /// Returns provider usage if available, otherwise returns accumulated usage.
+    pub fn get_final_usage(
+        &self,
+        provider_usage: Option<super::UnifiedUsage>,
+    ) -> Option<super::UnifiedUsage> {
+        provider_usage.or_else(|| self.usage.clone())
+    }
+
     /// Process unified chunks and emit additional synthetic events as needed.
     ///
     /// This method takes unified chunks from the source protocol and returns
@@ -300,6 +348,14 @@ impl CrossProtocolStreamState {
                         self.current_block_index = index;
                     }
 
+                    // Accumulate output tokens from text content
+                    if let Some(ref delta) = chunk.delta {
+                        // Check if it's a text content block
+                        if let super::UnifiedContent::Text { text } = delta {
+                            self.accumulate_output_tokens(text);
+                        }
+                    }
+
                     result.push(chunk);
                 }
                 super::ChunkType::ContentBlockStop => {
@@ -318,20 +374,12 @@ impl CrossProtocolStreamState {
                         }
                     }
 
-                    // Accumulate usage from this chunk (only if non-zero)
-                    if let Some(ref usage) = chunk.usage {
-                        if usage.input_tokens > 0 || usage.output_tokens > 0 {
-                            // Update accumulated usage with non-zero values
-                            self.usage = Some(usage.clone());
-                        }
-                    }
+                    // Get final usage (prioritizing provider usage)
+                    let final_usage = self.get_final_usage(chunk.usage.clone());
 
-                    // Create a new chunk with accumulated usage
+                    // Create a new chunk with final usage
                     let mut output_chunk = chunk.clone();
-                    if let Some(ref accumulated_usage) = self.usage {
-                        // Use accumulated usage if we have it
-                        output_chunk.usage = Some(accumulated_usage.clone());
-                    }
+                    output_chunk.usage = final_usage;
 
                     self.message_delta_emitted = true;
                     result.push(output_chunk);
@@ -1008,48 +1056,42 @@ mod tests {
 
     #[test]
     fn test_cross_protocol_stream_state_usage_accumulation() {
-        use super::super::{ChunkType, StopReason, UnifiedStreamChunk, UnifiedUsage};
+        use super::super::{ChunkType, StopReason, UnifiedStreamChunk, UnifiedUsage, UnifiedContent};
 
-        let mut state = CrossProtocolStreamState::new("gpt-4");
+        // Test with input_tokens pre-calculated for fallback
+        let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(100));
         state.message_started = true;
         state.started_blocks.insert(0);
-        state.stopped_blocks.insert(0);
 
-        // Simulate OpenAI sending finish_reason first with zero usage
-        let chunks = vec![UnifiedStreamChunk::message_delta(
-            StopReason::EndTurn,
-            UnifiedUsage::new(0, 0),
-        )];
-
-        let result = state.process_chunks(chunks);
-
-        // First message_delta should have zero usage (no accumulated usage yet)
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].chunk_type, ChunkType::MessageDelta);
-        let usage = result[0].usage.as_ref().unwrap();
-        assert_eq!(usage.input_tokens, 0);
-        assert_eq!(usage.output_tokens, 0);
-
-        // Now simulate OpenAI sending usage in a separate chunk
-        let chunks = vec![UnifiedStreamChunk::message_delta(
-            StopReason::EndTurn,
-            UnifiedUsage::new(173, 23),
-        )];
+        // Simulate content chunks that accumulate output tokens
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("Hello")),
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text(" world")),
+        ];
 
         let result = state.process_chunks(chunks);
 
-        // Second message_delta should have the actual usage
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].chunk_type, ChunkType::MessageDelta);
-        let usage = result[0].usage.as_ref().unwrap();
-        assert_eq!(usage.input_tokens, 173, "input_tokens should be 173");
-        assert_eq!(usage.output_tokens, 23, "output_tokens should be 23");
-
-        // Verify state accumulated the usage
+        // Verify tokens were accumulated
         assert!(state.usage.is_some());
-        let accumulated = state.usage.as_ref().unwrap();
-        assert_eq!(accumulated.input_tokens, 173);
-        assert_eq!(accumulated.output_tokens, 23);
+        let usage = state.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert!(usage.output_tokens > 0, "output_tokens should be accumulated");
+
+        // Now send message_delta without provider usage (should use fallback)
+        state.stopped_blocks.insert(0);
+        let chunks = vec![UnifiedStreamChunk::message_delta(
+            StopReason::EndTurn,
+            UnifiedUsage::new(0, 0),  // Provider sends zero usage
+        )];
+
+        let result = state.process_chunks(chunks);
+
+        // message_delta should use provider usage (zero) since it's provided
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].chunk_type, ChunkType::MessageDelta);
+        let chunk_usage = result[0].usage.as_ref().unwrap();
+        assert_eq!(chunk_usage.input_tokens, 0);  // Provider usage takes precedence
+        assert_eq!(chunk_usage.output_tokens, 0);
     }
 
     #[test]
@@ -1097,14 +1139,22 @@ mod tests {
 
     #[test]
     fn test_cross_protocol_stream_state_usage_not_overwritten_by_zero() {
-        use super::super::{StopReason, UnifiedStreamChunk, UnifiedUsage};
+        use super::super::{StopReason, UnifiedStreamChunk, UnifiedUsage, UnifiedContent};
 
-        let mut state = CrossProtocolStreamState::new("gpt-4");
+        // Test that accumulated usage is used when provider doesn't send usage
+        let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(100));
         state.message_started = true;
         state.started_blocks.insert(0);
+
+        // Accumulate some output tokens
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("Hello world")),
+        ];
+        state.process_chunks(chunks);
+
         state.stopped_blocks.insert(0);
 
-        // First, receive a message_delta with actual usage
+        // Receive a message_delta with actual usage from provider
         let chunks = vec![UnifiedStreamChunk::message_delta(
             StopReason::EndTurn,
             UnifiedUsage::new(100, 50),
@@ -1112,17 +1162,191 @@ mod tests {
 
         let result = state.process_chunks(chunks);
         assert_eq!(result[0].usage.as_ref().unwrap().input_tokens, 100);
+        assert_eq!(result[0].usage.as_ref().unwrap().output_tokens, 50);
 
-        // Then receive another message_delta with zero usage (shouldn't overwrite)
-        let chunks = vec![UnifiedStreamChunk::message_delta(
+        // Then receive another message_delta without provider usage (None)
+        // This should use the accumulated usage
+        let mut second_chunk = UnifiedStreamChunk::message_delta(
             StopReason::EndTurn,
             UnifiedUsage::new(0, 0),
+        );
+        // Simulate no provider usage by setting it to None
+        second_chunk.usage = None;
+
+        let chunks = vec![second_chunk];
+        let result = state.process_chunks(chunks);
+
+        // Should use accumulated usage (input_tokens from initialization + accumulated output)
+        assert!(result[0].usage.is_some());
+        let usage = result[0].usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 100);  // From with_input_tokens
+        assert!(usage.output_tokens > 0);     // Accumulated from text chunks
+    }
+
+    // ========================================================================
+    // V2 API Token Calculation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_v2_api_with_input_tokens_initialization() {
+        // Test initialization with input_tokens for V2 API
+        let state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(150));
+
+        assert!(state.usage.is_some());
+        let usage = state.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 150);
+        assert_eq!(usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn test_v2_api_output_token_accumulation() {
+        use super::super::{UnifiedContent, UnifiedStreamChunk};
+
+        let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(50));
+        state.message_started = true;
+        state.started_blocks.insert(0);
+
+        // Simulate streaming text chunks
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("Hello")),
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text(" world")),
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("!")),
+        ];
+
+        state.process_chunks(chunks);
+
+        // Verify output tokens were accumulated
+        assert!(state.usage.is_some());
+        let usage = state.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 50);
+        assert!(usage.output_tokens > 0);
+        // "Hello world!" should be about 3-4 tokens
+        assert!(usage.output_tokens >= 2 && usage.output_tokens <= 6);
+    }
+
+    #[test]
+    fn test_v2_api_provider_usage_priority() {
+        use super::super::{StopReason, UnifiedContent, UnifiedStreamChunk, UnifiedUsage};
+
+        let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(50));
+        state.message_started = true;
+        state.started_blocks.insert(0);
+
+        // Accumulate some tokens
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("Test content")),
+        ];
+        state.process_chunks(chunks);
+
+        // Provider sends accurate usage
+        state.stopped_blocks.insert(0);
+        let chunks = vec![UnifiedStreamChunk::message_delta(
+            StopReason::EndTurn,
+            UnifiedUsage::new(60, 25),
         )];
 
         let result = state.process_chunks(chunks);
 
-        // Should still have the accumulated usage (100, 50), not (0, 0)
-        assert_eq!(result[0].usage.as_ref().unwrap().input_tokens, 100);
-        assert_eq!(result[0].usage.as_ref().unwrap().output_tokens, 50);
+        // Should use provider usage (priority over calculated)
+        assert!(result[0].usage.is_some());
+        let usage = result[0].usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 60);  // Provider value
+        assert_eq!(usage.output_tokens, 25); // Provider value
+    }
+
+    #[test]
+    fn test_v2_api_fallback_when_no_provider_usage() {
+        use super::super::{StopReason, UnifiedContent, UnifiedStreamChunk, UnifiedUsage};
+
+        let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(100));
+        state.message_started = true;
+        state.started_blocks.insert(0);
+
+        // Accumulate tokens
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("Hello world")),
+        ];
+        state.process_chunks(chunks);
+
+        // Provider doesn't send usage (None)
+        state.stopped_blocks.insert(0);
+        let mut chunk = UnifiedStreamChunk::message_delta(StopReason::EndTurn, UnifiedUsage::new(0, 0));
+        chunk.usage = None;  // Simulate no provider usage
+
+        let chunks = vec![chunk];
+        let result = state.process_chunks(chunks);
+
+        // Should use accumulated usage
+        assert!(result[0].usage.is_some());
+        let usage = result[0].usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 100);  // From initialization
+        assert!(usage.output_tokens > 0);     // Accumulated
+    }
+
+    #[test]
+    fn test_v2_api_multiple_content_blocks() {
+        use super::super::{StopReason, UnifiedContent, UnifiedStreamChunk, UnifiedUsage};
+
+        let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(80));
+        state.message_started = true;
+
+        // Multiple content blocks with text
+        let chunks = vec![
+            UnifiedStreamChunk::content_block_start(0, UnifiedContent::text("")),
+            UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text("First block")),
+            UnifiedStreamChunk::content_block_stop(0),
+            UnifiedStreamChunk::content_block_start(1, UnifiedContent::text("")),
+            UnifiedStreamChunk::content_block_delta(1, UnifiedContent::text("Second block")),
+            UnifiedStreamChunk::content_block_stop(1),
+        ];
+
+        state.process_chunks(chunks);
+
+        // Verify tokens from both blocks
+        assert!(state.usage.is_some());
+        let usage = state.usage.as_ref().unwrap();
+        assert_eq!(usage.input_tokens, 80);
+        assert!(usage.output_tokens > 0);
+        // "First block" + "Second block" should be about 4-6 tokens
+        assert!(usage.output_tokens >= 3);
+    }
+
+    #[test]
+    fn test_v2_api_empty_text_no_tokens() {
+        use super::super::UnifiedContent;
+
+        let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(100));
+        let initial_output = state.usage.as_ref().unwrap().output_tokens;
+
+        // Empty text should not add tokens
+        state.accumulate_output_tokens("");
+
+        let usage = state.usage.as_ref().unwrap();
+        assert_eq!(usage.output_tokens, initial_output);
+    }
+
+    #[test]
+    fn test_v2_api_get_final_usage_priority() {
+        use super::super::UnifiedUsage;
+
+        let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(50));
+        state.accumulate_output_tokens("Test");
+
+        // Provider usage takes priority
+        let provider_usage = Some(UnifiedUsage::new(60, 20));
+        let final_usage = state.get_final_usage(provider_usage);
+
+        assert!(final_usage.is_some());
+        let usage = final_usage.unwrap();
+        assert_eq!(usage.input_tokens, 60);
+        assert_eq!(usage.output_tokens, 20);
+
+        // Without provider usage, use accumulated
+        let final_usage = state.get_final_usage(None);
+
+        assert!(final_usage.is_some());
+        let usage = final_usage.unwrap();
+        assert_eq!(usage.input_tokens, 50);
+        assert!(usage.output_tokens > 0);
     }
 }

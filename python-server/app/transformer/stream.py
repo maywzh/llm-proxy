@@ -188,6 +188,53 @@ class CrossProtocolStreamState:
     stop_reason: Optional[StopReason] = None
     # Cache tool info (id, name) by block index for accurate content_block_start synthesis
     tool_info_cache: dict[int, ToolInfo] = field(default_factory=dict)
+    # Input tokens for usage tracking (pre-calculated)
+    input_tokens: int = 0
+
+    def __post_init__(self):
+        """Initialize usage with input tokens if provided."""
+        if self.input_tokens > 0 and self.usage is None:
+            self.usage = UnifiedUsage(
+                input_tokens=self.input_tokens,
+                output_tokens=0,
+            )
+
+    def accumulate_output_tokens(self, text: str) -> None:
+        """
+        Accumulate output tokens from chunk text.
+
+        This method counts tokens in generated text and adds them to the usage.
+        Used for fallback usage calculation when provider doesn't provide usage.
+        """
+        from app.utils.streaming import count_tokens
+
+        tokens = count_tokens(text, self.model or "gpt-4")
+
+        if self.usage is None:
+            self.usage = UnifiedUsage(
+                input_tokens=self.input_tokens,
+                output_tokens=tokens,
+            )
+        else:
+            self.usage.output_tokens += tokens
+
+    def get_final_usage(
+        self, provider_usage: Optional[UnifiedUsage] = None
+    ) -> Optional[UnifiedUsage]:
+        """
+        Get final usage, prioritizing provider usage over calculated usage.
+
+        Args:
+            provider_usage: Usage information from the provider (if available)
+
+        Returns:
+            Final usage information (provider usage takes precedence)
+        """
+        if provider_usage:
+            # Provider usage takes priority
+            return provider_usage
+        # Fall back to accumulated usage
+        return self.usage
 
     def process_chunks(
         self, chunks: list[UnifiedStreamChunk]
@@ -242,6 +289,11 @@ class CrossProtocolStreamState:
                     self.started_blocks.add(index)
                     self.current_block_index = index
 
+                # Accumulate output tokens from text content
+                if chunk.delta and isinstance(chunk.delta, TextContent):
+                    if chunk.delta.text:
+                        self.accumulate_output_tokens(chunk.delta.text)
+
                 result.append(chunk)
 
             elif chunk.chunk_type == ChunkType.CONTENT_BLOCK_STOP:
@@ -257,17 +309,13 @@ class CrossProtocolStreamState:
                         result.append(UnifiedStreamChunk.content_block_stop(idx))
                         self.stopped_blocks.add(idx)
 
-                # Accumulate usage from this chunk (only if non-zero)
-                if chunk.usage:
-                    if chunk.usage.input_tokens > 0 or chunk.usage.output_tokens > 0:
-                        # Update accumulated usage with non-zero values
-                        self.usage = chunk.usage
+                # Get final usage (prioritizing provider usage)
+                final_usage = self.get_final_usage(chunk.usage)
 
-                # Create a new chunk with accumulated usage
+                # Create a new chunk with final usage
                 output_chunk = chunk.model_copy()
-                if self.usage:
-                    # Use accumulated usage if we have it
-                    output_chunk.usage = self.usage
+                if final_usage:
+                    output_chunk.usage = final_usage
 
                 self.message_delta_emitted = True
                 result.append(output_chunk)
@@ -367,10 +415,10 @@ class CrossProtocolStreamState:
 
         # Emit message_delta if not yet emitted
         if not self.message_delta_emitted and self.message_started:
+            # Use accumulated usage
+            final_usage = self.usage or UnifiedUsage()
             result.append(
-                UnifiedStreamChunk.message_delta(
-                    StopReason.END_TURN, self.usage or UnifiedUsage()
-                )
+                UnifiedStreamChunk.message_delta(StopReason.END_TURN, final_usage)
             )
             self.message_delta_emitted = True
 
