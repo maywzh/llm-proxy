@@ -35,6 +35,54 @@ def count_tokens(text: str, model: str) -> int:
     return len(encoding.encode(text))
 
 
+def calculate_tools_tokens(tools: list, model: str) -> int:
+    """Calculate tokens for tool definitions
+
+    Args:
+        tools: List of tool definitions (OpenAI or Claude format)
+        model: Model name for tokenizer selection
+
+    Returns:
+        Estimated tool definition tokens
+    """
+    if not tools:
+        return 0
+
+    # Serialize tools to compact JSON
+    tools_str = json.dumps(tools, separators=(',', ':'))
+
+    # Count tokens in the JSON string
+    return count_tokens(tools_str, model)
+
+
+def calculate_image_tokens(image_url: str, detail: str = "auto") -> int:
+    """Calculate tokens for an image content block
+
+    OpenAI image token calculation:
+    - low: 85 tokens (fixed)
+    - high: 85 + (tiles * 170) tokens
+    - auto: low for images ≤512x512, otherwise high
+
+    Args:
+        image_url: Image URL or base64 data URI
+        detail: Token calculation mode - "low", "high", or "auto"
+
+    Returns:
+        Estimated image tokens
+    """
+    # Low detail mode: fixed 85 tokens
+    if detail == "low":
+        return 85
+
+    # High detail mode with conservative estimate
+    # Without actual image dimensions, use 1024x1024 estimate (4 tiles)
+    if detail == "high":
+        return 85 + 4 * 170  # 765 tokens
+
+    # Auto mode - use conservative high estimate
+    return 85 + 4 * 170  # 765 tokens
+
+
 def calculate_message_tokens(messages: list, model: str) -> int:
     """Calculate tokens for a list of messages including format overhead"""
     try:
@@ -51,8 +99,23 @@ def calculate_message_tokens(messages: list, model: str) -> int:
         elif isinstance(content, list):
             # Handle multi-modal content
             for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    total_tokens += len(encoding.encode(item.get("text", "")))
+                if isinstance(item, dict):
+                    item_type = item.get("type")
+
+                    # Text content
+                    if item_type == "text":
+                        total_tokens += len(encoding.encode(item.get("text", "")))
+
+                    # Image content
+                    elif item_type == "image_url":
+                        image_url_data = item.get("image_url", {})
+                        if isinstance(image_url_data, dict):
+                            url = image_url_data.get("url", "")
+                            detail = image_url_data.get("detail", "auto")
+                        else:
+                            url = str(image_url_data)
+                            detail = "auto"
+                        total_tokens += calculate_image_tokens(url, detail)
 
         # Add tokens for role and other fields
         total_tokens += len(encoding.encode(message.get("role", "")))
