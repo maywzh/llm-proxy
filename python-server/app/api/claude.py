@@ -461,6 +461,10 @@ async def _handle_non_streaming_request(
     langfuse_service,
 ) -> JSONResponse:
     """Handle non-streaming Claude request."""
+    # Pre-calculate input tokens for fallback
+    fallback_input_tokens = _calculate_claude_input_tokens(claude_request)
+    logger.debug(f"Pre-calculated fallback input tokens: {fallback_input_tokens}")
+
     client = get_http_client()
     response = await client.post(url, json=openai_request, headers=headers)
 
@@ -528,6 +532,32 @@ async def _handle_non_streaming_request(
                 token_type="total",
                 api_key_name=api_key_name,
             ).inc(usage["total_tokens"])
+    else:
+        # Use fallback token calculation when provider doesn't return usage
+        logger.warning(
+            f"Provider {provider.name} didn't return usage for Claude API, using fallback calculation"
+        )
+        generation_data.prompt_tokens = fallback_input_tokens
+        generation_data.completion_tokens = 0  # Cannot calculate without response text
+        generation_data.total_tokens = fallback_input_tokens
+
+        # Record fallback token metrics
+        model_name = claude_request.model or "unknown"
+        api_key_name = get_api_key_name()
+
+        TOKEN_USAGE.labels(
+            model=model_name,
+            provider=provider.name,
+            token_type="prompt",
+            api_key_name=api_key_name,
+        ).inc(fallback_input_tokens)
+
+        TOKEN_USAGE.labels(
+            model=model_name,
+            provider=provider.name,
+            token_type="total",
+            api_key_name=api_key_name,
+        ).inc(fallback_input_tokens)
 
     generation_data.end_time = datetime.now(timezone.utc)
     if trace_id:

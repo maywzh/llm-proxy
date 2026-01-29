@@ -413,6 +413,7 @@ async def _create_cross_protocol_stream(
     generation_data: GenerationData,
     trace_id: Optional[str],
     langfuse_service: LangfuseService,
+    input_tokens: int = 0,
     chunk_collector: Optional[list[str]] = None,
 ):
     """Create a cross-protocol streaming response generator."""
@@ -438,7 +439,9 @@ async def _create_cross_protocol_stream(
         return
 
     # Cross-protocol streaming requires chunk-by-chunk transformation
-    stream_state = CrossProtocolStreamState(model=model_label)
+    stream_state = CrossProtocolStreamState(
+        model=model_label, input_tokens=input_tokens
+    )
     sse_parser = SseParser()
 
     async for chunk in response.aiter_bytes():
@@ -502,6 +505,37 @@ async def _handle_streaming_request(
 ) -> Response:
     """Handle a streaming (SSE) proxy request."""
     logger.debug(f"Streaming V2 request to {provider.name} for model {effective_model}")
+
+    # Pre-calculate input tokens for usage fallback
+    from app.utils.streaming import (
+        calculate_message_tokens,
+        calculate_tools_tokens,
+        count_tokens,
+    )
+
+    messages = data.get("messages", [])
+    tools = data.get("tools")
+    system = data.get("system")
+
+    # Calculate input tokens
+    input_tokens = calculate_message_tokens(messages, effective_model or "gpt-4")
+
+    # Add system prompt tokens
+    if system:
+        if isinstance(system, str):
+            input_tokens += count_tokens(system, effective_model or "gpt-4")
+        elif isinstance(system, list):
+            for block in system:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    input_tokens += count_tokens(
+                        block.get("text", ""), effective_model or "gpt-4"
+                    )
+
+    # Add tools tokens
+    if tools:
+        input_tokens += calculate_tools_tokens(tools, effective_model or "gpt-4")
+
+    logger.debug(f"Pre-calculated input tokens: {input_tokens}")
 
     # Build provider request headers
     headers = {
@@ -612,6 +646,7 @@ async def _handle_streaming_request(
                 generation_data,
                 trace_id,
                 langfuse_service,
+                input_tokens=input_tokens,
                 chunk_collector=chunk_collector,
             ):
                 yield chunk

@@ -491,7 +491,7 @@ pub async fn create_message(
                 if claude_request.stream {
                     // Calculate input tokens for fallback (only used if provider doesn't return usage)
                     let fallback_input_tokens = Some(calculate_claude_input_tokens(&claude_request));
-                    tracing::info!(
+                    tracing::debug!(
                         "[USAGE_DEBUG] Calculated fallback_input_tokens: {:?} for model: {}",
                         fallback_input_tokens,
                         claude_request.model
