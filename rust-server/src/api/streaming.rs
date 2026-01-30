@@ -11,12 +11,15 @@ use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
 use axum::body::Body;
 use axum::response::Response as AxumResponse;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use bytes::Bytes;
 use chrono::Utc;
 use dashmap::DashMap;
 use futures::stream::{Stream, StreamExt};
 use reqwest::Response;
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,24 +30,58 @@ lazy_static::lazy_static! {
     static ref BPE_CACHE: DashMap<String, Arc<tiktoken_rs::CoreBPE>> = DashMap::new();
 }
 
+const DEFAULT_IMAGE_TOKEN_COUNT: u32 = 250;
+const DEFAULT_IMAGE_WIDTH: u32 = 300;
+const DEFAULT_IMAGE_HEIGHT: u32 = 300;
+const MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES: u32 = 768;
+const MAX_LONG_SIDE_FOR_IMAGE_HIGH_RES: u32 = 2000;
+const MAX_TILE_WIDTH: u32 = 512;
+const MAX_TILE_HEIGHT: u32 = 512;
+
+type TokenCountResult<T> = Result<T, String>;
+
 /// Get or create a cached BPE encoder for the given model
 fn get_cached_bpe(model: &str) -> Option<Arc<tiktoken_rs::CoreBPE>> {
+    let normalized = normalize_model_name(model);
+    let cache_key = normalized.to_string();
+
     // Try to read from cache first (lock-free read via DashMap)
-    if let Some(bpe) = BPE_CACHE.get(model) {
+    if let Some(bpe) = BPE_CACHE.get(&cache_key) {
         return Some(Arc::clone(&bpe));
     }
 
-    // Cache miss - create new encoder
-    let bpe = tiktoken_rs::get_bpe_from_model(model)
-        .or_else(|_| tiktoken_rs::cl100k_base())
-        .ok()?;
+    let normalized_lower = normalized.to_lowercase();
+    let bpe = if normalized_lower.contains("gpt-4o") {
+        tiktoken_rs::o200k_base()
+    } else {
+        tiktoken_rs::get_bpe_from_model(normalized.as_ref())
+            .or_else(|_| tiktoken_rs::cl100k_base())
+    }
+    .ok()?;
 
     let bpe_arc = Arc::new(bpe);
 
     // Store in cache (fine-grained locking via DashMap)
-    BPE_CACHE.insert(model.to_string(), Arc::clone(&bpe_arc));
+    BPE_CACHE.insert(cache_key, Arc::clone(&bpe_arc));
 
     Some(bpe_arc)
+}
+
+fn normalize_model_name(model: &str) -> Cow<'_, str> {
+    if model.contains("gpt-35") {
+        Cow::Owned(model.replace("-35", "-3.5"))
+    } else if model.starts_with("gpt-") {
+        Cow::Borrowed(model)
+    } else {
+        Cow::Borrowed("gpt-3.5-turbo")
+    }
+}
+
+fn env_u32(key: &str, default: u32) -> u32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|val| val.parse::<u32>().ok())
+        .unwrap_or(default)
 }
 
 /// Stream state for token counting - NO synchronization needed!
@@ -114,97 +151,292 @@ impl StreamState {
     }
 }
 
-/// Calculate tokens for messages using tiktoken with caching
-pub fn calculate_message_tokens(messages: &[Value], model: &str) -> usize {
-    fn count_with_encoder(messages: &[Value], encoder: &tiktoken_rs::CoreBPE) -> usize {
-        let mut total_tokens = 0;
-        for message in messages {
-            if let Some(content) = message.get("content") {
-                total_tokens += match content {
-                    Value::String(text) => encoder.encode_with_special_tokens(text).len(),
-                    Value::Array(parts) => parts
-                        .iter()
-                        .map(|part| {
-                            if let Some(obj) = part.as_object() {
-                                match obj.get("type").and_then(|t| t.as_str()) {
-                                    // Text content
-                                    Some("text") => {
-                                        if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
-                                            encoder.encode_with_special_tokens(text).len()
-                                        } else {
-                                            0
-                                        }
-                                    }
-                                    // Image content (OpenAI format)
-                                    Some("image_url") => {
-                                        if let Some(image_url) = obj.get("image_url") {
-                                            let url = if let Some(url_str) = image_url.as_str() {
-                                                url_str
-                                            } else if let Some(url_obj) = image_url.as_object() {
-                                                url_obj
-                                                    .get("url")
-                                                    .and_then(|u| u.as_str())
-                                                    .unwrap_or("")
-                                            } else {
-                                                ""
-                                            };
+#[derive(Clone, Copy)]
+struct MessageCountParams {
+    tokens_per_message: i64,
+    tokens_per_name: i64,
+}
 
-                                            let detail = if let Some(url_obj) = image_url.as_object() {
-                                                url_obj
-                                                    .get("detail")
-                                                    .and_then(|d| d.as_str())
-                                                    .unwrap_or("auto")
-                                            } else {
-                                                "auto"
-                                            };
-
-                                            calculate_image_tokens(url, detail)
-                                        } else {
-                                            0
-                                        }
-                                    }
-                                    _ => {
-                                        // Fallback: extract text segments
-                                        extract_text_segments(part)
-                                            .into_iter()
-                                            .map(|text| encoder.encode_with_special_tokens(&text).len())
-                                            .sum::<usize>()
-                                    }
-                                }
-                            } else {
-                                0
-                            }
-                        })
-                        .sum::<usize>(),
-                    Value::Object(_) => extract_text_segments(content)
-                        .into_iter()
-                        .map(|text| encoder.encode_with_special_tokens(&text).len())
-                        .sum::<usize>(),
-                    _ => 0,
-                };
-            }
-
-            if let Some(role) = message.get("role").and_then(|r| r.as_str()) {
-                total_tokens += encoder.encode_with_special_tokens(role).len();
-            }
-
-            if let Some(name) = message.get("name").and_then(|n| n.as_str()) {
-                total_tokens += encoder.encode_with_special_tokens(name).len();
-            }
-
-            // Format overhead per message
-            total_tokens += 4;
+fn get_message_count_params(model: &str) -> MessageCountParams {
+    let normalized = normalize_model_name(model);
+    if normalized.as_ref() == "gpt-3.5-turbo-0301" {
+        MessageCountParams {
+            tokens_per_message: 4,
+            tokens_per_name: -1,
         }
+    } else {
+        MessageCountParams {
+            tokens_per_message: 3,
+            tokens_per_name: 1,
+        }
+    }
+}
 
-        // Conversation format overhead
-        total_tokens + 2
+/// Calculate tokens for messages using LiteLLM-compatible logic.
+pub fn calculate_message_tokens(messages: &[Value], model: &str) -> TokenCountResult<usize> {
+    calculate_message_tokens_with_tools(messages, model, None, None)
+}
+
+/// Calculate tokens for messages, tools, and tool_choice using LiteLLM-compatible logic.
+pub fn calculate_message_tokens_with_tools(
+    messages: &[Value],
+    model: &str,
+    tools: Option<&[Value]>,
+    tool_choice: Option<&Value>,
+) -> TokenCountResult<usize> {
+    calculate_message_tokens_internal(messages, model, tools, tool_choice, false, None)
+}
+
+fn calculate_message_tokens_internal(
+    messages: &[Value],
+    model: &str,
+    tools: Option<&[Value]>,
+    tool_choice: Option<&Value>,
+    use_default_image_token_count: bool,
+    default_token_count: Option<usize>,
+) -> TokenCountResult<usize> {
+    let message_tokens =
+        count_messages(messages, model, use_default_image_token_count, default_token_count)?;
+    let includes_system_message = messages.iter().any(|message| {
+        message
+            .get("role")
+            .and_then(|role| role.as_str())
+            == Some("system")
+    });
+    let extra_tokens = count_extra(
+        model,
+        tools,
+        tool_choice,
+        includes_system_message,
+    );
+    Ok(message_tokens + extra_tokens)
+}
+
+fn count_messages(
+    messages: &[Value],
+    model: &str,
+    use_default_image_token_count: bool,
+    default_token_count: Option<usize>,
+) -> TokenCountResult<usize> {
+    if messages.is_empty() {
+        return Ok(0);
     }
 
-    // Use cached encoder
-    if let Some(bpe) = get_cached_bpe(model) {
-        count_with_encoder(messages, &bpe)
+    let params = get_message_count_params(model);
+    let mut total_tokens: i64 = 0;
+
+    for message in messages {
+        total_tokens += params.tokens_per_message;
+        let Some(message_obj) = message.as_object() else {
+            continue;
+        };
+
+        for (key, value) in message_obj {
+            if value.is_null() {
+                continue;
+            }
+
+            if key == "tool_calls" {
+                let Value::Array(tool_calls) = value else {
+                    return fallback_or_err(
+                        default_token_count,
+                        "Unsupported type for tool_calls".to_string(),
+                    );
+                };
+                for tool_call in tool_calls {
+                    let Some(function_obj) = tool_call.get("function") else {
+                        return fallback_or_err(
+                            default_token_count,
+                            "tool_calls must contain function".to_string(),
+                        );
+                    };
+                    let args_value = function_obj.get("arguments").unwrap_or(&Value::Null);
+                    let args_str = match args_value {
+                        Value::String(text) => text.clone(),
+                        _ => args_value.to_string(),
+                    };
+                    total_tokens += count_tokens(&args_str, model) as i64;
+                }
+                continue;
+            }
+
+            if let Value::String(text) = value {
+                total_tokens += count_tokens(text, model) as i64;
+                if key == "name" {
+                    total_tokens += params.tokens_per_name;
+                }
+                continue;
+            }
+
+            if key == "content" {
+                if let Value::Array(content_list) = value {
+                    let content_tokens = count_content_list(
+                        content_list,
+                        model,
+                        use_default_image_token_count,
+                        default_token_count,
+                    )?;
+                    total_tokens += content_tokens as i64;
+                }
+                continue;
+            }
+        }
+    }
+
+    if total_tokens < 0 {
+        total_tokens = 0;
+    }
+
+    Ok(total_tokens as usize)
+}
+
+fn count_content_list(
+    content_list: &[Value],
+    model: &str,
+    use_default_image_token_count: bool,
+    default_token_count: Option<usize>,
+) -> TokenCountResult<usize> {
+    let mut tokens = 0usize;
+
+    for content in content_list {
+        let content_tokens = match content {
+            Value::String(text) => count_tokens(text, model),
+            Value::Object(obj) => match obj.get("type").and_then(|t| t.as_str()) {
+                Some("text") => obj
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|text| count_tokens(text, model))
+                    .unwrap_or(0),
+                Some("image_url") => {
+                    let image_url = obj.get("image_url").unwrap_or(&Value::Null);
+                    count_image_tokens_value(image_url, use_default_image_token_count)?
+                }
+                Some("tool_use") | Some("tool_result") => count_anthropic_content(
+                    obj,
+                    model,
+                    use_default_image_token_count,
+                    default_token_count,
+                )?,
+                Some("thinking") => obj
+                    .get("thinking")
+                    .and_then(|t| t.as_str())
+                    .map(|text| count_tokens(text, model))
+                    .unwrap_or(0),
+                _ => {
+                    return fallback_or_err(
+                        default_token_count,
+                        format!("Invalid content item type: {}", content),
+                    );
+                }
+            },
+            _ => {
+                return fallback_or_err(
+                    default_token_count,
+                    "Invalid content item type".to_string(),
+                );
+            }
+        };
+
+        tokens += content_tokens;
+    }
+
+    Ok(tokens)
+}
+
+fn count_anthropic_content(
+    content: &serde_json::Map<String, Value>,
+    model: &str,
+    use_default_image_token_count: bool,
+    default_token_count: Option<usize>,
+) -> TokenCountResult<usize> {
+    let content_type = content
+        .get("type")
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| "Anthropic content missing required field: type".to_string())?;
+
+    let fields_to_count: &[&str] = match content_type {
+        "tool_use" => &["name", "input", "caller"],
+        "tool_result" => &["content"],
+        _ => {
+            return fallback_or_err(
+                default_token_count,
+                format!("Unknown Anthropic content type: {}", content_type),
+            );
+        }
+    };
+
+    let mut tokens = 0usize;
+    for field_name in fields_to_count {
+        let Some(field_value) = content.get(*field_name) else {
+            continue;
+        };
+        if field_value.is_null() {
+            continue;
+        }
+
+        let field_tokens = match field_value {
+            Value::String(text) => count_tokens(text, model),
+            Value::Array(items) => count_content_list(
+                items,
+                model,
+                use_default_image_token_count,
+                default_token_count,
+            )?,
+            Value::Object(_) => count_tokens(&field_value.to_string(), model),
+            _ => 0,
+        };
+
+        tokens += field_tokens;
+    }
+
+    Ok(tokens)
+}
+
+fn count_extra(
+    model: &str,
+    tools: Option<&[Value]>,
+    tool_choice: Option<&Value>,
+    includes_system_message: bool,
+) -> usize {
+    let mut tokens = 3;
+
+    if let Some(tool_list) = tools {
+        if !tool_list.is_empty() {
+            tokens += calculate_tools_tokens(tool_list, model);
+            tokens += 9;
+            if includes_system_message {
+                tokens = tokens.saturating_sub(4);
+            }
+        }
+    }
+
+    if let Some(choice) = tool_choice {
+        match choice {
+            Value::String(text) if text == "none" => {
+                tokens += 1;
+            }
+            Value::Object(obj) => {
+                tokens += 7;
+                if let Some(name) = obj
+                    .get("function")
+                    .and_then(|func| func.get("name"))
+                    .and_then(|n| n.as_str())
+                {
+                    tokens += count_tokens(name, model);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    tokens
+}
+
+fn fallback_or_err(default_token_count: Option<usize>, err: String) -> TokenCountResult<usize> {
+    if let Some(default_tokens) = default_token_count {
+        Ok(default_tokens)
     } else {
-        0
+        Err(err)
     }
 }
 
@@ -217,54 +449,367 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
     }
 }
 
-/// Calculate tokens for tool definitions
-///
-/// Serializes tool definitions to JSON and counts tokens.
-///
-/// # Arguments
-/// * `tools` - Tool definitions array
-/// * `model` - Model name for encoder selection
-///
-/// # Returns
-/// Estimated tool definition tokens
+/// Calculate tokens for tool definitions using LiteLLM-compatible formatting.
 pub fn calculate_tools_tokens(tools: &[Value], model: &str) -> usize {
     if tools.is_empty() {
         return 0;
     }
 
-    // Serialize to compact JSON
-    let tools_str = serde_json::to_string(tools).unwrap_or_default();
-
-    // Count tokens
+    let tools_str = format_function_definitions(tools);
     count_tokens(&tools_str, model)
 }
 
-/// Calculate tokens for an image content block
-///
-/// OpenAI image token calculation:
-/// - low: 85 tokens (fixed)
-/// - high: 85 + (tiles * 170) tokens (conservative estimate: 4 tiles)
-/// - auto: low for images ≤512x512, otherwise high (conservative: use high)
-///
-/// # Arguments
-/// * `_image_url` - Image URL or base64 data URI (not used in basic implementation)
-/// * `detail` - Token calculation mode: "low", "high", or "auto"
-///
-/// # Returns
-/// Estimated image tokens
-pub fn calculate_image_tokens(_image_url: &str, detail: &str) -> usize {
-    // Low detail mode: fixed 85 tokens
-    if detail == "low" {
-        return 85;
+/// Calculate tokens for an image content block using LiteLLM-compatible logic.
+pub fn calculate_image_tokens(image_url: &str, detail: &str) -> TokenCountResult<usize> {
+    calculate_image_tokens_with_default(image_url, detail, false)
+}
+
+fn calculate_image_tokens_with_default(
+    image_url: &str,
+    detail: &str,
+    use_default_image_token_count: bool,
+) -> TokenCountResult<usize> {
+    if use_default_image_token_count {
+        let default_tokens = env_u32("DEFAULT_IMAGE_TOKEN_COUNT", DEFAULT_IMAGE_TOKEN_COUNT);
+        return Ok(default_tokens as usize);
     }
 
-    // High detail mode with conservative estimate (4 tiles for 1024x1024)
-    if detail == "high" {
-        return 85 + 4 * 170; // 765 tokens
+    let base_tokens = 85u32;
+    match detail {
+        "low" | "auto" => Ok(base_tokens as usize),
+        "high" => {
+            let (width, height) = get_image_dimensions(image_url)?;
+            let (resized_width, resized_height) = resize_image_high_res(width, height);
+            let tiles_needed =
+                calculate_tiles_needed(resized_width, resized_height, MAX_TILE_WIDTH, MAX_TILE_HEIGHT);
+            let tile_tokens = (base_tokens * 2) * tiles_needed;
+            Ok((base_tokens + tile_tokens) as usize)
+        }
+        _ => Err(format!("Invalid detail value: {}", detail)),
+    }
+}
+
+fn count_image_tokens_value(
+    image_url: &Value,
+    use_default_image_token_count: bool,
+) -> TokenCountResult<usize> {
+    match image_url {
+        Value::Object(obj) => {
+            let detail = obj
+                .get("detail")
+                .and_then(|d| d.as_str())
+                .unwrap_or("auto");
+            if !matches!(detail, "low" | "high" | "auto") {
+                return Err(format!("Invalid detail value: {}", detail));
+            }
+            let url = obj
+                .get("url")
+                .and_then(|u| u.as_str())
+                .ok_or_else(|| "Missing required key 'url' in image_url".to_string())?;
+            if url.trim().is_empty() {
+                return Err("Empty image_url string is not valid.".to_string());
+            }
+            calculate_image_tokens_with_default(url, detail, use_default_image_token_count)
+        }
+        Value::String(url) => {
+            if url.trim().is_empty() {
+                return Err("Empty image_url string is not valid.".to_string());
+            }
+            calculate_image_tokens_with_default(url, "auto", use_default_image_token_count)
+        }
+        _ => Err("Invalid image_url type".to_string()),
+    }
+}
+
+fn get_image_dimensions(data: &str) -> TokenCountResult<(u32, u32)> {
+    let img_data = fetch_image_bytes(data)?;
+
+    match get_image_type(&img_data) {
+        Some("png") => {
+            if img_data.len() >= 24 {
+                let width = u32::from_be_bytes([img_data[16], img_data[17], img_data[18], img_data[19]]);
+                let height = u32::from_be_bytes([img_data[20], img_data[21], img_data[22], img_data[23]]);
+                return Ok((width, height));
+            }
+        }
+        Some("gif") => {
+            if img_data.len() >= 10 {
+                let width = u16::from_le_bytes([img_data[6], img_data[7]]) as u32;
+                let height = u16::from_le_bytes([img_data[8], img_data[9]]) as u32;
+                return Ok((width, height));
+            }
+        }
+        Some("jpeg") => {
+            if let Some((width, height)) = parse_jpeg_dimensions(&img_data) {
+                return Ok((width, height));
+            }
+        }
+        Some("webp") => {
+            if img_data.len() >= 30 {
+                if &img_data[12..16] == b"VP8X" {
+                    let width = u32::from_le_bytes([img_data[24], img_data[25], img_data[26], 0]) + 1;
+                    let height = u32::from_le_bytes([img_data[27], img_data[28], img_data[29], 0]) + 1;
+                    return Ok((width, height));
+                } else if &img_data[12..16] == b"VP8 " {
+                    let width = u16::from_le_bytes([img_data[26], img_data[27]]) & 0x3FFF;
+                    let height = u16::from_le_bytes([img_data[28], img_data[29]]) & 0x3FFF;
+                    return Ok((width as u32, height as u32));
+                } else if &img_data[12..16] == b"VP8L" {
+                    let bits = u32::from_le_bytes([img_data[21], img_data[22], img_data[23], img_data[24]]);
+                    let width = (bits & 0x3FFF) + 1;
+                    let height = ((bits >> 14) & 0x3FFF) + 1;
+                    return Ok((width, height));
+                }
+            }
+        }
+        _ => {}
     }
 
-    // Auto mode - use conservative high estimate
-    85 + 4 * 170 // 765 tokens
+    Ok((default_image_width(), default_image_height()))
+}
+
+fn fetch_image_bytes(data: &str) -> TokenCountResult<Vec<u8>> {
+    if let Ok(response) = reqwest::blocking::get(data) {
+        if let Ok(bytes) = response.bytes() {
+            return Ok(bytes.to_vec());
+        }
+    }
+
+    let (_, encoded) = data
+        .split_once(',')
+        .ok_or_else(|| "Invalid image data URI".to_string())?;
+    BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|err| format!("Invalid base64 image data: {}", err))
+}
+
+fn get_image_type(image_data: &[u8]) -> Option<&'static str> {
+    if image_data.len() >= 8 && image_data[..8] == [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] {
+        return Some("png");
+    }
+    if image_data.len() >= 6 && &image_data[..4] == b"GIF8" && image_data[5] == b'a' {
+        return Some("gif");
+    }
+    if image_data.len() >= 3 && image_data[..3] == [0xff, 0xd8, 0xff] {
+        return Some("jpeg");
+    }
+    if image_data.len() >= 8 && &image_data[4..8] == b"ftyp" {
+        return Some("heic");
+    }
+    if image_data.len() >= 12 && &image_data[..4] == b"RIFF" && &image_data[8..12] == b"WEBP" {
+        return Some("webp");
+    }
+    None
+}
+
+fn parse_jpeg_dimensions(image_data: &[u8]) -> Option<(u32, u32)> {
+    if image_data.len() < 4 || image_data[0] != 0xFF || image_data[1] != 0xD8 {
+        return None;
+    }
+
+    let mut index = 2usize;
+    while index + 9 < image_data.len() {
+        if image_data[index] != 0xFF {
+            index += 1;
+            continue;
+        }
+        let mut marker = image_data[index + 1];
+        while marker == 0xFF {
+            index += 1;
+            if index + 1 >= image_data.len() {
+                return None;
+            }
+            marker = image_data[index + 1];
+        }
+        if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            if index + 8 >= image_data.len() {
+                return None;
+            }
+            let height = u16::from_be_bytes([image_data[index + 5], image_data[index + 6]]) as u32;
+            let width = u16::from_be_bytes([image_data[index + 7], image_data[index + 8]]) as u32;
+            return Some((width, height));
+        }
+
+        if index + 3 >= image_data.len() {
+            return None;
+        }
+        let size = u16::from_be_bytes([image_data[index + 2], image_data[index + 3]]) as usize;
+        if size < 2 {
+            return None;
+        }
+        index += size + 2;
+    }
+
+    None
+}
+
+fn resize_image_high_res(width: u32, height: u32) -> (u32, u32) {
+    let max_short_side = env_u32("MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES", MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES);
+    let max_long_side = env_u32("MAX_LONG_SIDE_FOR_IMAGE_HIGH_RES", MAX_LONG_SIDE_FOR_IMAGE_HIGH_RES);
+
+    if width <= max_short_side && height <= max_short_side {
+        return (width, height);
+    }
+
+    let longer_side = width.max(height) as f64;
+    let shorter_side = width.min(height) as f64;
+    let aspect_ratio = if shorter_side > 0.0 {
+        longer_side / shorter_side
+    } else {
+        1.0
+    };
+
+    if width <= height {
+        let mut resized_width = max_short_side as f64;
+        let mut resized_height = resized_width * aspect_ratio;
+        if resized_height > max_long_side as f64 {
+            resized_height = max_long_side as f64;
+            resized_width = resized_height / aspect_ratio;
+        }
+        (resized_width as u32, resized_height as u32)
+    } else {
+        let mut resized_height = max_short_side as f64;
+        let mut resized_width = resized_height * aspect_ratio;
+        if resized_width > max_long_side as f64 {
+            resized_width = max_long_side as f64;
+            resized_height = resized_width / aspect_ratio;
+        }
+        (resized_width as u32, resized_height as u32)
+    }
+}
+
+fn calculate_tiles_needed(
+    resized_width: u32,
+    resized_height: u32,
+    tile_width: u32,
+    tile_height: u32,
+) -> u32 {
+    let tiles_across = (resized_width + tile_width - 1) / tile_width;
+    let tiles_down = (resized_height + tile_height - 1) / tile_height;
+    tiles_across * tiles_down
+}
+
+fn default_image_width() -> u32 {
+    env_u32("DEFAULT_IMAGE_WIDTH", DEFAULT_IMAGE_WIDTH)
+}
+
+fn default_image_height() -> u32 {
+    env_u32("DEFAULT_IMAGE_HEIGHT", DEFAULT_IMAGE_HEIGHT)
+}
+
+fn format_function_definitions(tools: &[Value]) -> String {
+    let mut lines = Vec::new();
+    lines.push("namespace functions {".to_string());
+    lines.push(String::new());
+
+    for tool in tools {
+        let Some(function) = tool.get("function") else {
+            continue;
+        };
+
+        if let Some(description) = function.get("description").and_then(|d| d.as_str()) {
+            lines.push(format!("// {}", description));
+        }
+
+        let function_name = function
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("unknown");
+        let parameters = function.get("parameters").and_then(|p| p.as_object());
+        let properties = parameters.and_then(|p| p.get("properties")).and_then(|p| p.as_object());
+
+        if let Some(properties) = properties {
+            if !properties.is_empty() {
+                lines.push(format!("type {} = (_: {{", function_name));
+                lines.push(format_object_parameters(parameters, 0));
+                lines.push("}) => any;".to_string());
+            } else {
+                lines.push(format!("type {} = () => any;", function_name));
+            }
+        } else {
+            lines.push(format!("type {} = () => any;", function_name));
+        }
+
+        lines.push(String::new());
+    }
+
+    lines.push("} // namespace functions".to_string());
+    lines.join("\n")
+}
+
+fn format_object_parameters(parameters: Option<&serde_json::Map<String, Value>>, indent: usize) -> String {
+    let Some(params) = parameters else {
+        return String::new();
+    };
+    let Some(properties) = params.get("properties").and_then(|p| p.as_object()) else {
+        return String::new();
+    };
+    if properties.is_empty() {
+        return String::new();
+    }
+
+    let required_params = params
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut lines = Vec::new();
+    for (key, props) in properties {
+        if let Some(description) = props.get("description").and_then(|d| d.as_str()) {
+            lines.push(format!("// {}", description));
+        }
+        let optional = if required_params.contains(&key.as_str()) { "" } else { "?" };
+        let prop_type = format_type(props, indent);
+        lines.push(format!("{}{}: {},", key, optional, prop_type));
+    }
+
+    lines
+        .into_iter()
+        .map(|line| format!("{}{}", " ".repeat(indent), line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_type(props: &Value, indent: usize) -> String {
+    let type_value = props.get("type").and_then(|t| t.as_str());
+    match type_value {
+        Some("string") => {
+            if let Some(enum_values) = props.get("enum").and_then(|e| e.as_array()) {
+                return enum_values
+                    .iter()
+                    .map(|item| format!("\"{}\"", item))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+            }
+            "string".to_string()
+        }
+        Some("array") => {
+            let items = props.get("items").unwrap_or(&Value::Null);
+            format!("{}[]", format_type(items, indent))
+        }
+        Some("object") => {
+            let nested = format_object_parameters(props.as_object(), indent + 2);
+            format!("{{\n{}\n}}", nested)
+        }
+        Some("integer") | Some("number") => {
+            if let Some(enum_values) = props.get("enum").and_then(|e| e.as_array()) {
+                return enum_values
+                    .iter()
+                    .map(|item| format!("\"{}\"", item))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+            }
+            "number".to_string()
+        }
+        Some("boolean") => "boolean".to_string(),
+        Some("null") => "null".to_string(),
+        _ => "any".to_string(),
+    }
 }
 
 
@@ -404,7 +949,7 @@ pub async fn create_sse_stream(
             }
             None => {
                 // Finalize and end stream
-                finalize_stream(&state);
+                finalize_stream(&mut state);
                 None
             }
         }
@@ -556,17 +1101,6 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                 }
             }
 
-            // Inject fallback usage into finish_reason chunk if provider didn't provide it
-            if has_finish_reason && !state.usage_found && (state.input_tokens > 0 || state.output_tokens > 0) {
-                json_obj["usage"] = json!({
-                    "prompt_tokens": state.input_tokens,
-                    "completion_tokens": state.output_tokens,
-                    "total_tokens": state.input_tokens + state.output_tokens
-                });
-                chunk_modified = true;
-                state.usage_chunk_sent = true;
-            }
-
             if !contents.is_empty() {
                 let now = Instant::now();
 
@@ -597,17 +1131,28 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                     }
                 }
 
-                // Accumulate tokens and output content
+                // Accumulate output content for fallback usage and Langfuse
                 for content in contents {
-                    // Token counting for fallback (only if usage not found)
-                    if !state.usage_found {
-                        state.output_tokens += count_tokens(&content, &state.original_model);
-                    }
-
-                    // Accumulate output for Langfuse
-                    if state.generation_data.is_some() {
+                    if !state.usage_found || state.generation_data.is_some() {
                         state.accumulated_output.push(content);
                     }
+                }
+            }
+
+            // Inject fallback usage into finish_reason chunk if provider didn't provide it
+            if has_finish_reason && !state.usage_found {
+                if state.output_tokens == 0 && !state.accumulated_output.is_empty() {
+                    let output_text = state.accumulated_output.join("");
+                    state.output_tokens = count_tokens(&output_text, &state.original_model);
+                }
+                if state.input_tokens > 0 || state.output_tokens > 0 {
+                    json_obj["usage"] = json!({
+                        "prompt_tokens": state.input_tokens,
+                        "completion_tokens": state.output_tokens,
+                        "total_tokens": state.input_tokens + state.output_tokens
+                    });
+                    chunk_modified = true;
+                    state.usage_chunk_sent = true;
                 }
             }
 
@@ -654,7 +1199,7 @@ if chunk_modified {
 }
 
 /// Finalize stream and record metrics
-fn finalize_stream(state: &StreamState) {
+fn finalize_stream(state: &mut StreamState) {
     // Log stream end
     tracing::debug!(
         provider = %state.provider_name,
@@ -662,6 +1207,11 @@ fn finalize_stream(state: &StreamState) {
         chunks = state.chunk_count,
         "[Stream End] Streaming completed"
     );
+
+    if !state.usage_found && state.output_tokens == 0 && !state.accumulated_output.is_empty() {
+        let output_text = state.accumulated_output.join("");
+        state.output_tokens = count_tokens(&output_text, &state.original_model);
+    }
 
     // Record fallback token usage if provider didn't send usage
     if !state.usage_found && state.output_tokens > 0 {
@@ -883,6 +1433,8 @@ pub fn rewrite_model_in_response(
 mod tests {
     use super::*;
 
+    const BASE64_PNG_1X1: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII=";
+
     #[test]
     fn test_rewrite_model_in_response() {
         let response = serde_json::json!({
@@ -908,7 +1460,8 @@ mod tests {
             serde_json::json!({"role": "user", "content": "Hello"}),
             serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "Hi there"}]}),
         ];
-        let tokens = calculate_message_tokens(&messages, "gpt-3.5-turbo");
+        let tokens = calculate_message_tokens(&messages, "gpt-3.5-turbo")
+            .expect("message token calculation should succeed");
         assert!(tokens > 0);
         // Should include content + role + format overhead
         assert!(tokens > 10);
@@ -916,22 +1469,23 @@ mod tests {
 
     #[test]
     fn test_calculate_image_tokens_low() {
-        let tokens = calculate_image_tokens("https://example.com/image.jpg", "low");
+        let tokens = calculate_image_tokens(BASE64_PNG_1X1, "low")
+            .expect("image token calculation should succeed");
         assert_eq!(tokens, 85);
     }
 
     #[test]
     fn test_calculate_image_tokens_high() {
-        let tokens = calculate_image_tokens("https://example.com/image.jpg", "high");
-        // Conservative estimate: 4 tiles
-        assert_eq!(tokens, 765); // 85 + 4 * 170
+        let tokens = calculate_image_tokens(BASE64_PNG_1X1, "high")
+            .expect("image token calculation should succeed");
+        assert_eq!(tokens, 255);
     }
 
     #[test]
     fn test_calculate_image_tokens_auto() {
-        let tokens = calculate_image_tokens("https://example.com/image.jpg", "auto");
-        // Auto mode uses conservative high estimate
-        assert_eq!(tokens, 765);
+        let tokens = calculate_image_tokens(BASE64_PNG_1X1, "auto")
+            .expect("image token calculation should succeed");
+        assert_eq!(tokens, 85);
     }
 
     #[test]
@@ -959,8 +1513,8 @@ mod tests {
         })];
         let tokens = calculate_tools_tokens(&tools, "gpt-4");
         assert!(tokens > 0);
-        // Should be roughly 50-80 tokens
-        assert!(tokens > 30 && tokens < 100);
+        // Should be roughly 20-60 tokens
+        assert!(tokens > 20 && tokens < 80);
     }
 
     #[test]
@@ -972,13 +1526,14 @@ mod tests {
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": "https://example.com/image.jpg",
+                        "url": BASE64_PNG_1X1,
                         "detail": "low"
                     }
                 }
             ]
         })];
-        let tokens = calculate_message_tokens(&messages, "gpt-4");
+        let tokens = calculate_message_tokens(&messages, "gpt-4")
+            .expect("message token calculation should succeed");
         // Should include text tokens + 85 (image) + format overhead
         assert!(tokens > 85);
     }
@@ -992,15 +1547,16 @@ mod tests {
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": "https://example.com/image.jpg",
+                        "url": BASE64_PNG_1X1,
                         "detail": "high"
                     }
                 }
             ]
         })];
-        let tokens = calculate_message_tokens(&messages, "gpt-4");
-        // Should include text tokens + 765 (high detail image) + format overhead
-        assert!(tokens > 765);
+        let tokens = calculate_message_tokens(&messages, "gpt-4")
+            .expect("message token calculation should succeed");
+        // Should include text tokens + high detail image + format overhead
+        assert!(tokens > 255);
     }
 
     #[test]
@@ -1011,13 +1567,14 @@ mod tests {
                 {"type": "text", "text": "Check this"},
                 {
                     "type": "image_url",
-                    "image_url": "https://example.com/image.jpg"
+                    "image_url": BASE64_PNG_1X1
                 }
             ]
         })];
-        let tokens = calculate_message_tokens(&messages, "gpt-4");
+        let tokens = calculate_message_tokens(&messages, "gpt-4")
+            .expect("message token calculation should succeed");
         // Should handle string format (auto detail)
-        assert!(tokens > 765);
+        assert!(tokens > 85);
     }
 
 

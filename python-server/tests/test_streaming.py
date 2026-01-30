@@ -268,8 +268,8 @@ class TestTokenCounting:
     def test_calculate_message_tokens_empty(self):
         """Test calculating tokens for empty messages"""
         tokens = calculate_message_tokens([], "gpt-3.5-turbo")
-        # Should still have conversation overhead
-        assert tokens == 2
+        # Should still include base overhead
+        assert tokens == 3
 
 
 @pytest.mark.unit

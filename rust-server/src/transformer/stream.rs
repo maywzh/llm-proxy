@@ -1056,7 +1056,7 @@ mod tests {
 
     #[test]
     fn test_cross_protocol_stream_state_usage_accumulation() {
-        use super::super::{ChunkType, StopReason, UnifiedStreamChunk, UnifiedUsage, UnifiedContent};
+        use super::super::{ChunkType, StopReason, UnifiedContent, UnifiedStreamChunk, UnifiedUsage};
 
         // Test with input_tokens pre-calculated for fallback
         let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(100));
@@ -1069,7 +1069,7 @@ mod tests {
             UnifiedStreamChunk::content_block_delta(0, UnifiedContent::text(" world")),
         ];
 
-        let result = state.process_chunks(chunks);
+        state.process_chunks(chunks);
 
         // Verify tokens were accumulated
         assert!(state.usage.is_some());
@@ -1285,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_v2_api_multiple_content_blocks() {
-        use super::super::{StopReason, UnifiedContent, UnifiedStreamChunk, UnifiedUsage};
+        use super::super::{UnifiedContent, UnifiedStreamChunk};
 
         let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(80));
         state.message_started = true;
@@ -1313,8 +1313,6 @@ mod tests {
 
     #[test]
     fn test_v2_api_empty_text_no_tokens() {
-        use super::super::UnifiedContent;
-
         let mut state = CrossProtocolStreamState::with_input_tokens("gpt-4", Some(100));
         let initial_output = state.usage.as_ref().unwrap().output_tokens;
 

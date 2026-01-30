@@ -56,6 +56,7 @@ class TestV2InputTokenCalculation:
         """Calculate tokens with image content"""
         from app.utils.streaming import calculate_image_tokens
 
+        base64_png_1x1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII="
         messages = [
             {
                 "role": "user",
@@ -64,7 +65,7 @@ class TestV2InputTokenCalculation:
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": "https://example.com/image.jpg",
+                            "url": base64_png_1x1,
                             "detail": "high",
                         },
                     },
@@ -73,8 +74,8 @@ class TestV2InputTokenCalculation:
         ]
 
         tokens = calculate_message_tokens(messages, "gpt-4")
-        # Should include text tokens + 765 (image high detail)
-        assert tokens > 765
+        # Should include text tokens + high detail image
+        assert tokens > 255
 
 
 class TestCrossProtocolStreamState:
@@ -182,7 +183,7 @@ class TestV2InputTokenEdgeCases:
         """Calculate tokens for empty messages list"""
         messages = []
         tokens = calculate_message_tokens(messages, "gpt-4")
-        # Empty messages still have format overhead (2 tokens)
+        # Empty messages still have base overhead
         assert tokens >= 0
         assert tokens < 5
 
@@ -198,6 +199,7 @@ class TestV2InputTokenEdgeCases:
 
     def test_multimodal_content(self):
         """Calculate tokens for multimodal messages"""
+        base64_png_1x1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII="
         messages = [
             {
                 "role": "user",
@@ -205,14 +207,14 @@ class TestV2InputTokenEdgeCases:
                     {"type": "text", "text": "Analyze this"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": "https://example.com/img.jpg"},
+                        "image_url": {"url": base64_png_1x1},
                     },
                 ],
             }
         ]
         tokens = calculate_message_tokens(messages, "gpt-4")
-        # Should include text + image (auto mode = 765 tokens)
-        assert tokens > 765
+        # Should include text + image (auto mode = 85 tokens)
+        assert tokens > 85
 
 
 class TestCrossProtocolStreamStateEdgeCases:

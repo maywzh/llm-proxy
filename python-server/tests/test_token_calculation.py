@@ -11,21 +11,22 @@ from app.utils.streaming import (
 class TestImageTokens:
     """Test image token calculation"""
 
+    BASE64_PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII="
+
     def test_image_tokens_low_detail(self):
         """Low detail mode returns fixed 85 tokens"""
-        tokens = calculate_image_tokens("https://example.com/image.jpg", "low")
+        tokens = calculate_image_tokens(self.BASE64_PNG_1X1, "low")
         assert tokens == 85
 
     def test_image_tokens_high_detail(self):
         """High detail mode with conservative estimate"""
-        tokens = calculate_image_tokens("https://example.com/image.jpg", "high")
-        # Conservative estimate: 1024x1024 → 4 tiles
-        assert tokens == 765  # 85 + 4 * 170
+        tokens = calculate_image_tokens(self.BASE64_PNG_1X1, "high")
+        assert tokens == 255
 
     def test_image_tokens_auto_mode(self):
         """Auto mode uses conservative high estimate"""
-        tokens = calculate_image_tokens("https://example.com/image.jpg", "auto")
-        assert tokens == 765  # Conservative estimate
+        tokens = calculate_image_tokens(self.BASE64_PNG_1X1, "auto")
+        assert tokens == 85
 
     def test_image_tokens_base64(self):
         """Base64 image data URI"""
@@ -60,8 +61,8 @@ class TestToolsTokens:
         ]
         tokens = calculate_tools_tokens(tools, "gpt-4")
         assert tokens > 0
-        # Should be roughly 50-80 tokens for this simple tool
-        assert 30 < tokens < 100
+        # Should be roughly 20-60 tokens for this simple tool
+        assert 20 < tokens < 80
 
     def test_tools_tokens_multiple(self):
         """Multiple tool definitions"""
@@ -89,12 +90,14 @@ class TestToolsTokens:
         ]
         tokens = calculate_tools_tokens(tools, "gpt-4")
         assert tokens > 0
-        # Should be roughly 80-150 tokens for two simple tools
-        assert 50 < tokens < 200
+        # Should be roughly 30-80 tokens for two simple tools
+        assert 30 < tokens < 120
 
 
 class TestMessageTokensWithMultimodal:
     """Test message token calculation with multimodal content"""
+
+    BASE64_PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII="
 
     def test_message_tokens_text_only(self):
         """Text-only message (baseline)"""
@@ -113,7 +116,7 @@ class TestMessageTokensWithMultimodal:
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": "https://example.com/image.jpg",
+                            "url": self.BASE64_PNG_1X1,
                             "detail": "low",
                         },
                     },
@@ -134,7 +137,7 @@ class TestMessageTokensWithMultimodal:
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": "https://example.com/image.jpg",
+                            "url": self.BASE64_PNG_1X1,
                             "detail": "high",
                         },
                     },
@@ -142,8 +145,8 @@ class TestMessageTokensWithMultimodal:
             }
         ]
         tokens = calculate_message_tokens(messages, "gpt-4")
-        # Should include text tokens + 765 (image high) + format overhead
-        assert tokens > 765
+        # Should include text tokens + high detail image + format overhead
+        assert tokens > 255
 
     def test_message_tokens_with_multiple_images(self):
         """Message with multiple images"""
@@ -154,18 +157,18 @@ class TestMessageTokensWithMultimodal:
                     {"type": "text", "text": "Compare these images"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": "https://example.com/img1.jpg"},
+                        "image_url": {"url": self.BASE64_PNG_1X1},
                     },
                     {
                         "type": "image_url",
-                        "image_url": {"url": "https://example.com/img2.jpg"},
+                        "image_url": {"url": self.BASE64_PNG_1X1},
                     },
                 ],
             }
         ]
         tokens = calculate_message_tokens(messages, "gpt-4")
-        # Should include text tokens + 2 * 765 (two images) + format overhead
-        assert tokens > 1530
+        # Should include text tokens + 2 * 85 (two images) + format overhead
+        assert tokens > 170
 
     def test_message_tokens_image_url_string_format(self):
         """Image URL as string (simplified format)"""
@@ -176,14 +179,14 @@ class TestMessageTokensWithMultimodal:
                     {"type": "text", "text": "What's this?"},
                     {
                         "type": "image_url",
-                        "image_url": "https://example.com/image.jpg",
+                        "image_url": self.BASE64_PNG_1X1,
                     },
                 ],
             }
         ]
         tokens = calculate_message_tokens(messages, "gpt-4")
         # Should handle string format and use auto detail
-        assert tokens > 765
+        assert tokens > 85
 
 
 class TestClaudeInputTokensIntegration:
@@ -212,7 +215,7 @@ class TestClaudeInputTokensIntegration:
         )
         tokens = _calculate_claude_input_tokens(request)
         # Should include message tokens + tool tokens
-        assert tokens > 30  # Basic message + tool definition
+        assert tokens > 10
 
     def test_claude_tokens_with_system_and_tools(self):
         """Claude request with system prompt and tools"""
@@ -244,7 +247,7 @@ class TestClaudeInputTokensIntegration:
         )
         tokens = _calculate_claude_input_tokens(request)
         # Should include system + message + tool tokens
-        assert tokens > 50
+        assert tokens > 20
 
 
 if __name__ == "__main__":

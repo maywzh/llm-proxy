@@ -458,54 +458,36 @@ pub async fn handle_proxy_request(
                     let input_tokens = if let Some(messages) = payload.get("messages") {
                         if let Some(arr) = messages.as_array() {
                             let model_label = &transform_ctx.mapped_model;
-                            let mut total_tokens =
-                                crate::api::streaming::calculate_message_tokens(arr, model_label);
+                            let tools = payload.get("tools").and_then(|t| t.as_array());
+                            let tool_choice = payload.get("tool_choice");
+                            let mut combined_messages: Vec<Value> = Vec::new();
 
-                            // Add system prompt tokens
                             if let Some(system) = payload.get("system") {
-                                match system {
-                                    Value::String(s) => {
-                                        total_tokens +=
-                                            crate::api::streaming::count_tokens(s, model_label);
-                                    }
-                                    Value::Array(blocks) => {
-                                        for block in blocks {
-                                            if let Some(obj) = block.as_object() {
-                                                if obj
-                                                    .get("type")
-                                                    .and_then(|t| t.as_str())
-                                                    == Some("text")
-                                                {
-                                                    if let Some(text) =
-                                                        obj.get("text").and_then(|t| t.as_str())
-                                                    {
-                                                        total_tokens += crate::api::streaming::count_tokens(
-                                                            text, model_label,
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                let system_message = match system {
+                                    Value::String(text) => json!({"role": "system", "content": text}),
+                                    Value::Array(blocks) => json!({"role": "system", "content": blocks}),
+                                    _ => json!({"role": "system", "content": ""}),
+                                };
+                                combined_messages.push(system_message);
                             }
 
-                            // Add tools tokens
-                            if let Some(tools) = payload.get("tools") {
-                                if let Some(arr) = tools.as_array() {
-                                    total_tokens +=
-                                        crate::api::streaming::calculate_tools_tokens(arr, model_label);
-                                }
-                            }
+                            combined_messages.extend(arr.iter().cloned());
+
+                            let total_tokens = crate::api::streaming::calculate_message_tokens_with_tools(
+                                &combined_messages,
+                                model_label,
+                                tools.map(|tool_list| tool_list.as_slice()),
+                                tool_choice,
+                            )
+                            .ok();
 
                             tracing::debug!(
                                 request_id = %request_id,
-                                input_tokens = total_tokens,
+                                input_tokens = ?total_tokens,
                                 "Pre-calculated input tokens for V2 streaming request"
                             );
 
-                            Some(total_tokens)
+                            total_tokens
                         } else {
                             None
                         }
