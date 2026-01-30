@@ -6,6 +6,7 @@ and converting responses back to Claude format.
 """
 
 from datetime import datetime, timezone
+from typing import Any, Optional
 import json
 import uuid
 
@@ -28,7 +29,7 @@ from app.services.claude_converter import (
     openai_to_claude_response,
     convert_openai_streaming_to_claude,
 )
-from app.utils.streaming import count_tokens as tiktoken_count
+from app.utils.streaming import calculate_message_tokens
 from app.models.claude import ClaudeMessagesRequest, ClaudeTokenCountRequest
 from app.core.http_client import get_http_client
 from app.core.metrics import TOKEN_USAGE
@@ -43,66 +44,113 @@ router = APIRouter(prefix="/v1", tags=["claude"])
 logger = get_logger()
 
 
-def _calculate_claude_input_tokens(request: ClaudeMessagesRequest) -> int:
-    """Calculate input tokens for Claude request using tiktoken
+def _convert_claude_block_for_token_count(block: Any) -> dict[str, Any]:
+    block_dict = block.dict() if hasattr(block, "dict") else block
+    if not isinstance(block_dict, dict):
+        return {"type": "text", "text": str(block)}
 
-    Args:
-        request: Claude Messages API request
+    block_type = block_dict.get("type")
+    if block_type == "text":
+        return {"type": "text", "text": block_dict.get("text", "")}
+    if block_type == "image":
+        source = block_dict.get("source", {})
+        media_type = source.get("media_type", "image/png")
+        data = source.get("data", "")
+        data_uri = f"data:{media_type};base64,{data}"
+        return {
+            "type": "image_url",
+            "image_url": {"url": data_uri, "detail": "auto"},
+        }
+    if block_type == "tool_use":
+        return {
+            "type": "tool_use",
+            "id": block_dict.get("id"),
+            "name": block_dict.get("name"),
+            "input": block_dict.get("input"),
+        }
+    if block_type == "tool_result":
+        return {
+            "type": "tool_result",
+            "tool_use_id": block_dict.get("tool_use_id"),
+            "content": block_dict.get("content"),
+            "is_error": block_dict.get("is_error"),
+        }
+    if block_type == "thinking":
+        return {
+            "type": "thinking",
+            "thinking": block_dict.get("thinking", ""),
+            "signature": block_dict.get("signature"),
+        }
+    return block_dict
 
-    Returns:
-        Estimated input tokens count
-    """
-    model = request.model
-    total = 0
 
-    # Count system prompt tokens
-    if request.system:
-        if isinstance(request.system, str):
-            total += tiktoken_count(request.system, model)
-        elif isinstance(request.system, list):
-            for block in request.system:
-                if hasattr(block, 'text'):
-                    total += tiktoken_count(block.text, model)
-                elif isinstance(block, dict) and 'text' in block:
-                    total += tiktoken_count(block['text'], model)
+def _build_claude_messages_for_token_count(
+    system: Optional[Any], messages: list
+) -> list[dict[str, Any]]:
+    combined: list[dict[str, Any]] = []
+    if system is not None:
+        if isinstance(system, str):
+            system_content: Any = system
+        elif isinstance(system, list):
+            system_content = [
+                {"type": "text", "text": block.text}
+                if hasattr(block, "text")
+                else {"type": "text", "text": block.get("text", "")}
+                for block in system
+            ]
+        else:
+            system_content = ""
+        combined.append({"role": "system", "content": system_content})
 
-    # Count message tokens (role + content + overhead)
-    for msg in request.messages:
-        # Role tokens
-        total += tiktoken_count(msg.role, model)
-
-        # Content tokens
+    for msg in messages:
         if isinstance(msg.content, str):
-            total += tiktoken_count(msg.content, model)
-        elif isinstance(msg.content, list):
-            for block in msg.content:
-                block_dict = block.dict() if hasattr(block, 'dict') else block
-                block_type = block_dict.get('type') if isinstance(block_dict, dict) else None
+            content_value: Any = msg.content
+        else:
+            content_value = [
+                _convert_claude_block_for_token_count(block)
+                for block in msg.content
+            ]
+        combined.append({"role": msg.role, "content": content_value})
 
-                # Text content
-                if block_type == 'text':
-                    text = block_dict.get('text', '')
-                    total += tiktoken_count(text, model)
+    return combined
 
-                # Image content (Claude format)
-                elif block_type == 'image':
-                    # Claude images use 'source' field with base64 data
-                    # Conservative estimate: 765 tokens per image
-                    total += 765
 
-        # Message format overhead
-        total += 4
+def _convert_claude_tools_for_token_count(tools: Optional[list]) -> Optional[list[dict[str, Any]]]:
+    if not tools:
+        return None
+    converted: list[dict[str, Any]] = []
+    for tool in tools:
+        if hasattr(tool, "model_dump"):
+            tool_dict = tool.model_dump()
+        elif hasattr(tool, "dict"):
+            tool_dict = tool.dict()
+        else:
+            tool_dict = tool
+        converted.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool_dict.get("name"),
+                    "description": tool_dict.get("description"),
+                    "parameters": tool_dict.get("input_schema", {}),
+                },
+            }
+        )
+    return converted
 
-    # Conversation overhead
-    total += 2
 
-    # Count tools tokens
-    if request.tools:
-        from app.utils.streaming import calculate_tools_tokens
-        tools_list = [t.dict() if hasattr(t, 'dict') else t for t in request.tools]
-        total += calculate_tools_tokens(tools_list, model)
-
-    return total
+def _calculate_claude_input_tokens(request: ClaudeMessagesRequest) -> int:
+    model = request.model
+    combined_messages = _build_claude_messages_for_token_count(
+        request.system, request.messages
+    )
+    tools = _convert_claude_tools_for_token_count(request.tools)
+    return calculate_message_tokens(
+        combined_messages,
+        model,
+        tools=tools,
+        tool_choice=request.tool_choice,
+    )
 
 
 async def _close_stream_resources(stream_ctx):
@@ -577,36 +625,16 @@ async def count_tokens(
     """
     try:
         model = claude_request.model
-        total_tokens = 0
-
-        # Count system message tokens
-        if claude_request.system:
-            if isinstance(claude_request.system, str):
-                total_tokens += tiktoken_count(claude_request.system, model)
-            elif isinstance(claude_request.system, list):
-                for block in claude_request.system:
-                    if hasattr(block, "text"):
-                        total_tokens += tiktoken_count(block.text, model)
-
-        # Count message tokens
-        for msg in claude_request.messages:
-            # Count role tokens
-            total_tokens += tiktoken_count(msg.role, model)
-
-            if msg.content is None:
-                continue
-            elif isinstance(msg.content, str):
-                total_tokens += tiktoken_count(msg.content, model)
-            elif isinstance(msg.content, list):
-                for block in msg.content:
-                    if hasattr(block, "text") and block.text is not None:
-                        total_tokens += tiktoken_count(block.text, model)
-
-            # Format overhead per message (same as streaming.py)
-            total_tokens += 4
-
-        # Conversation format overhead
-        total_tokens += 2
+        combined_messages = _build_claude_messages_for_token_count(
+            claude_request.system, claude_request.messages
+        )
+        tools = _convert_claude_tools_for_token_count(claude_request.tools)
+        total_tokens = calculate_message_tokens(
+            combined_messages,
+            model,
+            tools=tools,
+            tool_choice=claude_request.tool_choice,
+        )
 
         # Ensure at least 1 token
         estimated_tokens = max(1, total_tokens)

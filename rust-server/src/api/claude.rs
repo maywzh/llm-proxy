@@ -5,11 +5,12 @@
 //! and converting responses back to Claude format.
 
 use crate::api::claude_models::{
-    ClaudeContentBlock, ClaudeErrorResponse, ClaudeMessageContent, ClaudeMessagesRequest,
-    ClaudeSystemPrompt, ClaudeTokenCountRequest, ClaudeTokenCountResponse,
+    ClaudeContentBlock, ClaudeErrorResponse, ClaudeMessage, ClaudeMessageContent,
+    ClaudeMessagesRequest, ClaudeSystemPrompt, ClaudeTokenCountRequest, ClaudeTokenCountResponse,
+    ClaudeTool,
 };
 use crate::api::handlers::AppState;
-use crate::api::streaming::count_tokens as tiktoken_count;
+use crate::api::streaming::calculate_message_tokens_with_tools;
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
 use crate::core::jsonl_logger::{
@@ -36,7 +37,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures::StreamExt;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 // ============================================================================
@@ -490,7 +491,7 @@ pub async fn create_message(
 
                 if claude_request.stream {
                     // Calculate input tokens for fallback (only used if provider doesn't return usage)
-                    let fallback_input_tokens = Some(calculate_claude_input_tokens(&claude_request));
+                    let fallback_input_tokens = calculate_claude_input_tokens(&claude_request);
                     tracing::debug!(
                         "[USAGE_DEBUG] Calculated fallback_input_tokens: {:?} for model: {}",
                         fallback_input_tokens,
@@ -921,50 +922,20 @@ pub async fn count_tokens(
     REQUEST_ID
         .scope(request_id.clone(), async move {
             let model = &claude_request.model;
-            let mut total_tokens = 0;
+            let messages_value = build_claude_messages_for_token_count(
+                &claude_request.system,
+                &claude_request.messages,
+            );
+            let tools_value = build_openai_tools_for_token_count(&claude_request.tools);
+            let tool_choice = claude_request.tool_choice.as_ref();
+            let total_tokens = calculate_message_tokens_with_tools(
+                &messages_value,
+                model,
+                tools_value.as_deref(),
+                tool_choice,
+            )
+            .map_err(AppError::BadRequest)?;
 
-            // Count system message tokens
-            if let Some(ref system) = claude_request.system {
-                match system {
-                    crate::api::claude_models::ClaudeSystemPrompt::Text(text) => {
-                        total_tokens += tiktoken_count(text, model);
-                    }
-                    crate::api::claude_models::ClaudeSystemPrompt::Blocks(blocks) => {
-                        for block in blocks {
-                            total_tokens += tiktoken_count(&block.text, model);
-                        }
-                    }
-                }
-            }
-
-            // Count message tokens
-            for msg in &claude_request.messages {
-                // Count role tokens
-                total_tokens += tiktoken_count(&msg.role, model);
-
-                match &msg.content {
-                    crate::api::claude_models::ClaudeMessageContent::Text(text) => {
-                        total_tokens += tiktoken_count(text, model);
-                    }
-                    crate::api::claude_models::ClaudeMessageContent::Blocks(blocks) => {
-                        for block in blocks {
-                            if let crate::api::claude_models::ClaudeContentBlock::Text(text_block) =
-                                block
-                            {
-                                total_tokens += tiktoken_count(&text_block.text, model);
-                            }
-                        }
-                    }
-                }
-
-                // Format overhead per message (same as streaming.rs)
-                total_tokens += 4;
-            }
-
-            // Conversation format overhead
-            total_tokens += 2;
-
-            // Ensure at least 1 token
             let estimated_tokens = std::cmp::max(1, total_tokens) as i32;
 
             Ok(Json(ClaudeTokenCountResponse {
@@ -978,76 +949,115 @@ pub async fn count_tokens(
 // Token Counting Helpers
 // ============================================================================
 
+fn build_claude_messages_for_token_count(
+    system: &Option<ClaudeSystemPrompt>,
+    messages: &[ClaudeMessage],
+) -> Vec<Value> {
+    let mut combined = Vec::new();
+
+    if let Some(system_prompt) = system {
+        let system_content = match system_prompt {
+            ClaudeSystemPrompt::Text(text) => Value::String(text.clone()),
+            ClaudeSystemPrompt::Blocks(blocks) => {
+                let items = blocks
+                    .iter()
+                    .map(|block| json!({"type": "text", "text": block.text}))
+                    .collect::<Vec<_>>();
+                Value::Array(items)
+            }
+        };
+        combined.push(json!({"role": "system", "content": system_content}));
+    }
+
+    for message in messages {
+        let content_value = match &message.content {
+            ClaudeMessageContent::Text(text) => Value::String(text.clone()),
+            ClaudeMessageContent::Blocks(blocks) => {
+                let items = blocks
+                    .iter()
+                    .map(convert_claude_block_for_token_count)
+                    .collect::<Vec<_>>();
+                Value::Array(items)
+            }
+        };
+        combined.push(json!({"role": message.role, "content": content_value}));
+    }
+
+    combined
+}
+
+fn convert_claude_block_for_token_count(block: &ClaudeContentBlock) -> Value {
+    match block {
+        ClaudeContentBlock::Text(text_block) => {
+            json!({"type": "text", "text": text_block.text})
+        }
+        ClaudeContentBlock::Image(image_block) => {
+            let data_uri = format!(
+                "data:{};base64,{}",
+                image_block.source.media_type, image_block.source.data
+            );
+            json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": data_uri,
+                    "detail": "auto"
+                }
+            })
+        }
+        ClaudeContentBlock::ToolUse(tool_use) => json!({
+            "type": "tool_use",
+            "id": tool_use.id,
+            "name": tool_use.name,
+            "input": tool_use.input
+        }),
+        ClaudeContentBlock::ToolResult(tool_result) => json!({
+            "type": "tool_result",
+            "tool_use_id": tool_result.tool_use_id,
+            "content": tool_result.content,
+            "is_error": tool_result.is_error
+        }),
+        ClaudeContentBlock::Thinking(thinking) => json!({
+            "type": "thinking",
+            "thinking": thinking.thinking,
+            "signature": thinking.signature
+        }),
+    }
+}
+
+fn build_openai_tools_for_token_count(tools: &Option<Vec<ClaudeTool>>) -> Option<Vec<Value>> {
+    tools.as_ref().map(|tool_list| {
+        tool_list
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.input_schema
+                    }
+                })
+            })
+            .collect::<Vec<_>>()
+    })
+}
+
 /// Calculate input tokens for Claude request using tiktoken (for streaming fallback).
 ///
 /// This function is used to provide a fallback token count when the upstream
 /// provider doesn't return usage information in streaming responses.
-fn calculate_claude_input_tokens(request: &ClaudeMessagesRequest) -> usize {
-    use crate::api::streaming::{count_tokens, calculate_tools_tokens};
-
+fn calculate_claude_input_tokens(request: &ClaudeMessagesRequest) -> Option<usize> {
     let model = &request.model;
-    let mut total = 0;
-
-    // System prompt tokens
-    if let Some(ref system) = request.system {
-        match system {
-            ClaudeSystemPrompt::Text(text) => {
-                total += count_tokens(text, model);
-            }
-            ClaudeSystemPrompt::Blocks(blocks) => {
-                for block in blocks {
-                    total += count_tokens(&block.text, model);
-                }
-            }
-        }
-    }
-
-    // Message tokens
-    for msg in &request.messages {
-        // Role tokens
-        total += count_tokens(&msg.role, model);
-
-        // Content tokens
-        match &msg.content {
-            ClaudeMessageContent::Text(text) => {
-                total += count_tokens(text, model);
-            }
-            ClaudeMessageContent::Blocks(blocks) => {
-                for block in blocks {
-                    match block {
-                        // Text content
-                        ClaudeContentBlock::Text(text_block) => {
-                            total += count_tokens(&text_block.text, model);
-                        }
-                        // Image content - conservative estimate
-                        ClaudeContentBlock::Image(_) => {
-                            total += 765; // Conservative estimate for images
-                        }
-                        // Other block types (tool use, tool result, etc.)
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        // Per-message overhead
-        total += 4;
-    }
-
-    // Conversation overhead
-    total += 2;
-
-    // Tools tokens (if any)
-    if let Some(tools) = &request.tools {
-        // Convert tools to Value array
-        let tools_value: Vec<serde_json::Value> = tools
-            .iter()
-            .map(|t| serde_json::to_value(t).unwrap_or(serde_json::Value::Null))
-            .collect();
-        total += calculate_tools_tokens(&tools_value, model);
-    }
-
-    total
+    let messages_value = build_claude_messages_for_token_count(&request.system, &request.messages);
+    let tools_value = build_openai_tools_for_token_count(&request.tools);
+    let tool_choice = request.tool_choice.as_ref();
+    calculate_message_tokens_with_tools(
+        &messages_value,
+        model,
+        tools_value.as_deref(),
+        tool_choice,
+    )
+    .ok()
 }
 
 // ============================================================================

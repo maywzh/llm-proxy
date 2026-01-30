@@ -508,32 +508,21 @@ async def _handle_streaming_request(
 
     # Pre-calculate input tokens for usage fallback
     from app.utils.streaming import (
+        build_messages_for_token_count,
         calculate_message_tokens,
-        calculate_tools_tokens,
-        count_tokens,
     )
 
     messages = data.get("messages", [])
     tools = data.get("tools")
     system = data.get("system")
 
-    # Calculate input tokens
-    input_tokens = calculate_message_tokens(messages, effective_model or "gpt-4")
-
-    # Add system prompt tokens
-    if system:
-        if isinstance(system, str):
-            input_tokens += count_tokens(system, effective_model or "gpt-4")
-        elif isinstance(system, list):
-            for block in system:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    input_tokens += count_tokens(
-                        block.get("text", ""), effective_model or "gpt-4"
-                    )
-
-    # Add tools tokens
-    if tools:
-        input_tokens += calculate_tools_tokens(tools, effective_model or "gpt-4")
+    combined_messages = build_messages_for_token_count(messages, system)
+    input_tokens = calculate_message_tokens(
+        combined_messages,
+        effective_model or "gpt-4",
+        tools=tools,
+        tool_choice=data.get("tool_choice"),
+    )
 
     logger.debug(f"Pre-calculated input tokens: {input_tokens}")
 

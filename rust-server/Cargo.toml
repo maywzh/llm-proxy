@@ -11,8 +11,9 @@ tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["trace", "cors", "timeout"] }
 
 # HTTP client
-reqwest = { version = "0.11", features = ["json", "stream", "native-tls-vendored"] }
+reqwest = { version = "0.11", features = ["blocking", "json", "stream", "native-tls-vendored"] }
 bytes = "1.5"
+base64 = "0.22"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
