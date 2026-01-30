@@ -509,32 +509,21 @@ async def _handle_non_streaming_request(
 
     # Pre-calculate input tokens for fallback (when provider doesn't return usage)
     from app.utils.streaming import (
+        build_messages_for_token_count,
         calculate_message_tokens,
-        calculate_tools_tokens,
-        count_tokens,
     )
 
     messages = data.get("messages", [])
     tools = data.get("tools")
     system = data.get("system")
 
-    # Calculate input tokens
-    fallback_input_tokens = calculate_message_tokens(messages, effective_model or "gpt-3.5-turbo")
-
-    # Add system prompt tokens
-    if system:
-        if isinstance(system, str):
-            fallback_input_tokens += count_tokens(system, effective_model or "gpt-3.5-turbo")
-        elif isinstance(system, list):
-            for block in system:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    fallback_input_tokens += count_tokens(
-                        block.get("text", ""), effective_model or "gpt-3.5-turbo"
-                    )
-
-    # Add tools tokens
-    if tools:
-        fallback_input_tokens += calculate_tools_tokens(tools, effective_model or "gpt-3.5-turbo")
+    combined_messages = build_messages_for_token_count(messages, system)
+    fallback_input_tokens = calculate_message_tokens(
+        combined_messages,
+        effective_model or "gpt-3.5-turbo",
+        tools=tools,
+        tool_choice=data.get("tool_choice"),
+    )
 
     logger.debug(f"Pre-calculated fallback input tokens: {fallback_input_tokens}")
 

@@ -5,7 +5,7 @@
 
 use crate::api::models::*;
 use crate::api::streaming::{
-    calculate_message_tokens, create_sse_stream, rewrite_model_in_response,
+    calculate_message_tokens_with_tools, create_sse_stream, rewrite_model_in_response,
 };
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
@@ -595,14 +595,21 @@ fn parse_request_body(
     }
 
     // Calculate prompt tokens for fallback
-    let prompt_tokens_for_fallback =
-        payload
-            .get("messages")
-            .and_then(|m| m.as_array())
-            .map(|messages| {
-                let count_model = effective_model.as_deref().unwrap_or("gpt-3.5-turbo");
-                calculate_message_tokens(messages, count_model)
-            });
+    let prompt_tokens_for_fallback = payload
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .and_then(|messages| {
+            let count_model = effective_model.as_deref().unwrap_or("gpt-3.5-turbo");
+            let tools = payload.get("tools").and_then(|t| t.as_array());
+            let tool_choice = payload.get("tool_choice");
+            calculate_message_tokens_with_tools(
+                messages,
+                count_model,
+                tools.map(|tool_list| tool_list.as_slice()),
+                tool_choice,
+            )
+            .ok()
+        });
 
     Ok(ParsedRequest {
         original_model,

@@ -225,7 +225,8 @@ mod tests {
         init_metrics();
         let metrics = get_metrics();
 
-        let initial = metrics.active_requests.with_label_values(&["/test"]).get();
+        let endpoint = "/test-active-requests";
+        let initial = metrics.active_requests.with_label_values(&[endpoint]).get();
 
         let in_handler = Arc::new(tokio::sync::Mutex::new(false));
         let in_handler_clone = in_handler.clone();
@@ -237,10 +238,10 @@ mod tests {
         }
 
         let app = Router::new()
-            .route("/test", get(move || slow_handler(in_handler_clone)))
+            .route(endpoint, get(move || slow_handler(in_handler_clone)))
             .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
 
-        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        let request = Request::builder().uri(endpoint).body(Body::empty()).unwrap();
 
         let handle = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
 
@@ -248,7 +249,7 @@ mod tests {
             tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         }
 
-        let during = metrics.active_requests.with_label_values(&["/test"]).get();
+        let during = metrics.active_requests.with_label_values(&[endpoint]).get();
         assert!(
             during > initial,
             "Active requests should be incremented during execution"
@@ -256,7 +257,7 @@ mod tests {
 
         let _response = handle.await.unwrap();
 
-        let final_count = metrics.active_requests.with_label_values(&["/test"]).get();
+        let final_count = metrics.active_requests.with_label_values(&[endpoint]).get();
         assert_eq!(final_count, initial);
     }
 
