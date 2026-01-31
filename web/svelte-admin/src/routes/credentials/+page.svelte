@@ -37,8 +37,12 @@
   const filteredCredentials = $derived(
     $credentials.filter(
       credential =>
-        credential.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        credential.key_preview.toLowerCase().includes(searchTerm.toLowerCase())
+        credential &&
+        credential.name &&
+        (credential.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          credential.key_preview
+            ?.toLowerCase()
+            .includes(searchTerm.toLowerCase()))
     )
   );
 

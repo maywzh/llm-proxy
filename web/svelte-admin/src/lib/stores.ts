@@ -149,10 +149,8 @@ export const actions = {
         model_mapping: data.model_mapping,
       });
 
-      providers.update(list => [...list, response.provider]);
-      configVersion.update(current =>
-        current ? { ...current, version: response.version } : null
-      );
+      // Backend returns Provider directly (not wrapped in { version, provider })
+      providers.update(list => [...list, response]);
 
       return true;
     } catch (error) {
@@ -264,10 +262,8 @@ export const actions = {
         rate_limit: data.rate_limit,
       });
 
-      credentials.update(list => [...list, response.credential]);
-      configVersion.update(current =>
-        current ? { ...current, version: response.version } : null
-      );
+      // Backend returns Credential directly (not wrapped in { version, credential })
+      credentials.update(list => [...list, response]);
 
       return true;
     } catch (error) {
