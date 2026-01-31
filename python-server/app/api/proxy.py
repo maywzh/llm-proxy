@@ -4,10 +4,11 @@ This module provides V2 API endpoints that support cross-protocol transformation
 between different LLM API formats (OpenAI, Anthropic, Response API).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 import json
+import time
 import uuid
 
 import httpx
@@ -39,11 +40,11 @@ from app.core.jsonl_logger import (
     log_provider_streaming_response,
 )
 from app.core.metrics import (
-    TOKEN_USAGE,
     BYPASS_REQUESTS,
     BYPASS_STREAMING_BYTES,
     CROSS_PROTOCOL_REQUESTS,
 )
+from app.core.stream_metrics import StreamStats, record_stream_metrics
 from app.core.logging import (
     get_logger,
     set_provider_context,
@@ -69,6 +70,22 @@ from app.transformer import (
 
 router = APIRouter()
 logger = get_logger()
+
+
+# =============================================================================
+# Streaming Usage Tracker
+# =============================================================================
+
+
+@dataclass
+class StreamingUsageTracker:
+    """Tracks token usage and timing during streaming for metrics recording at exit."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    usage_from_provider: bool = False
+    start_time: float = field(default_factory=time.time)
+    first_token_time: Optional[float] = None
 
 
 # =============================================================================
@@ -245,6 +262,7 @@ async def _cleanup_stream_context(
     trace_id: Optional[str],
     langfuse_service: LangfuseService,
     chunk_collector: list[str],
+    usage_tracker: Optional[StreamingUsageTracker] = None,
 ):
     """Cleanup streaming context and finalize logging.
 
@@ -255,6 +273,7 @@ async def _cleanup_stream_context(
         trace_id: Langfuse trace ID
         langfuse_service: Langfuse service instance
         chunk_collector: Collected chunks for logging
+        usage_tracker: Optional usage tracker for metrics recording
     """
     await stream_ctx.__aexit__(None, None, None)
     generation_data.end_time = datetime.now(timezone.utc)
@@ -269,6 +288,19 @@ async def _cleanup_stream_context(
         error_msg=None,
         chunk_sequence=chunk_collector,
     )
+
+    # Record token usage metrics at exit point
+    if usage_tracker is not None:
+        stats = StreamStats(
+            model=ctx.original_model or "unknown",
+            provider=ctx.provider_name,
+            api_key_name=get_api_key_name(),
+            input_tokens=usage_tracker.input_tokens,
+            output_tokens=usage_tracker.output_tokens,
+            start_time=usage_tracker.start_time,
+            first_token_time=usage_tracker.first_token_time,
+        )
+        record_stream_metrics(stats)
 
 
 # =============================================================================
@@ -415,6 +447,7 @@ async def _create_cross_protocol_stream(
     langfuse_service: LangfuseService,
     input_tokens: int = 0,
     chunk_collector: Optional[list[str]] = None,
+    usage_tracker: Optional[StreamingUsageTracker] = None,
 ):
     """Create a cross-protocol streaming response generator."""
     client_protocol = ctx.client_protocol
@@ -422,12 +455,19 @@ async def _create_cross_protocol_stream(
     model_label = ctx.original_model
     provider_name = ctx.provider_name
 
+    # Initialize usage tracker with input tokens
+    if usage_tracker is not None:
+        usage_tracker.input_tokens = input_tokens
+
     # For same-protocol streaming, use bypass optimization
     if client_protocol == provider_protocol:
         # Direct passthrough with model rewriting
         # Track total bytes for bypass streaming metrics
         total_bypass_bytes = 0
         async for chunk in response.aiter_bytes():
+            # Track first token time
+            if usage_tracker is not None and usage_tracker.first_token_time is None:
+                usage_tracker.first_token_time = time.time()
             # Collect raw SSE data for JSONL logging
             if chunk_collector is not None:
                 chunk_collector.append(chunk.decode("utf-8", errors="replace"))
@@ -446,6 +486,10 @@ async def _create_cross_protocol_stream(
 
     async for chunk in response.aiter_bytes():
         try:
+            # Track first token time
+            if usage_tracker is not None and usage_tracker.first_token_time is None:
+                usage_tracker.first_token_time = time.time()
+
             # Collect raw SSE data for JSONL logging
             if chunk_collector is not None:
                 chunk_collector.append(chunk.decode("utf-8", errors="replace"))
@@ -463,6 +507,17 @@ async def _create_cross_protocol_stream(
                         )
                         yield formatted.encode("utf-8")
                     yield format_sse_done().encode("utf-8")
+
+                    # Capture final usage for metrics recording
+                    if usage_tracker is not None:
+                        final_usage = stream_state.get_final_usage()
+                        if final_usage:
+                            usage_tracker.input_tokens = final_usage.input_tokens
+                            usage_tracker.output_tokens = final_usage.output_tokens
+                            usage_tracker.usage_from_provider = (
+                                stream_state.usage is not None
+                                and stream_state.usage != final_usage
+                            )
                     continue
 
                 if event.data:
@@ -626,6 +681,9 @@ async def _handle_streaming_request(
         # Collect chunks for JSONL logging
         chunk_collector: list[str] = []
 
+        # Create usage tracker for metrics recording at exit
+        usage_tracker = StreamingUsageTracker(input_tokens=input_tokens)
+
         # Create streaming response
         async def stream_generator():
             async for chunk in _create_cross_protocol_stream(
@@ -637,6 +695,7 @@ async def _handle_streaming_request(
                 langfuse_service,
                 input_tokens=input_tokens,
                 chunk_collector=chunk_collector,
+                usage_tracker=usage_tracker,
             ):
                 yield chunk
 
@@ -657,6 +716,7 @@ async def _handle_streaming_request(
             trace_id,
             langfuse_service,
             chunk_collector,
+            usage_tracker,
         )
         return _attach_response_metadata(
             streaming_response, request.state.model, provider.name

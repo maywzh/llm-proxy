@@ -23,6 +23,7 @@ use crate::core::langfuse::{
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
+use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::{AppError, Result};
 use crate::services::claude_converter::{
     claude_to_openai_request, convert_openai_streaming_to_claude, openai_to_claude_response,
@@ -39,6 +40,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Instant;
 
 // ============================================================================
 // Authentication
@@ -570,6 +572,7 @@ async fn handle_streaming_response(
         let usage_input_tokens: u32 = 0;
         let usage_output_tokens: u32 = 0;
         let first_token_received = false;
+        let first_token_time: Option<Instant> = None;
         let accumulated_sse_data: Vec<String> = Vec::new();
 
         futures::stream::unfold(
@@ -580,6 +583,7 @@ async fn handle_streaming_response(
                 usage_input_tokens,
                 usage_output_tokens,
                 first_token_received,
+                first_token_time,
                 generation_data,
                 trace_id_clone,
                 accumulated_sse_data,
@@ -587,6 +591,7 @@ async fn handle_streaming_response(
                 model_label.clone(),
                 provider_name.clone(),
                 request_id.clone(),
+                api_key_name.clone(),
             ),
             move |(
                 mut stream,
@@ -595,6 +600,7 @@ async fn handle_streaming_response(
                 mut usage_input_tokens,
                 mut usage_output_tokens,
                 mut first_token_received,
+                mut first_token_time,
                 mut gen_data,
                 trace_id,
                 mut accumulated_sse_data,
@@ -602,14 +608,18 @@ async fn handle_streaming_response(
                 model_label,
                 provider_name,
                 request_id,
+                api_key_name,
             )| {
                 async move {
                     match stream.next().await {
                         Some(event) => {
                             // Track TTFT
-                            if !first_token_received && trace_id.is_some() {
+                            if !first_token_received {
                                 first_token_received = true;
-                                gen_data.ttft_time = Some(Utc::now());
+                                first_token_time = Some(Instant::now());
+                                if trace_id.is_some() {
+                                    gen_data.ttft_time = Some(Utc::now());
+                                }
                             }
 
                             // Accumulate raw SSE data for JSONL logging
@@ -691,6 +701,18 @@ async fn handle_streaming_response(
                                     }
                                 }
 
+                                // Record stream metrics using unified function
+                                let stats = StreamStats {
+                                    model: model_label.clone(),
+                                    provider: provider_name.clone(),
+                                    api_key_name: api_key_name.clone(),
+                                    input_tokens: usage_input_tokens as usize,
+                                    output_tokens: usage_output_tokens as usize,
+                                    start_time,
+                                    first_token_time,
+                                };
+                                record_stream_metrics(&stats);
+
                                 // Log streaming response to JSONL file
                                 if !request_id.is_empty() {
                                     log_streaming_response(
@@ -719,6 +741,7 @@ async fn handle_streaming_response(
                                     usage_input_tokens,
                                     usage_output_tokens,
                                     first_token_received,
+                                    first_token_time,
                                     gen_data,
                                     trace_id,
                                     accumulated_sse_data,
@@ -726,6 +749,7 @@ async fn handle_streaming_response(
                                     model_label,
                                     provider_name,
                                     request_id,
+                                    api_key_name,
                                 ),
                             ))
                         }

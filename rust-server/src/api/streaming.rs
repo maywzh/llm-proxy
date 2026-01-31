@@ -9,6 +9,7 @@ use crate::core::jsonl_logger::{log_provider_streaming_response, log_streaming_r
 use crate::core::langfuse::{get_langfuse_service, GenerationData};
 use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
+use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use axum::body::Body;
 use axum::response::Response as AxumResponse;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -115,6 +116,8 @@ struct StreamState {
     accumulated_sse_data: Vec<String>,
     /// Request ID for JSONL logging
     request_id: String,
+    /// Provider usage (stored for recording at exit)
+    provider_usage: Option<Usage>,
 }
 
 impl StreamState {
@@ -147,6 +150,7 @@ impl StreamState {
             stream_start_logged: false,
             accumulated_sse_data: Vec::new(),
             request_id: String::new(),
+            provider_usage: None,
         }
     }
 }
@@ -1063,17 +1067,14 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
             }
 
             // Check for usage first - only accept if prompt_tokens > 0
+            // Store provider usage for recording at exit (not immediately)
             if !state.usage_found {
                 if let Some(usage_value) = json_obj.get("usage") {
                     if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
                         // Only accept valid usage (prompt_tokens > 0), otherwise keep fallback
                         if usage.prompt_tokens > 0 {
-                            record_token_usage(
-                                &usage,
-                                &state.original_model,
-                                &state.provider_name,
-                                &state.api_key_name,
-                            );
+                            // Store provider usage for recording at exit
+                            state.provider_usage = Some(usage.clone());
                             state.usage_found = true;
 
                             // Capture usage for Langfuse
@@ -1104,26 +1105,9 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
             if !contents.is_empty() {
                 let now = Instant::now();
 
-                // Record provider TTFT
+                // Record provider first token time (TTFT metrics recorded at stream end)
                 if state.provider_first_token_time.is_none() {
                     state.provider_first_token_time = Some(now);
-                    let provider_ttft = (now - state.start_time).as_secs_f64();
-                    let metrics = get_metrics();
-                    metrics
-                        .ttft
-                        .with_label_values(&[
-                            "provider",
-                            &state.original_model,
-                            &state.provider_name,
-                        ])
-                        .observe(provider_ttft);
-
-                    tracing::debug!(
-                        "Provider TTFT recorded - model={} provider={} ttft={:.3}s",
-                        state.original_model,
-                        state.provider_name,
-                        provider_ttft
-                    );
 
                     // Capture TTFT for Langfuse
                     if let Some(ref mut gen_data) = state.generation_data {
@@ -1213,43 +1197,29 @@ fn finalize_stream(state: &mut StreamState) {
         state.output_tokens = count_tokens(&output_text, &state.original_model);
     }
 
-    // Record fallback token usage if provider didn't send usage
-    if !state.usage_found && state.output_tokens > 0 {
-        record_fallback_token_usage(
-            state.input_tokens,
-            state.output_tokens,
-            &state.original_model,
-            &state.provider_name,
-            &state.api_key_name,
-        );
-    }
+    // Determine final output tokens (prefer provider usage if available)
+    let final_input_tokens = if let Some(ref usage) = state.provider_usage {
+        usage.prompt_tokens as usize
+    } else {
+        state.input_tokens
+    };
+    let final_output_tokens = if let Some(ref usage) = state.provider_usage {
+        usage.completion_tokens as usize
+    } else {
+        state.output_tokens
+    };
 
-    // Calculate and record TPS
-    let total_duration = state.start_time.elapsed().as_secs_f64();
-    if total_duration > 0.0 && state.output_tokens > 0 {
-        let metrics = get_metrics();
-
-        // Provider TPS
-        if let Some(provider_first_time) = state.provider_first_token_time {
-            let provider_duration = provider_first_time.elapsed().as_secs_f64();
-            if provider_duration > 0.0 {
-                let provider_tps = state.output_tokens as f64 / provider_duration;
-                metrics
-                    .tokens_per_second
-                    .with_label_values(&["provider", &state.original_model, &state.provider_name])
-                    .observe(provider_tps);
-
-                tracing::info!(
-                    "Provider TPS recorded - model={} provider={} tokens={} duration={:.3}s tps={:.2}",
-                    state.original_model,
-                    state.provider_name,
-                    state.output_tokens,
-                    provider_duration,
-                    provider_tps
-                );
-            }
-        }
-    }
+    // Record all stream metrics using unified function
+    let stats = StreamStats {
+        model: state.original_model.clone(),
+        provider: state.provider_name.clone(),
+        api_key_name: state.api_key_name.clone(),
+        input_tokens: final_input_tokens,
+        output_tokens: final_output_tokens,
+        start_time: state.start_time,
+        first_token_time: state.provider_first_token_time,
+    };
+    record_stream_metrics(&stats);
 
     // Record Langfuse generation
     if let Some(ref gen_data) = state.generation_data {
@@ -1346,36 +1316,6 @@ fn extract_stream_text(chunk_obj: &Value) -> Vec<String> {
         }
     }
     contents
-}
-
-/// Record token usage metrics.
-fn record_token_usage(usage: &Usage, model: &str, provider: &str, api_key_name: &str) {
-    let metrics = get_metrics();
-
-    metrics
-        .token_usage
-        .with_label_values(&[model, provider, "prompt", api_key_name])
-        .inc_by(usage.prompt_tokens as u64);
-
-    metrics
-        .token_usage
-        .with_label_values(&[model, provider, "completion", api_key_name])
-        .inc_by(usage.completion_tokens as u64);
-
-    metrics
-        .token_usage
-        .with_label_values(&[model, provider, "total", api_key_name])
-        .inc_by(usage.total_tokens as u64);
-
-    tracing::debug!(
-        "Token usage - model={} provider={} key={} prompt={} completion={} total={}",
-        model,
-        provider,
-        api_key_name,
-        usage.prompt_tokens,
-        usage.completion_tokens,
-        usage.total_tokens
-    );
 }
 
 /// Record fallback token usage when provider doesn't return usage.

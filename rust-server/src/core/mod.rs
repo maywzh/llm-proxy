@@ -19,6 +19,7 @@ pub mod logging;
 pub mod metrics;
 pub mod middleware;
 pub mod rate_limiter;
+pub mod stream_metrics;
 
 // Re-export commonly used types
 pub use config::{AppConfig, ProviderConfig, ServerConfig};
@@ -42,3 +43,4 @@ pub use middleware::{
     ModelName, ProviderName,
 };
 pub use rate_limiter::RateLimiter;
+pub use stream_metrics::{record_stream_metrics, StreamStats};
