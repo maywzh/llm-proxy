@@ -29,7 +29,7 @@ use crate::core::langfuse::{
 };
 use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
+use crate::core::middleware::{ApiKeyName, HasCredentials, ModelName, ProviderName};
 use crate::core::{AppError, Result};
 use crate::transformer::{
     provider_type_to_protocol, CrossProtocolStreamState, Protocol, ProtocolDetector,
@@ -42,6 +42,7 @@ use crate::with_request_context;
 // ============================================================================
 
 /// Extended AppState with transformer registry
+#[derive(Clone)]
 pub struct ProxyState {
     pub app_state: Arc<AppState>,
     pub transformer_registry: Arc<TransformerRegistry>,
@@ -59,6 +60,12 @@ impl ProxyState {
             transformer_registry: registry,
             transform_pipeline: pipeline,
         }
+    }
+}
+
+impl HasCredentials for ProxyState {
+    fn get_credentials(&self) -> Vec<crate::core::config::CredentialConfig> {
+        self.app_state.get_credentials()
     }
 }
 

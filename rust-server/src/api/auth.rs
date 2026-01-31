@@ -6,6 +6,7 @@
 use axum::http::HeaderMap;
 use sha2::{Digest, Sha256};
 
+use crate::api::models::{compile_pattern, is_pattern};
 use crate::core::config::CredentialConfig;
 use crate::core::error::Result;
 use crate::core::AppError;
@@ -130,6 +131,73 @@ pub fn verify_auth(
 }
 
 // ============================================================================
+// Model Permission Check
+// ============================================================================
+
+/// Check if a model matches any entry in allowed_models list.
+///
+/// Supports:
+/// - Exact match: "gpt-4" matches "gpt-4"
+/// - Simple wildcard: "gpt-*" matches "gpt-4", "gpt-4o"
+/// - Regex pattern: "claude-opus-4-5-.*" matches "claude-opus-4-5-20240620"
+pub fn model_matches_allowed_list(model: &str, allowed_models: &[String]) -> bool {
+    for pattern in allowed_models {
+        if is_pattern(pattern) {
+            if let Some(regex) = compile_pattern(pattern) {
+                if regex.is_match(model) {
+                    return true;
+                }
+            }
+        } else if model == pattern {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if the model is allowed for the given credential.
+///
+/// Returns Ok(()) if:
+/// - model is None
+/// - credential_config is None (no auth required)
+/// - allowed_models is empty (all models allowed)
+/// - model matches any entry in allowed_models (exact or pattern)
+///
+/// Returns Err(AppError::Forbidden) if model is not allowed.
+pub fn check_model_permission(
+    model: Option<&str>,
+    credential_config: &Option<CredentialConfig>,
+) -> Result<()> {
+    let Some(model) = model else {
+        return Ok(());
+    };
+
+    let Some(config) = credential_config else {
+        return Ok(());
+    };
+
+    if config.allowed_models.is_empty() {
+        return Ok(());
+    }
+
+    if model_matches_allowed_list(model, &config.allowed_models) {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        model = %model,
+        credential_name = %config.name,
+        allowed_models = ?config.allowed_models,
+        "Model not allowed for this credential"
+    );
+
+    Err(AppError::Forbidden(format!(
+        "Model '{}' is not allowed for this credential. Allowed models: {:?}",
+        model, config.allowed_models
+    )))
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -205,5 +273,168 @@ mod tests {
             extract_api_key(&headers, AuthFormat::MultiFormat),
             Some("sk-test-key")
         );
+    }
+
+    // ========================================================================
+    // Model Permission Tests
+    // ========================================================================
+
+    #[test]
+    fn test_model_matches_allowed_list_exact_match() {
+        let allowed = vec![
+            "gpt-4".to_string(),
+            "gpt-3.5-turbo".to_string(),
+            "claude-3-opus".to_string(),
+        ];
+
+        assert!(model_matches_allowed_list("gpt-4", &allowed));
+        assert!(model_matches_allowed_list("gpt-3.5-turbo", &allowed));
+        assert!(model_matches_allowed_list("claude-3-opus", &allowed));
+        assert!(!model_matches_allowed_list("gpt-4o", &allowed));
+        assert!(!model_matches_allowed_list("unknown", &allowed));
+    }
+
+    #[test]
+    fn test_model_matches_allowed_list_simple_wildcard() {
+        let allowed = vec!["gpt-*".to_string(), "claude-3-*".to_string()];
+
+        assert!(model_matches_allowed_list("gpt-4", &allowed));
+        assert!(model_matches_allowed_list("gpt-4o", &allowed));
+        assert!(model_matches_allowed_list("gpt-3.5-turbo", &allowed));
+        assert!(model_matches_allowed_list("claude-3-opus", &allowed));
+        assert!(model_matches_allowed_list("claude-3-sonnet", &allowed));
+        assert!(!model_matches_allowed_list("claude-2", &allowed));
+        assert!(!model_matches_allowed_list("llama-2", &allowed));
+    }
+
+    #[test]
+    fn test_model_matches_allowed_list_regex_pattern() {
+        let allowed = vec![
+            "claude-opus-4-5-.*".to_string(),
+            "gpt-4-.*".to_string(),
+        ];
+
+        assert!(model_matches_allowed_list("claude-opus-4-5-20240620", &allowed));
+        assert!(model_matches_allowed_list("claude-opus-4-5-latest", &allowed));
+        assert!(model_matches_allowed_list("gpt-4-turbo", &allowed));
+        assert!(model_matches_allowed_list("gpt-4-0125-preview", &allowed));
+        // These should NOT match because .* requires at least one character after the prefix
+        assert!(!model_matches_allowed_list("claude-opus-4-5", &allowed));
+        assert!(!model_matches_allowed_list("gpt-4", &allowed));
+        assert!(!model_matches_allowed_list("gpt-3.5-turbo", &allowed));
+    }
+
+    #[test]
+    fn test_model_matches_allowed_list_empty() {
+        let allowed: Vec<String> = vec![];
+        assert!(!model_matches_allowed_list("any-model", &allowed));
+    }
+
+    #[test]
+    fn test_check_model_permission_no_model() {
+        let config = Some(CredentialConfig {
+            credential_key: "test".to_string(),
+            name: "test".to_string(),
+            description: None,
+            rate_limit: None,
+            enabled: true,
+            allowed_models: vec!["gpt-4".to_string()],
+        });
+        assert!(check_model_permission(None, &config).is_ok());
+    }
+
+    #[test]
+    fn test_check_model_permission_no_credential() {
+        assert!(check_model_permission(Some("gpt-4"), &None).is_ok());
+    }
+
+    #[test]
+    fn test_check_model_permission_empty_allowed_models() {
+        let config = Some(CredentialConfig {
+            credential_key: "test".to_string(),
+            name: "test".to_string(),
+            description: None,
+            rate_limit: None,
+            enabled: true,
+            allowed_models: vec![],
+        });
+        assert!(check_model_permission(Some("any-model"), &config).is_ok());
+    }
+
+    #[test]
+    fn test_check_model_permission_allowed_model() {
+        let config = Some(CredentialConfig {
+            credential_key: "test".to_string(),
+            name: "test".to_string(),
+            description: None,
+            rate_limit: None,
+            enabled: true,
+            allowed_models: vec!["gpt-4".to_string(), "gpt-3.5-turbo".to_string()],
+        });
+        assert!(check_model_permission(Some("gpt-4"), &config).is_ok());
+        assert!(check_model_permission(Some("gpt-3.5-turbo"), &config).is_ok());
+    }
+
+    #[test]
+    fn test_check_model_permission_disallowed_model() {
+        let config = Some(CredentialConfig {
+            credential_key: "test".to_string(),
+            name: "test".to_string(),
+            description: None,
+            rate_limit: None,
+            enabled: true,
+            allowed_models: vec!["gpt-4".to_string()],
+        });
+        let result = check_model_permission(Some("gpt-3.5-turbo"), &config);
+        assert!(result.is_err());
+        if let Err(AppError::Forbidden(msg)) = result {
+            assert!(msg.contains("gpt-3.5-turbo"));
+            assert!(msg.contains("not allowed"));
+        } else {
+            panic!("Expected Forbidden error");
+        }
+    }
+
+    #[test]
+    fn test_check_model_permission_wildcard_allowed() {
+        let config = Some(CredentialConfig {
+            credential_key: "test".to_string(),
+            name: "test".to_string(),
+            description: None,
+            rate_limit: None,
+            enabled: true,
+            allowed_models: vec!["claude-opus-4-5-.*".to_string()],
+        });
+        assert!(check_model_permission(Some("claude-opus-4-5-20240620"), &config).is_ok());
+        assert!(check_model_permission(Some("claude-opus-4-5-latest"), &config).is_ok());
+    }
+
+    #[test]
+    fn test_check_model_permission_wildcard_disallowed() {
+        let config = Some(CredentialConfig {
+            credential_key: "test".to_string(),
+            name: "test".to_string(),
+            description: None,
+            rate_limit: None,
+            enabled: true,
+            allowed_models: vec!["claude-opus-4-5-.*".to_string()],
+        });
+        assert!(check_model_permission(Some("claude-3-opus"), &config).is_err());
+    }
+
+    #[test]
+    fn test_check_model_permission_simple_wildcard() {
+        let config = Some(CredentialConfig {
+            credential_key: "test".to_string(),
+            name: "test".to_string(),
+            description: None,
+            rate_limit: None,
+            enabled: true,
+            allowed_models: vec!["gpt-*".to_string()],
+        });
+        assert!(check_model_permission(Some("gpt-4"), &config).is_ok());
+        assert!(check_model_permission(Some("gpt-4o"), &config).is_ok());
+        assert!(check_model_permission(Some("gpt-3.5-turbo"), &config).is_ok());
+        assert!(check_model_permission(Some("claude-3-opus"), &config).is_err());
     }
 }

@@ -37,5 +37,8 @@ pub use langfuse::{
 };
 pub use logging::{get_provider_context, PROVIDER_CONTEXT};
 pub use metrics::{get_metrics, init_metrics, Metrics};
-pub use middleware::{admin_logging_middleware, MetricsMiddleware, ModelName, ProviderName};
+pub use middleware::{
+    admin_logging_middleware, model_permission_middleware, HasCredentials, MetricsMiddleware,
+    ModelName, ProviderName,
+};
 pub use rate_limiter::RateLimiter;

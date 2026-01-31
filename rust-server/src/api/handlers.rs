@@ -17,7 +17,7 @@ use crate::core::langfuse::{
 };
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
+use crate::core::middleware::{ApiKeyName, HasCredentials, ModelName, ProviderName};
 use crate::core::{AppError, RateLimiter, Result};
 use crate::services::ProviderService;
 use crate::with_request_context;
@@ -361,6 +361,12 @@ impl AppState {
     /// Get credentials - O(1) for most requests
     pub fn get_credentials(&self) -> Vec<crate::core::config::CredentialConfig> {
         self.get_cached().credentials.clone()
+    }
+}
+
+impl HasCredentials for AppState {
+    fn get_credentials(&self) -> Vec<crate::core::config::CredentialConfig> {
+        AppState::get_credentials(self)
     }
 }
 
@@ -1139,6 +1145,8 @@ pub async fn chat_completions(
         // Parse request body
         let parsed = parse_request_body(&payload, &state, &mut langfuse_ctx.generation_data)?;
 
+        // Model permission is now checked by model_permission_middleware
+
         // Select provider
         let selected = match select_provider(
             &state,
@@ -1585,10 +1593,12 @@ pub async fn list_models(
             // Filter models based on allowed_models if configured
             let filtered_models: HashSet<String> = if let Some(ref config) = key_config {
                 if !config.allowed_models.is_empty() {
-                    let allowed_set: HashSet<&String> = config.allowed_models.iter().collect();
+                    // Use wildcard/regex matching for filtering
                     all_models
                         .into_iter()
-                        .filter(|m| allowed_set.contains(m))
+                        .filter(|m| {
+                            crate::api::auth::model_matches_allowed_list(m, &config.allowed_models)
+                        })
                         .collect()
                 } else {
                     all_models
