@@ -6,13 +6,13 @@ from prometheus_client import Counter, Histogram, Gauge, Info
 REQUEST_COUNT = Counter(
     "llm_proxy_requests_total",
     "Total number of requests",
-    ["method", "endpoint", "model", "provider", "status_code", "api_key_name"],
+    ["method", "endpoint", "model", "provider", "status_code", "api_key_name", "client"],
 )
 
 REQUEST_DURATION = Histogram(
     "llm_proxy_request_duration_seconds",
     "Request duration in seconds",
-    ["method", "endpoint", "model", "provider", "api_key_name"],
+    ["method", "endpoint", "model", "provider", "api_key_name", "client"],
     buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, float("inf")),
 )
 
@@ -24,7 +24,7 @@ ACTIVE_REQUESTS = Gauge(
 TOKEN_USAGE = Counter(
     "llm_proxy_tokens_total",
     "Total number of tokens used",
-    ["model", "provider", "token_type", "api_key_name"],
+    ["model", "provider", "token_type", "api_key_name", "client"],
 )
 
 # Provider health metrics

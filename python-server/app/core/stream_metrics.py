@@ -26,6 +26,7 @@ class StreamStats:
     model: str
     provider: str
     api_key_name: str
+    client: str
     input_tokens: int
     output_tokens: int
     start_time: float
@@ -75,6 +76,7 @@ def record_stream_metrics(stats: StreamStats) -> None:
             provider=stats.provider,
             token_type="prompt",
             api_key_name=stats.api_key_name,
+            client=stats.client,
         ).inc(stats.input_tokens)
 
         TOKEN_USAGE.labels(
@@ -82,6 +84,7 @@ def record_stream_metrics(stats: StreamStats) -> None:
             provider=stats.provider,
             token_type="completion",
             api_key_name=stats.api_key_name,
+            client=stats.client,
         ).inc(stats.output_tokens)
 
         TOKEN_USAGE.labels(
@@ -89,9 +92,10 @@ def record_stream_metrics(stats: StreamStats) -> None:
             provider=stats.provider,
             token_type="total",
             api_key_name=stats.api_key_name,
+            client=stats.client,
         ).inc(stats.input_tokens + stats.output_tokens)
 
         logger.debug(
             f"Stream tokens - model={stats.model} provider={stats.provider} "
-            f"input={stats.input_tokens} output={stats.output_tokens}"
+            f"client={stats.client} input={stats.input_tokens} output={stats.output_tokens}"
         )

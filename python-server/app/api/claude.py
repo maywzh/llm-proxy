@@ -41,6 +41,7 @@ from app.core.logging import (
     clear_provider_context,
     get_api_key_name,
 )
+from app.utils.client import extract_client
 
 router = APIRouter(prefix="/v1", tags=["claude"])
 logger = get_logger()
@@ -193,6 +194,9 @@ async def create_message(
     # Extract client metadata from headers for Langfuse tracing
     client_metadata = extract_client_metadata(request)
     user_agent = client_metadata.get("user_agent")
+
+    # Extract client from User-Agent header for metrics
+    client = extract_client(request)
 
     # Build tags for Langfuse (credential, user-agent)
     tags = build_langfuse_tags("messages", credential_name, user_agent)
@@ -593,6 +597,7 @@ async def _handle_non_streaming_request(
                 provider=provider.name,
                 token_type="prompt",
                 api_key_name=api_key_name,
+                client=client,
             ).inc(usage["prompt_tokens"])
 
         if "completion_tokens" in usage:
@@ -601,6 +606,7 @@ async def _handle_non_streaming_request(
                 provider=provider.name,
                 token_type="completion",
                 api_key_name=api_key_name,
+                client=client,
             ).inc(usage["completion_tokens"])
 
         if "total_tokens" in usage:
@@ -609,6 +615,7 @@ async def _handle_non_streaming_request(
                 provider=provider.name,
                 token_type="total",
                 api_key_name=api_key_name,
+                client=client,
             ).inc(usage["total_tokens"])
     else:
         # Use fallback token calculation when provider doesn't return usage
@@ -628,6 +635,7 @@ async def _handle_non_streaming_request(
             provider=provider.name,
             token_type="prompt",
             api_key_name=api_key_name,
+            client=client,
         ).inc(fallback_input_tokens)
 
         TOKEN_USAGE.labels(
@@ -635,6 +643,7 @@ async def _handle_non_streaming_request(
             provider=provider.name,
             token_type="total",
             api_key_name=api_key_name,
+            client=client,
         ).inc(fallback_input_tokens)
 
     generation_data.end_time = datetime.now(timezone.utc)
