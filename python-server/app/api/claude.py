@@ -8,6 +8,7 @@ and converting responses back to Claude format.
 from datetime import datetime, timezone
 from typing import Any, Optional
 import json
+import time
 import uuid
 
 import httpx
@@ -33,6 +34,7 @@ from app.utils.streaming import calculate_message_tokens
 from app.models.claude import ClaudeMessagesRequest, ClaudeTokenCountRequest
 from app.core.http_client import get_http_client
 from app.core.metrics import TOKEN_USAGE
+from app.core.stream_metrics import StreamStats, record_stream_metrics
 from app.core.logging import (
     get_logger,
     set_provider_context,
@@ -413,11 +415,15 @@ async def _handle_streaming_request(
     usage_data: dict = {}
     first_token_received = False
 
+    # Timing for metrics
+    start_time = time.time()
+    first_token_time: float | None = None
+
     # Pre-calculate input tokens for fallback
     fallback_input_tokens = _calculate_claude_input_tokens(claude_request)
 
     async def stream_generator():
-        nonlocal accumulated_output, finish_reason, usage_data, first_token_received
+        nonlocal accumulated_output, finish_reason, usage_data, first_token_received, first_token_time
 
         try:
             async for event in convert_openai_streaming_to_claude(
@@ -426,9 +432,11 @@ async def _handle_streaming_request(
                 fallback_input_tokens=fallback_input_tokens,
             ):
                 # Track TTFT
-                if not first_token_received and trace_id:
+                if not first_token_received:
                     first_token_received = True
-                    generation_data.ttft_time = datetime.now(timezone.utc)
+                    first_token_time = time.time()
+                    if trace_id:
+                        generation_data.ttft_time = datetime.now(timezone.utc)
 
                 # Parse event to extract output content and usage
                 if event.startswith("event: content_block_delta"):
@@ -474,6 +482,28 @@ async def _handle_streaming_request(
                     )
                 generation_data.end_time = datetime.now(timezone.utc)
                 langfuse_service.trace_generation(generation_data)
+
+            # Record token usage metrics using unified function
+            model_name = claude_request.model or "unknown"
+            api_key_name = get_api_key_name()
+            if usage_data:
+                input_tokens = usage_data.get("input_tokens", 0)
+                output_tokens = usage_data.get("output_tokens", 0)
+            else:
+                # Fallback when provider doesn't return usage
+                input_tokens = fallback_input_tokens
+                output_tokens = 0
+
+            stats = StreamStats(
+                model=model_name,
+                provider=provider.name,
+                api_key_name=api_key_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                start_time=start_time,
+                first_token_time=first_token_time,
+            )
+            record_stream_metrics(stats)
 
         except Exception as e:
             # Record error in Langfuse
