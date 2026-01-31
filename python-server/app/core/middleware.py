@@ -10,6 +10,7 @@ from app.core.metrics import REQUEST_COUNT, REQUEST_DURATION, ACTIVE_REQUESTS
 from app.core.logging import get_logger, get_api_key_name, clear_api_key_context
 from app.core.security import verify_credential_key
 from app.api.dependencies import model_matches_allowed_list
+from app.utils.client import extract_client
 
 logger = get_logger()
 
@@ -32,6 +33,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         """Process request and collect metrics"""
         endpoint = request.url.path
         method = request.method
+        client = extract_client(request)
 
         # Skip metrics endpoint itself
         if endpoint == '/metrics':
@@ -67,7 +69,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                     model=model,
                     provider=provider,
                     status_code=status_code,
-                    api_key_name=api_key_name
+                    api_key_name=api_key_name,
+                    client=client
                 ).inc()
 
                 REQUEST_DURATION.labels(
@@ -75,14 +78,15 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                     endpoint=endpoint,
                     model=model,
                     provider=provider,
-                    api_key_name=api_key_name
+                    api_key_name=api_key_name,
+                    client=client
                 ).observe(duration)
 
-            # Log request details - show model/provider/key for LLM endpoints
+            # Log request details - show model/provider/key/client for LLM endpoints
             log_message = f"{method} {endpoint}"
             if endpoint in ('/v1/chat/completions', '/v1/messages'):
-                log_message += f" - model={model} provider={provider} key={api_key_name}"
-            log_message += f" status={status_code} duration={duration:.3f}s"
+                log_message += f" - status={status_code} client={client} key={api_key_name} model={model} provider={provider}"
+            log_message += f" duration={duration:.3f}s"
             logger.info(log_message)
 
             return response
@@ -94,7 +98,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 model = getattr(request.state, 'model', 'unknown')
                 provider = getattr(request.state, 'provider', 'unknown')
                 api_key_name = get_api_key_name()
-                log_message += f" - model={model} provider={provider} key={api_key_name}"
+                log_message += f" - client={client} key={api_key_name} model={model} provider={provider}"
             log_message += f" - Error: {type(e).__name__}: {str(e)} duration={duration:.3f}s"
             logger.error(log_message)
             raise

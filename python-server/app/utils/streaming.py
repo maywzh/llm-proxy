@@ -621,6 +621,7 @@ async def stream_response(
     request_data: Optional[Dict[str, Any]] = None,
     ttft_timeout_secs: Optional[int] = None,
     generation_data: Optional["GenerationData"] = None,
+    client: str = "unknown",
 ) -> AsyncIterator[bytes]:
     """Stream response from provider with model rewriting and token tracking
 
@@ -631,6 +632,7 @@ async def stream_response(
         request_data: Original request data for fallback token counting
         ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
         generation_data: Optional Langfuse generation data for tracing
+        client: Client name from User-Agent header
     """
     logger = get_logger()
     api_key_name = get_api_key_name()
@@ -830,6 +832,7 @@ async def stream_response(
             model=original_model or "unknown",
             provider=provider_name,
             api_key_name=api_key_name,
+            client=client,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             start_time=start_time,
@@ -919,6 +922,7 @@ def create_streaming_response(
     request_data: Optional[Dict[str, Any]] = None,
     ttft_timeout_secs: Optional[int] = None,
     generation_data: Optional["GenerationData"] = None,
+    client: str = "unknown",
 ) -> StreamingResponse:
     """Create streaming response with proper cleanup
 
@@ -929,6 +933,7 @@ def create_streaming_response(
         request_data: Original request data for fallback token counting
         ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
         generation_data: Optional Langfuse generation data for tracing
+        client: Client name from User-Agent header
     """
     return StreamingResponse(
         stream_response(
@@ -938,6 +943,7 @@ def create_streaming_response(
             request_data,
             ttft_timeout_secs,
             generation_data,
+            client,
         ),
         media_type="text/event-stream",
     )

@@ -17,7 +17,7 @@ use crate::core::langfuse::{
 };
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{ApiKeyName, HasCredentials, ModelName, ProviderName};
+use crate::core::middleware::{extract_client, ApiKeyName, HasCredentials, ModelName, ProviderName};
 use crate::core::{AppError, RateLimiter, Result};
 use crate::services::ProviderService;
 use crate::with_request_context;
@@ -846,6 +846,7 @@ async fn handle_backend_error(
 /// * `api_key_name` - API key name for error responses
 /// * `request_id` - Request ID for JSONL logging
 /// * `request_payload` - Request payload for JSONL logging
+/// * `client` - Client name from User-Agent header
 #[allow(clippy::too_many_arguments)]
 async fn handle_streaming_response(
     response: reqwest::Response,
@@ -858,6 +859,7 @@ async fn handle_streaming_response(
     api_key_name: &str,
     request_id: String,
     request_payload: serde_json::Value,
+    client: String,
 ) -> Result<Response> {
     // Only pass generation_data if trace_id is Some (Langfuse enabled and sampled)
     let langfuse_data = if trace_id.is_some() {
@@ -876,6 +878,7 @@ async fn handle_streaming_response(
         Some(request_id),
         Some("/v1/chat/completions".to_string()),
         Some(request_payload),
+        Some(client),
     )
     .await
     {
@@ -910,6 +913,7 @@ async fn handle_streaming_response(
 /// * `api_key_name` - API key name for error responses
 /// * `request_id` - Request ID for JSONL logging
 /// * `request_payload` - Request payload for JSONL logging
+/// * `client` - Client name from User-Agent header
 #[allow(clippy::too_many_arguments)]
 async fn handle_non_streaming_response(
     response: reqwest::Response,
@@ -920,6 +924,7 @@ async fn handle_non_streaming_response(
     api_key_name: &str,
     request_id: &str,
     _request_payload: &serde_json::Value,
+    client: &str,
 ) -> Result<Response> {
     let status = response.status();
 
@@ -987,7 +992,7 @@ async fn handle_non_streaming_response(
     // Record token usage
     if let Some(usage_obj) = response_data.get("usage") {
         if let Ok(usage) = serde_json::from_value::<Usage>(usage_obj.clone()) {
-            record_token_usage(&usage, model_label, provider_name);
+            record_token_usage(&usage, model_label, provider_name, client);
 
             // Capture usage for Langfuse
             generation_data.prompt_tokens = usage.prompt_tokens;
@@ -1127,6 +1132,9 @@ pub async fn chat_completions(
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
+        // Extract client from User-Agent header for metrics
+        let client = extract_client(&headers);
+
         // Initialize Langfuse tracing
         let mut langfuse_ctx = init_langfuse_trace(&request_id, &api_key_name, &headers);
 
@@ -1314,6 +1322,7 @@ pub async fn chat_completions(
                         &api_key_name,
                         request_id.clone(),
                         payload.clone(),
+                        client.clone(),
                     )
                     .await?
                 } else {
@@ -1326,6 +1335,7 @@ pub async fn chat_completions(
                         &api_key_name,
                         &request_id,
                         &payload,
+                        &client,
                     )
                     .await?
                 };
@@ -1661,23 +1671,23 @@ pub async fn metrics_handler() -> Result<Response> {
         total_tokens = usage.total_tokens,
     )
 )]
-fn record_token_usage(usage: &Usage, model: &str, provider: &str) {
+fn record_token_usage(usage: &Usage, model: &str, provider: &str, client: &str) {
     let api_key_name = get_api_key_name();
     let metrics = get_metrics();
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "prompt", &api_key_name])
+        .with_label_values(&[model, provider, "prompt", &api_key_name, client])
         .inc_by(usage.prompt_tokens as u64);
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "completion", &api_key_name])
+        .with_label_values(&[model, provider, "completion", &api_key_name, client])
         .inc_by(usage.completion_tokens as u64);
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "total", &api_key_name])
+        .with_label_values(&[model, provider, "total", &api_key_name, client])
         .inc_by(usage.total_tokens as u64);
 
     let request_id = crate::core::logging::get_request_id();
@@ -1686,6 +1696,7 @@ fn record_token_usage(usage: &Usage, model: &str, provider: &str) {
         model = %model,
         provider = %provider,
         api_key_name = %api_key_name,
+        client = %client,
         prompt_tokens = usage.prompt_tokens,
         completion_tokens = usage.completion_tokens,
         total_tokens = usage.total_tokens,

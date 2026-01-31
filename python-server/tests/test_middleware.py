@@ -8,6 +8,78 @@ from fastapi import Request, Response
 from starlette.middleware.base import RequestResponseEndpoint
 
 from app.core.middleware import MetricsMiddleware
+from app.utils.client import extract_client
+
+
+@pytest.mark.unit
+class TestExtractClient:
+    """Test extract_client function"""
+
+    def test_extract_client_empty_ua(self):
+        """Test extract_client returns unknown for empty user agent"""
+        request = Mock(spec=Request)
+        request.headers = {}
+        assert extract_client(request) == "unknown"
+
+    def test_extract_client_claude_code(self):
+        """Test extract_client identifies Claude Code"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "claude-cli/2.1.25 (external, claude-vscode)"}
+        assert extract_client(request) == "claude-code"
+
+    def test_extract_client_kilo_code(self):
+        """Test extract_client identifies Kilo-Code"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "Kilo-Code/5.2.2"}
+        assert extract_client(request) == "kilo-code"
+
+    def test_extract_client_codex_cli(self):
+        """Test extract_client identifies Codex CLI"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "codex_cli_rs/0.89.0 (Mac OS 26.2.0; arm64)"}
+        assert extract_client(request) == "codex-cli"
+
+    def test_extract_client_ai_sdk_openai(self):
+        """Test extract_client identifies AI SDK OpenAI"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "ai-sdk/openai-compatible/1.0.31 ai-sdk/provider-ut"}
+        assert extract_client(request) == "ai-sdk-openai"
+
+    def test_extract_client_openai_js(self):
+        """Test extract_client identifies OpenAI JS"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "OpenAI/JS 6.16.0"}
+        assert extract_client(request) == "openai-js"
+
+    def test_extract_client_python_httpx(self):
+        """Test extract_client identifies python-httpx"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "python-httpx/0.28.1"}
+        assert extract_client(request) == "python-httpx"
+
+    def test_extract_client_curl(self):
+        """Test extract_client identifies curl"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "curl/8.7.1"}
+        assert extract_client(request) == "curl"
+
+    def test_extract_client_browser(self):
+        """Test extract_client identifies browser"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+        assert extract_client(request) == "browser"
+
+    def test_extract_client_unknown_returns_first_token(self):
+        """Test extract_client returns first token for unknown clients"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "MyCustomClient/1.0.0"}
+        assert extract_client(request) == "MyCustomClient"
+
+    def test_extract_client_apifox(self):
+        """Test extract_client identifies Apifox"""
+        request = Mock(spec=Request)
+        request.headers = {"user-agent": "Apifox/1.0.0 (https://apifox.com)"}
+        assert extract_client(request) == "apifox"
 
 
 @pytest.mark.unit
@@ -23,6 +95,7 @@ class TestMetricsMiddleware:
         request = Mock(spec=Request)
         request.url.path = "/chat/completions"
         request.method = "POST"
+        request.headers = {"user-agent": "test-client/1.0"}
         request.state = Mock()
         request.state.model = "gpt-4"
         request.state.provider = "test-provider"
@@ -47,6 +120,7 @@ class TestMetricsMiddleware:
         request = Mock(spec=Request)
         request.url.path = "/metrics"
         request.method = "GET"
+        request.headers = {}
 
         response = Mock(spec=Response)
 
@@ -68,6 +142,7 @@ class TestMetricsMiddleware:
         request = Mock(spec=Request)
         request.url.path = "/test"
         request.method = "GET"
+        request.headers = {"user-agent": "test-client/1.0"}
         request.state = Mock()
         request.state.model = "test"
         request.state.provider = "test"
@@ -100,6 +175,7 @@ class TestMetricsMiddleware:
         request = Mock(spec=Request)
         request.url.path = "/test"
         request.method = "POST"
+        request.headers = {"user-agent": "test-client/1.0"}
         request.state = Mock()
         request.state.model = "gpt-4"
         request.state.provider = "test"
@@ -123,6 +199,7 @@ class TestMetricsMiddleware:
             model="gpt-4",
             provider="test",
             api_key_name="anonymous",
+            client="test-client",
         )
         assert metric._sum.get() > 0
 
@@ -134,6 +211,7 @@ class TestMetricsMiddleware:
         request = Mock(spec=Request)
         request.url.path = "/test"
         request.method = "GET"
+        request.headers = {"user-agent": "test-client/1.0"}
         request.state = Mock(spec=[])  # Empty state
 
         response = Mock(spec=Response)
@@ -156,6 +234,7 @@ class TestMetricsMiddleware:
         request = Mock(spec=Request)
         request.url.path = "/test-error"
         request.method = "POST"
+        request.headers = {"user-agent": "test-client/1.0"}
         request.state = Mock()
 
         initial_value = ACTIVE_REQUESTS.labels(endpoint="/test-error")._value.get()
@@ -181,6 +260,7 @@ class TestMetricsMiddleware:
             request = Mock(spec=Request)
             request.url.path = "/test"
             request.method = "POST"
+            request.headers = {"user-agent": "test-client/1.0"}
             request.state = Mock()
             request.state.model = "gpt-4"
             request.state.provider = "test"
@@ -201,6 +281,7 @@ class TestMetricsMiddleware:
                 provider="test",
                 status_code=str(status_code),
                 api_key_name="anonymous",
+                client="test-client",
             )
             assert metric._value.get() > 0
 
@@ -229,6 +310,7 @@ class TestMiddlewareIntegration:
         request = Mock(spec=Request)
         request.url.path = "/test-timing"
         request.method = "GET"
+        request.headers = {"user-agent": "test-client/1.0"}
         request.state = Mock()
         request.state.model = "test"
         request.state.provider = "test"
@@ -257,6 +339,7 @@ class TestMiddlewareIntegration:
             model="test",
             provider="test",
             api_key_name="anonymous",
+            client="test-client",
         )
         recorded_duration = metric._sum.get()
 
@@ -277,6 +360,7 @@ class TestMiddlewareEdgeCases:
         request = Mock(spec=Request)
         request.url.path = long_path
         request.method = "GET"
+        request.headers = {"user-agent": "test-client/1.0"}
         request.state = Mock()
 
         response = Mock(spec=Response)
@@ -296,6 +380,7 @@ class TestMiddlewareEdgeCases:
         request = Mock(spec=Request)
         request.url.path = "/api/test%20path/with-special_chars"
         request.method = "POST"
+        request.headers = {"user-agent": "test-client/1.0"}
         request.state = Mock()
         request.state.model = "test"
         request.state.provider = "test"
@@ -321,6 +406,7 @@ class TestMiddlewareEdgeCases:
             request = Mock(spec=Request)
             request.url.path = "/concurrent"
             request.method = "GET"
+            request.headers = {"user-agent": "test-client/1.0"}
             request.state = Mock()
             request.state.model = "test"
             request.state.provider = "test"
