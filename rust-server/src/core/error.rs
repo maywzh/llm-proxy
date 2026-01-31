@@ -32,6 +32,10 @@ pub enum AppError {
     #[error("Unauthorized")]
     Unauthorized,
 
+    /// Forbidden - user is authenticated but not allowed to perform action
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     /// Client provided invalid data
     #[error("Bad request: {0}")]
     BadRequest(String),
@@ -84,6 +88,7 @@ impl IntoResponse for AppError {
             }
             AppError::Serialization(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             AppError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "Gateway timeout".to_string()),
             AppError::TTFTTimeout {

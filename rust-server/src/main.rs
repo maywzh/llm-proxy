@@ -20,8 +20,8 @@ use llm_proxy_rust::{
     combined_openapi,
     core::{
         admin_logging_middleware, init_jsonl_logger, init_langfuse_service, init_metrics,
-        AppConfig, Database, DatabaseConfig, DynamicConfig, MetricsMiddleware, RateLimiter,
-        RuntimeConfig,
+        model_permission_middleware, AppConfig, Database, DatabaseConfig, DynamicConfig,
+        MetricsMiddleware, RateLimiter, RuntimeConfig,
     },
     services::ProviderService,
 };
@@ -255,6 +255,10 @@ fn build_router(
         .route("/v1/messages", post(claude_create_message))
         .route("/v1/messages/count_tokens", post(claude_count_tokens))
         .layer(axum::middleware::from_fn(MetricsMiddleware::track_metrics))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            model_permission_middleware,
+        ))
         .with_state(state);
 
     // Build v2 API routes with ProxyState (transformer-based)
@@ -263,6 +267,10 @@ fn build_router(
         .route("/v2/messages", post(messages_v2))
         .route("/v2/responses", post(responses_v2))
         .layer(axum::middleware::from_fn(MetricsMiddleware::track_metrics))
+        .layer(axum::middleware::from_fn_with_state(
+            proxy_state.clone(),
+            model_permission_middleware,
+        ))
         .with_state(proxy_state);
 
     // Merge admin routes (with AdminState) and API routes (with AppState)
