@@ -38,13 +38,15 @@
   const filteredProviders = $derived(
     $providers.filter(
       provider =>
-        provider.provider_key
+        provider &&
+        provider.provider_key &&
+        (provider.provider_key
           .toLowerCase()
           .includes(searchTerm.toLowerCase()) ||
-        provider.provider_type
-          .toLowerCase()
-          .includes(searchTerm.toLowerCase()) ||
-        provider.api_base.toLowerCase().includes(searchTerm.toLowerCase())
+          provider.provider_type
+            .toLowerCase()
+            .includes(searchTerm.toLowerCase()) ||
+          provider.api_base.toLowerCase().includes(searchTerm.toLowerCase()))
     )
   );
 
