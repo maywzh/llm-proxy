@@ -96,7 +96,10 @@ build_image() {
                     # Remove leading/trailing whitespace
                     line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                     if [[ -n "$line" ]]; then
-                        BUILD_ARGS="$BUILD_ARGS --build-arg $line"
+                        # Extract key and value, properly quote the value
+                        key="${line%%=*}"
+                        value="${line#*=}"
+                        BUILD_ARGS="$BUILD_ARGS --build-arg ${key}='${value}'"
                     fi
                 fi
             done < "$ARGS_FILE"
