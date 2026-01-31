@@ -22,7 +22,7 @@ use crate::core::langfuse::{
 };
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{ApiKeyName, ModelName, ProviderName};
+use crate::core::middleware::{extract_client, ApiKeyName, ModelName, ProviderName};
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::{AppError, Result};
 use crate::services::claude_converter::{
@@ -188,6 +188,9 @@ pub async fn create_message(
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
+        // Extract client from User-Agent header for metrics
+        let client = extract_client(&headers);
+
         // Extract client metadata from headers for Langfuse tracing using shared helper
         let client_metadata = extract_client_metadata(&headers);
         let user_agent = client_metadata.get("user_agent").cloned();
@@ -507,6 +510,7 @@ pub async fn create_message(
                         model_label,
                         provider.name.clone(),
                         api_key_name,
+                        client.clone(),
                         generation_data,
                         trace_id,
                         request_id.clone(),
@@ -522,6 +526,7 @@ pub async fn create_message(
                         model_label,
                         provider.name.clone(),
                         api_key_name,
+                        client.clone(),
                         generation_data,
                         trace_id,
                         request_id.clone(),
@@ -542,6 +547,7 @@ async fn handle_streaming_response(
     model_label: String,
     provider_name: String,
     api_key_name: String,
+    client: String,
     generation_data: GenerationData,
     trace_id: Option<String>,
     request_id: String,
@@ -562,6 +568,7 @@ async fn handle_streaming_response(
     let model_label_clone = model_label.clone();
     let provider_name_clone = provider_name.clone();
     let api_key_name_clone = api_key_name.clone();
+    let client_clone = client.clone();
     let trace_id_clone = trace_id.clone();
     let request_id_clone = request_id.clone();
     let _request_payload_clone = request_payload.clone();
@@ -592,6 +599,7 @@ async fn handle_streaming_response(
                 provider_name.clone(),
                 request_id.clone(),
                 api_key_name.clone(),
+                client_clone.clone(),
             ),
             move |(
                 mut stream,
@@ -609,6 +617,7 @@ async fn handle_streaming_response(
                 provider_name,
                 request_id,
                 api_key_name,
+                client,
             )| {
                 async move {
                     match stream.next().await {
@@ -706,6 +715,7 @@ async fn handle_streaming_response(
                                     model: model_label.clone(),
                                     provider: provider_name.clone(),
                                     api_key_name: api_key_name.clone(),
+                                    client: client.clone(),
                                     input_tokens: usage_input_tokens as usize,
                                     output_tokens: usage_output_tokens as usize,
                                     start_time,
@@ -750,6 +760,7 @@ async fn handle_streaming_response(
                                     provider_name,
                                     request_id,
                                     api_key_name,
+                                    client,
                                 ),
                             ))
                         }
@@ -803,6 +814,7 @@ async fn handle_non_streaming_response(
     model_label: String,
     provider_name: String,
     api_key_name: String,
+    client: String,
     mut generation_data: GenerationData,
     trace_id: Option<String>,
     request_id: String,
@@ -867,15 +879,15 @@ async fn handle_non_streaming_response(
             let metrics = get_metrics();
             metrics
                 .token_usage
-                .with_label_values(&[&model_label, &provider_name, "prompt", &api_key_name])
+                .with_label_values(&[&model_label, &provider_name, "prompt", &api_key_name, &client])
                 .inc_by(prompt_tokens);
             metrics
                 .token_usage
-                .with_label_values(&[&model_label, &provider_name, "completion", &api_key_name])
+                .with_label_values(&[&model_label, &provider_name, "completion", &api_key_name, &client])
                 .inc_by(completion_tokens);
             metrics
                 .token_usage
-                .with_label_values(&[&model_label, &provider_name, "total", &api_key_name])
+                .with_label_values(&[&model_label, &provider_name, "total", &api_key_name, &client])
                 .inc_by(prompt_tokens + completion_tokens);
         }
     }

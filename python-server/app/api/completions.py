@@ -39,6 +39,7 @@ from app.core.logging import (
     clear_provider_context,
     get_api_key_name,
 )
+from app.utils.client import extract_client
 from app.models.provider import Provider
 
 router = APIRouter()
@@ -325,6 +326,7 @@ async def _handle_streaming_request(
     langfuse_service: LangfuseService,
     endpoint: str,
     request_id: str,
+    client: str,
 ) -> Response:
     """Handle a streaming (SSE) completion request.
 
@@ -407,6 +409,7 @@ async def _handle_streaming_request(
             data,
             config.ttft_timeout_secs,
             generation_data=generation_data if trace_id else None,
+            client=client,
         )
         streaming_response.background = BackgroundTask(
             _close_stream_resources, stream_ctx
@@ -424,6 +427,7 @@ def _record_token_metrics(
     model_name: str,
     provider_name: str,
     generation_data: GenerationData,
+    client: str,
 ) -> None:
     """Record token usage metrics to Prometheus.
 
@@ -434,6 +438,7 @@ def _record_token_metrics(
         model_name: The model name for metric labels
         provider_name: The provider name for metric labels
         generation_data: GenerationData to update with token counts
+        client: The client name from User-Agent header
     """
     api_key_name = get_api_key_name()
 
@@ -448,6 +453,7 @@ def _record_token_metrics(
             provider=provider_name,
             token_type="prompt",
             api_key_name=api_key_name,
+            client=client,
         ).inc(usage["prompt_tokens"])
 
     if "completion_tokens" in usage:
@@ -456,6 +462,7 @@ def _record_token_metrics(
             provider=provider_name,
             token_type="completion",
             api_key_name=api_key_name,
+            client=client,
         ).inc(usage["completion_tokens"])
 
     if "total_tokens" in usage:
@@ -464,10 +471,11 @@ def _record_token_metrics(
             provider=provider_name,
             token_type="total",
             api_key_name=api_key_name,
+            client=client,
         ).inc(usage["total_tokens"])
 
         logger.debug(
-            f"Token usage - model={model_name} provider={provider_name} key={api_key_name} "
+            f"Token usage - model={model_name} provider={provider_name} key={api_key_name} client={client} "
             f"prompt={usage.get('prompt_tokens', 0)} "
             f"completion={usage.get('completion_tokens', 0)} "
             f"total={usage.get('total_tokens', 0)}"
@@ -484,6 +492,7 @@ async def _handle_non_streaming_request(
     langfuse_service: LangfuseService,
     endpoint: str,
     request_id: str,
+    client: str,
 ) -> Response:
     """Handle a non-streaming completion request.
 
@@ -623,6 +632,7 @@ async def _handle_non_streaming_request(
             model_name,
             provider.name,
             generation_data,
+            client,
         )
     else:
         # Use fallback token calculation when provider doesn't return usage
@@ -640,6 +650,7 @@ async def _handle_non_streaming_request(
             model_name,
             provider.name,
             generation_data,
+            client,
         )
 
     # Record successful generation in Langfuse
@@ -799,6 +810,9 @@ async def proxy_completion_request(
         payload=data,
     )
 
+    # Extract client from User-Agent header for metrics
+    client = extract_client(request)
+
     try:
         # Set provider context for logging
         set_provider_context(provider.name)
@@ -817,6 +831,7 @@ async def proxy_completion_request(
                 langfuse_service,
                 endpoint,
                 request_id,
+                client,
             )
         else:
             return await _handle_non_streaming_request(
@@ -829,6 +844,7 @@ async def proxy_completion_request(
                 langfuse_service,
                 endpoint,
                 request_id,
+                client,
             )
 
     except HTTPException:

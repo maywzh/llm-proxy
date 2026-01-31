@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 /// Container for all application metrics.
 pub struct Metrics {
-    /// Total number of requests by method, endpoint, model, provider, and status
+    /// Total number of requests by method, endpoint, model, provider, status, api key, and client
     pub request_count: IntCounterVec,
 
     /// Request duration histogram in seconds
@@ -20,7 +20,7 @@ pub struct Metrics {
     /// Number of currently active requests by endpoint
     pub active_requests: GaugeVec,
 
-    /// Total token usage by model, provider, and token type
+    /// Total token usage by model, provider, token type, and client
     pub token_usage: IntCounterVec,
 
     /// Provider health status (1=healthy, 0=unhealthy)
@@ -60,21 +60,40 @@ static METRICS: OnceLock<Metrics> = OnceLock::new();
 /// use llm_proxy_rust::core::metrics::init_metrics;
 ///
 /// let metrics = init_metrics();
-/// metrics.request_count.with_label_values(&["GET", "/health", "unknown", "unknown", "200"]).inc();
+/// metrics
+///     .request_count
+///     .with_label_values(&[
+///         "GET",
+///         "/health",
+///         "unknown",
+///         "unknown",
+///         "200",
+///         "anonymous",
+///         "unknown", // client
+///     ])
+///     .inc();
 /// ```
 pub fn init_metrics() -> &'static Metrics {
     METRICS.get_or_init(|| {
         let request_count = register_int_counter_vec!(
             "llm_proxy_requests_total",
             "Total number of requests",
-            &["method", "endpoint", "model", "provider", "status_code", "api_key_name"]
+            &[
+                "method",
+                "endpoint",
+                "model",
+                "provider",
+                "status_code",
+                "api_key_name",
+                "client",
+            ]
         )
         .expect("Failed to register request_count metric");
 
         let request_duration = register_histogram_vec!(
             "llm_proxy_request_duration_seconds",
             "Request duration in seconds",
-            &["method", "endpoint", "model", "provider", "api_key_name"],
+            &["method", "endpoint", "model", "provider", "api_key_name", "client"],
             vec![0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0]
         )
         .expect("Failed to register request_duration metric");
@@ -89,7 +108,7 @@ pub fn init_metrics() -> &'static Metrics {
         let token_usage = register_int_counter_vec!(
             "llm_proxy_tokens_total",
             "Total number of tokens used",
-            &["model", "provider", "token_type", "api_key_name"]
+            &["model", "provider", "token_type", "api_key_name", "client"]
         )
         .expect("Failed to register token_usage metric");
 
@@ -181,7 +200,15 @@ mod tests {
         // Test that we can access metrics
         metrics
             .request_count
-            .with_label_values(&["GET", "/test", "model", "provider", "200", "test-key"])
+            .with_label_values(&[
+                "GET",
+                "/test",
+                "model",
+                "provider",
+                "200",
+                "test-key",
+                "unknown",
+            ])
             .inc();
 
         // Verify the same instance is returned
@@ -203,6 +230,7 @@ mod tests {
                 "openai-unique",
                 "201",
                 "test-key-unique",
+                "unknown",
             ])
             .get();
 
@@ -215,6 +243,7 @@ mod tests {
                 "openai-unique",
                 "201",
                 "test-key-unique",
+                "unknown",
             ])
             .inc();
 
@@ -227,6 +256,7 @@ mod tests {
                 "openai-unique",
                 "201",
                 "test-key-unique",
+                "unknown",
             ])
             .get();
 
@@ -245,6 +275,7 @@ mod tests {
                 "gpt-4",
                 "openai",
                 "test-key",
+                "unknown",
             ])
             .observe(1.5);
 
@@ -256,6 +287,7 @@ mod tests {
                 "gpt-4",
                 "openai",
                 "test-key",
+                "unknown",
             ])
             .observe(2.3);
 
@@ -266,6 +298,7 @@ mod tests {
             "gpt-4",
             "openai",
             "test-key",
+            "unknown",
         ]);
 
         // Just verify we can access it without panicking
@@ -312,17 +345,17 @@ mod tests {
 
         let initial = metrics
             .token_usage
-            .with_label_values(&["gpt-4", "openai", "prompt", "test-key"])
+            .with_label_values(&["gpt-4", "openai", "prompt", "test-key", "unknown"])
             .get();
 
         metrics
             .token_usage
-            .with_label_values(&["gpt-4", "openai", "prompt", "test-key"])
+            .with_label_values(&["gpt-4", "openai", "prompt", "test-key", "unknown"])
             .inc_by(100);
 
         let after = metrics
             .token_usage
-            .with_label_values(&["gpt-4", "openai", "prompt", "test-key"])
+            .with_label_values(&["gpt-4", "openai", "prompt", "test-key", "unknown"])
             .get();
 
         assert_eq!(after, initial + 100);
@@ -384,6 +417,7 @@ mod tests {
                 "openai",
                 "200",
                 "test-key",
+                "unknown",
             ])
             .inc();
 
@@ -396,6 +430,7 @@ mod tests {
                 "anthropic",
                 "200",
                 "test-key",
+                "unknown",
             ])
             .inc();
 
@@ -408,6 +443,7 @@ mod tests {
                 "openai",
                 "200",
                 "test-key",
+                "unknown",
             ])
             .get();
 
@@ -420,6 +456,7 @@ mod tests {
                 "anthropic",
                 "200",
                 "test-key",
+                "unknown",
             ])
             .get();
 
@@ -440,6 +477,7 @@ mod tests {
                 "openai",
                 "200",
                 "test-key",
+                "unknown",
             ])
             .inc();
 
@@ -452,6 +490,7 @@ mod tests {
                 "openai",
                 "500",
                 "test-key",
+                "unknown",
             ])
             .inc();
 
@@ -464,6 +503,7 @@ mod tests {
                 "openai",
                 "200",
                 "test-key",
+                "unknown",
             ])
             .get();
 
@@ -476,6 +516,7 @@ mod tests {
                 "openai",
                 "500",
                 "test-key",
+                "unknown",
             ])
             .get();
 

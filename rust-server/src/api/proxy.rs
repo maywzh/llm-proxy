@@ -29,7 +29,7 @@ use crate::core::langfuse::{
 };
 use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{ApiKeyName, HasCredentials, ModelName, ProviderName};
+use crate::core::middleware::{extract_client, ApiKeyName, HasCredentials, ModelName, ProviderName};
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::{AppError, Result};
 use crate::transformer::{
@@ -233,6 +233,9 @@ pub async fn handle_proxy_request(
     let client_protocol = ProtocolDetector::detect_with_path_hint(&payload, path);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
+        // Extract client from User-Agent header for metrics
+        let client = extract_client(&headers);
+
         // Initialize Langfuse tracing
         let (trace_id, mut generation_data) =
             init_langfuse_trace(&request_id, &api_key_name, &headers, path);
@@ -514,6 +517,7 @@ pub async fn handle_proxy_request(
                         request_start,
                         path,
                         input_tokens,
+                        client.clone(),
                     )
                     .await
                 } else {
@@ -715,6 +719,7 @@ async fn handle_streaming_proxy_response(
     request_start: Instant,
     endpoint: &str,
     input_tokens: Option<usize>,
+    client: String,
 ) -> Result<Response> {
     let client_protocol = ctx.client_protocol;
     let provider_protocol = ctx.provider_protocol;
@@ -741,6 +746,7 @@ async fn handle_streaming_proxy_response(
             Some(request_id.clone()),
             Some(endpoint.to_string()),
             Some(request_payload.clone()),
+            Some(client.clone()),
         )
         .await
         {
@@ -782,6 +788,7 @@ async fn handle_streaming_proxy_response(
             model: String,
             provider: String,
             api_key_name: String,
+            client: String,
             start_time: Instant,
             first_token_time: Option<Instant>,
         }
@@ -795,6 +802,7 @@ async fn handle_streaming_proxy_response(
             model: model_label.clone(),
             provider: provider_name.clone(),
             api_key_name: api_key_name.to_string(),
+            client: client.clone(),
             start_time: request_start,
             first_token_time: None,
         };
@@ -851,6 +859,7 @@ async fn handle_streaming_proxy_response(
                             model: state.model.clone(),
                             provider: state.provider.clone(),
                             api_key_name: state.api_key_name.clone(),
+                            client: state.client.clone(),
                             input_tokens: final_usage
                                 .as_ref()
                                 .map(|u| u.input_tokens as usize)

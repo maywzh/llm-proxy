@@ -98,6 +98,7 @@ struct StreamState {
     original_model: String,
     provider_name: String,
     api_key_name: String,
+    client: String,
     /// TTFT timeout in seconds (None = disabled)
     ttft_timeout_secs: Option<u64>,
     /// Whether the first chunk has been received
@@ -127,6 +128,7 @@ impl StreamState {
         original_model: String,
         provider_name: String,
         api_key_name: String,
+        client: String,
         ttft_timeout_secs: Option<u64>,
         generation_data: Option<GenerationData>,
     ) -> Self {
@@ -141,6 +143,7 @@ impl StreamState {
             original_model,
             provider_name,
             api_key_name,
+            client,
             ttft_timeout_secs,
             first_chunk_received: false,
             generation_data,
@@ -839,6 +842,7 @@ fn format_type(props: &Value, indent: usize) -> String {
 /// * `request_id` - Optional request ID for JSONL logging
 /// * `endpoint` - Optional endpoint for JSONL logging
 /// * `request_payload` - Optional request payload for JSONL logging
+/// * `client` - Optional client name from User-Agent header
 #[allow(clippy::too_many_arguments)]
 pub async fn create_sse_stream(
     response: Response,
@@ -850,11 +854,13 @@ pub async fn create_sse_stream(
     request_id: Option<String>,
     endpoint: Option<String>,
     request_payload: Option<Value>,
+    client: Option<String>,
 ) -> Result<AxumResponse, AppError> {
     let stream = response.bytes_stream();
 
     // Get api_key_name from context
     let api_key_name = get_api_key_name();
+    let client_name = client.unwrap_or_else(|| "unknown".to_string());
 
     // Create initial state with TTFT timeout config - connection established immediately!
     // TTFT timeout is handled inside the stream, not before returning the response.
@@ -864,6 +870,7 @@ pub async fn create_sse_stream(
         original_model,
         provider_name,
         api_key_name,
+        client_name,
         ttft_timeout_secs,
         generation_data,
     );
@@ -1214,6 +1221,7 @@ fn finalize_stream(state: &mut StreamState) {
         model: state.original_model.clone(),
         provider: state.provider_name.clone(),
         api_key_name: state.api_key_name.clone(),
+        client: state.client.clone(),
         input_tokens: final_input_tokens,
         output_tokens: final_output_tokens,
         start_time: state.start_time,
@@ -1325,30 +1333,32 @@ pub fn record_fallback_token_usage(
     model: &str,
     provider: &str,
     api_key_name: &str,
+    client: &str,
 ) {
     let metrics = get_metrics();
     let total_tokens = input_tokens + output_tokens;
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "prompt", api_key_name])
+        .with_label_values(&[model, provider, "prompt", api_key_name, client])
         .inc_by(input_tokens as u64);
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "completion", api_key_name])
+        .with_label_values(&[model, provider, "completion", api_key_name, client])
         .inc_by(output_tokens as u64);
 
     metrics
         .token_usage
-        .with_label_values(&[model, provider, "total", api_key_name])
+        .with_label_values(&[model, provider, "total", api_key_name, client])
         .inc_by(total_tokens as u64);
 
     tracing::info!(
-        "Token usage calculated (fallback) - model={} provider={} key={} prompt={} completion={} total={}",
+        "Token usage calculated (fallback) - model={} provider={} key={} client={} prompt={} completion={} total={}",
         model,
         provider,
         api_key_name,
+        client,
         input_tokens,
         output_tokens,
         total_tokens
@@ -1528,6 +1538,7 @@ mod tests {
             "gpt-3.5-turbo".to_string(),
             "test-provider".to_string(),
             "test-key".to_string(),
+            "test-client".to_string(),
             Some(30), // ttft_timeout_secs
             None,     // generation_data (Langfuse disabled)
         );
@@ -1537,6 +1548,7 @@ mod tests {
         assert!(!state.usage_found);
         assert!(state.provider_first_token_time.is_none());
         assert_eq!(state.api_key_name, "test-key");
+        assert_eq!(state.client, "test-client");
         assert_eq!(state.ttft_timeout_secs, Some(30));
         assert!(!state.first_chunk_received);
         assert!(state.generation_data.is_none());
@@ -1563,6 +1575,7 @@ mod tests {
             "gpt-3.5-turbo".to_string(),
             "test-provider".to_string(),
             "test-key".to_string(),
+            "test-client".to_string(),
             Some(30),
             Some(gen_data),
         );

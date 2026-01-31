@@ -42,6 +42,110 @@ pub struct ProviderName(pub String);
 #[derive(Clone, Debug)]
 pub struct ApiKeyName(pub String);
 
+/// Known client patterns for User-Agent mapping
+/// Each tuple: (pattern to match in UA, normalized client name)
+/// Order matters - more specific patterns should come first
+const CLIENT_PATTERNS: &[(&str, &str)] = &[
+    // Claude CLI / Claude Code (claude-cli/2.1.25, claude-vscode, etc.)
+    ("claude-cli", "claude-code"),
+    ("claude-code", "claude-code"),
+    ("claude-proxy", "claude-proxy"),
+    // Kilo-Code (VSCode extension)
+    ("Kilo-Code", "kilo-code"),
+    // Codex CLI (codex_cli_rs, codex_vscode)
+    ("codex_cli_rs", "codex-cli"),
+    ("codex_vscode", "codex-vscode"),
+    ("codex", "codex"),
+    ("Codex", "codex"),
+    // AI SDK (ai-sdk/openai-compatible, ai-sdk/anthropic, etc.)
+    ("ai-sdk/openai-compatible", "ai-sdk-openai"),
+    ("ai-sdk/anthropic", "ai-sdk-anthropic"),
+    ("ai-sdk", "ai-sdk"),
+    ("ai/", "ai-sdk"),
+    // OpenAI SDK (OpenAI/JS, openai-python, etc.)
+    ("OpenAI/JS", "openai-js"),
+    ("openai-python", "openai-python"),
+    ("OpenAI-Python", "openai-python"),
+    ("openai-node", "openai-node"),
+    ("OpenAI-Node", "openai-node"),
+    ("openai/", "openai-sdk"),
+    ("OpenAI/", "openai-sdk"),
+    // Anthropic SDK
+    ("anthropic-sdk", "anthropic-sdk"),
+    ("Anthropic", "anthropic-sdk"),
+    // Other AI coding assistants
+    ("opencode", "opencode"),
+    ("OpenCode", "opencode"),
+    ("cursor", "cursor"),
+    ("Cursor", "cursor"),
+    ("copilot", "copilot"),
+    ("Copilot", "copilot"),
+    ("continue", "continue"),
+    ("Continue", "continue"),
+    ("aider", "aider"),
+    ("Aider", "aider"),
+    ("cline", "cline"),
+    ("Cline", "cline"),
+    // API testing tools
+    ("Apifox", "apifox"),
+    ("PostmanRuntime", "postman"),
+    ("insomnia", "insomnia"),
+    // Common HTTP clients
+    ("python-httpx", "python-httpx"),
+    ("python-requests", "python-requests"),
+    ("httpx", "httpx"),
+    ("axios", "axios"),
+    ("node-fetch", "node-fetch"),
+    ("curl", "curl"),
+    ("wget", "wget"),
+    // Terminal apps
+    ("iTerm2", "iterm2"),
+    // Browsers (low priority - usually not direct API calls)
+    ("Mozilla", "browser"),
+    // LangChain / LlamaIndex
+    ("langchain", "langchain"),
+    ("LangChain", "langchain"),
+    ("llama-index", "llama-index"),
+    ("LlamaIndex", "llama-index"),
+];
+
+/// Extract normalized client name from User-Agent header
+pub fn extract_client(headers: &HeaderMap) -> String {
+    let raw = headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if raw.is_empty() {
+        return "unknown".to_string();
+    }
+
+    // Try to match known client patterns
+    for (pattern, client_name) in CLIENT_PATTERNS {
+        if raw.contains(pattern) {
+            return client_name.to_string();
+        }
+    }
+
+    // Fallback: extract first token (before space or slash) and truncate to 30 chars
+    let first_token = raw
+        .split(|c: char| c == ' ' || c == '/')
+        .next()
+        .unwrap_or(raw);
+
+    let cleaned: String = first_token
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .take(30)
+        .collect();
+
+    if cleaned.is_empty() {
+        "other".to_string()
+    } else {
+        cleaned
+    }
+}
+
 /// Middleware for logging admin API requests.
 ///
 /// This middleware logs all requests to /admin/v1/* endpoints with:
@@ -220,6 +324,7 @@ impl MetricsMiddleware {
     pub async fn track_metrics(request: Request, next: Next) -> Response {
         let endpoint = request.uri().path().to_string();
         let method = request.method().to_string();
+        let client = extract_client(request.headers());
 
         // Skip metrics endpoint itself to avoid recursion
         if endpoint == "/metrics" {
@@ -271,25 +376,34 @@ impl MetricsMiddleware {
                     provider,
                     &status_code,
                     api_key_name,
+                    client.as_str(),
                 ])
                 .inc();
 
             metrics
                 .request_duration
-                .with_label_values(&[&method, &endpoint, model, provider, api_key_name])
+                .with_label_values(&[
+                    &method,
+                    &endpoint,
+                    model,
+                    provider,
+                    api_key_name,
+                    client.as_str(),
+                ])
                 .observe(duration);
         }
 
         // Log request - show model, provider, and key for LLM endpoints
         if endpoint == "/v1/chat/completions" || endpoint == "/v1/messages" {
             tracing::info!(
-                "{} {} - model={} provider={} key={} status={} duration={:.3}s",
+                "{} {} - status={} client={} key={} model={} provider={} duration={:.3}s",
                 method,
                 endpoint,
+                status_code,
+                client,
+                api_key_name,
                 model,
                 provider,
-                api_key_name,
-                status_code,
                 duration
             );
         } else {
@@ -445,7 +559,14 @@ mod tests {
 
         let metric = metrics
             .request_duration
-            .with_label_values(&["GET", "/test", "gpt-4", "openai", "test-key"]);
+            .with_label_values(&[
+                "GET",
+                "/test",
+                "gpt-4",
+                "openai",
+                "test-key",
+                "unknown",
+            ]);
 
         assert!(metric.get_sample_count() > 0);
     }
@@ -477,6 +598,7 @@ mod tests {
             "unknown",
             "unknown",
             "anonymous",
+            "unknown",
         ]);
 
         assert_eq!(metric.get_sample_count(), 0);
@@ -499,5 +621,82 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // Tests for extract_client function
+    #[test]
+    fn test_extract_client_empty_ua() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_client(&headers), "unknown");
+    }
+
+    #[test]
+    fn test_extract_client_claude_code() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "claude-cli/2.1.25 (external, claude-vscode)".parse().unwrap());
+        assert_eq!(extract_client(&headers), "claude-code");
+    }
+
+    #[test]
+    fn test_extract_client_kilo_code() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "Kilo-Code/5.2.2".parse().unwrap());
+        assert_eq!(extract_client(&headers), "kilo-code");
+    }
+
+    #[test]
+    fn test_extract_client_codex_cli() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "codex_cli_rs/0.89.0 (Mac OS 26.2.0; arm64)".parse().unwrap());
+        assert_eq!(extract_client(&headers), "codex-cli");
+    }
+
+    #[test]
+    fn test_extract_client_ai_sdk_openai() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "ai-sdk/openai-compatible/1.0.31 ai-sdk/provider-ut".parse().unwrap());
+        assert_eq!(extract_client(&headers), "ai-sdk-openai");
+    }
+
+    #[test]
+    fn test_extract_client_openai_js() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "OpenAI/JS 6.16.0".parse().unwrap());
+        assert_eq!(extract_client(&headers), "openai-js");
+    }
+
+    #[test]
+    fn test_extract_client_python_httpx() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "python-httpx/0.28.1".parse().unwrap());
+        assert_eq!(extract_client(&headers), "python-httpx");
+    }
+
+    #[test]
+    fn test_extract_client_curl() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "curl/8.7.1".parse().unwrap());
+        assert_eq!(extract_client(&headers), "curl");
+    }
+
+    #[test]
+    fn test_extract_client_browser() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)".parse().unwrap());
+        assert_eq!(extract_client(&headers), "browser");
+    }
+
+    #[test]
+    fn test_extract_client_unknown_returns_first_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "MyCustomClient/1.0.0".parse().unwrap());
+        assert_eq!(extract_client(&headers), "MyCustomClient");
+    }
+
+    #[test]
+    fn test_extract_client_apifox() {
+        let mut headers = HeaderMap::new();
+        headers.insert("user-agent", "Apifox/1.0.0 (https://apifox.com)".parse().unwrap());
+        assert_eq!(extract_client(&headers), "apifox");
     }
 }
