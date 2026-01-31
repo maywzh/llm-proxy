@@ -1,11 +1,34 @@
-//! HTTP middleware for request tracking and metrics.
+//! HTTP middleware for request tracking, metrics, and model permission checking.
 //!
 //! This module provides middleware for tracking request metrics including
-//! duration, active requests, and status codes.
+//! duration, active requests, and status codes. It also provides model
+//! permission checking middleware.
 
+use crate::api::auth::{check_model_permission, hash_key};
+use crate::core::config::CredentialConfig;
 use crate::core::metrics::get_metrics;
-use axum::{extract::Request, middleware::Next, response::Response};
+use axum::{
+    body::Body,
+    extract::{Request, State},
+    http::{HeaderMap, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    Json,
+};
+use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Instant;
+
+/// Paths that require model permission checking
+const MODEL_CHECK_PATHS: &[&str] = &[
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/v1/messages",
+    "/v1/messages/count_tokens",
+    "/v2/chat/completions",
+    "/v2/messages",
+    "/v2/responses",
+];
 
 /// Extension type for storing model name in response
 #[derive(Clone, Debug)]
@@ -45,6 +68,137 @@ pub async fn admin_logging_middleware(request: Request, next: Next) -> Response 
     );
 
     response
+}
+
+// ============================================================================
+// Model Permission Middleware
+// ============================================================================
+
+/// Trait for states that can provide credentials for model permission checking
+pub trait HasCredentials: Clone + Send + Sync + 'static {
+    fn get_credentials(&self) -> Vec<CredentialConfig>;
+}
+
+/// Check if a path requires model permission checking
+fn requires_model_check(path: &str) -> bool {
+    MODEL_CHECK_PATHS.contains(&path)
+}
+
+/// Extract API key from headers (supports both Bearer and x-api-key)
+fn extract_api_key_from_headers(headers: &HeaderMap) -> Option<String> {
+    // x-api-key takes priority
+    headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.strip_prefix("Bearer "))
+                .map(|s| s.to_string())
+        })
+}
+
+/// Find credential config by API key
+fn find_credential_by_key(api_key: &str, credentials: &[CredentialConfig]) -> Option<CredentialConfig> {
+    let key_hash = hash_key(api_key);
+    credentials
+        .iter()
+        .find(|c| c.enabled && c.credential_key == key_hash)
+        .cloned()
+}
+
+/// Model permission middleware for AppState
+pub async fn model_permission_middleware<S: HasCredentials>(
+    State(state): State<Arc<S>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+    let method = request.method().clone();
+
+    // Skip if not in whitelist or not POST
+    if !requires_model_check(&path) || method != axum::http::Method::POST {
+        return next.run(request).await;
+    }
+
+    // Extract headers before consuming request
+    let headers = request.headers().clone();
+
+    // Read body using axum's Bytes extractor approach
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(b) => b,
+        Err(_) => {
+            // Can't read body, let handler deal with it
+            let request = Request::from_parts(parts, Body::empty());
+            return next.run(request).await;
+        }
+    };
+
+    // Parse JSON to extract model
+    let model = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(json) => json.get("model").and_then(|m| m.as_str()).map(|s| s.to_string()),
+        Err(_) => {
+            // Invalid JSON, let handler deal with it
+            let request = Request::from_parts(parts, Body::from(bytes));
+            return next.run(request).await;
+        }
+    };
+
+    // If no model in request, proceed
+    let Some(model) = model else {
+        let request = Request::from_parts(parts, Body::from(bytes));
+        return next.run(request).await;
+    };
+
+    // Get credential from headers
+    let credentials = state.get_credentials();
+
+    // If no credentials configured, proceed
+    if credentials.is_empty() {
+        let request = Request::from_parts(parts, Body::from(bytes));
+        return next.run(request).await;
+    }
+
+    // Get API key from headers
+    let api_key = match extract_api_key_from_headers(&headers) {
+        Some(key) => key,
+        None => {
+            // No API key, auth middleware will handle it
+            let request = Request::from_parts(parts, Body::from(bytes));
+            return next.run(request).await;
+        }
+    };
+
+    // Find credential config
+    let credential_config = find_credential_by_key(&api_key, &credentials);
+
+    // Check model permission
+    if let Err(e) = check_model_permission(Some(&model), &credential_config) {
+        tracing::warn!(
+            model = %model,
+            credential_name = credential_config.as_ref().map(|c| c.name.as_str()).unwrap_or("unknown"),
+            "Model permission denied in middleware"
+        );
+
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": {
+                    "message": e.to_string(),
+                    "type": "permission_error",
+                    "code": "model_not_allowed"
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    // Rebuild request with body and proceed
+    let request = Request::from_parts(parts, Body::from(bytes));
+    next.run(request).await
 }
 
 /// Middleware for tracking request metrics.

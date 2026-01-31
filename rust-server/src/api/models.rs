@@ -49,7 +49,7 @@ pub fn is_pattern(key: &str) -> bool {
 /// Compile a pattern string to regex, caching the result.
 ///
 /// Converts simple wildcards (*) to regex (.*) if needed.
-fn compile_pattern(pattern: &str) -> Option<Regex> {
+pub fn compile_pattern(pattern: &str) -> Option<Regex> {
     // Check cache first
     {
         let cache = PATTERN_CACHE.read().ok()?;

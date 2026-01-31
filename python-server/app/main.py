@@ -26,7 +26,7 @@ from app.services.langfuse_service import (
 from app.core.config import get_config, get_env_config
 from app.core.http_client import get_http_client, close_http_client
 from app.core.jsonl_logger import init_jsonl_logger, shutdown_jsonl_logger
-from app.core.middleware import MetricsMiddleware
+from app.core.middleware import MetricsMiddleware, ModelPermissionMiddleware
 from app.core.metrics import APP_INFO
 from app.core.logging import setup_logging, get_logger
 from app.core.security import init_rate_limiter
@@ -218,6 +218,7 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(MetricsMiddleware)
+    app.add_middleware(ModelPermissionMiddleware)  # Model permission check
 
     app.include_router(api_router)
     app.include_router(v2_router)
