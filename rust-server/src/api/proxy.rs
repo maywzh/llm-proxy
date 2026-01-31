@@ -30,6 +30,7 @@ use crate::core::langfuse::{
 use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{ApiKeyName, HasCredentials, ModelName, ProviderName};
+use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::{AppError, Result};
 use crate::transformer::{
     provider_type_to_protocol, CrossProtocolStreamState, Protocol, ProtocolDetector,
@@ -711,7 +712,7 @@ async fn handle_streaming_proxy_response(
     trace_id: Option<String>,
     api_key_name: &str,
     request_payload: Value,
-    _request_start: Instant,
+    request_start: Instant,
     endpoint: &str,
     input_tokens: Option<usize>,
 ) -> Result<Response> {
@@ -767,54 +768,105 @@ async fn handle_streaming_proxy_response(
     } else {
         // Cross-protocol streaming requires chunk-by-chunk transformation
         // with state tracking to emit proper event sequences
-        let registry = state.transformer_registry.clone();
-        let stream = response.bytes_stream();
+        // Use unfold pattern to enable metrics recording at stream end
+        use futures::stream::Stream;
+        use std::pin::Pin;
 
-        // Initialize stream state for cross-protocol transformation
-        let stream_state = std::sync::Arc::new(std::sync::Mutex::new(
-            CrossProtocolStreamState::with_input_tokens(&model_label, input_tokens),
-        ));
+        struct CrossProtocolStreamingState {
+            stream: Pin<Box<dyn Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>> + Send>>,
+            stream_state: CrossProtocolStreamState,
+            registry: Arc<TransformerRegistry>,
+            client_protocol: Protocol,
+            provider_protocol: Protocol,
+            // Metrics tracking
+            model: String,
+            provider: String,
+            api_key_name: String,
+            start_time: Instant,
+            first_token_time: Option<Instant>,
+        }
 
-        let transform_stream = stream.map(move |chunk_result| {
-            match chunk_result {
-                Ok(bytes) => {
-                    // Get transformers
-                    let provider_transformer = registry.get(provider_protocol);
-                    let client_transformer = registry.get(client_protocol);
+        let streaming_state = CrossProtocolStreamingState {
+            stream: Box::pin(response.bytes_stream()),
+            stream_state: CrossProtocolStreamState::with_input_tokens(&model_label, input_tokens),
+            registry: state.transformer_registry.clone(),
+            client_protocol,
+            provider_protocol,
+            model: model_label.clone(),
+            provider: provider_name.clone(),
+            api_key_name: api_key_name.to_string(),
+            start_time: request_start,
+            first_token_time: None,
+        };
 
-                    if let (Some(provider_t), Some(client_t)) =
-                        (provider_transformer, client_transformer)
-                    {
-                        // Transform chunks from provider format to unified format
-                        match provider_t.transform_stream_chunk_in(&bytes) {
-                            Ok(unified_chunks) => {
-                                // Process chunks through state tracker to add missing events
-                                let processed_chunks = if let Ok(mut state) = stream_state.lock() {
-                                    state.process_chunks(unified_chunks)
-                                } else {
-                                    unified_chunks
-                                };
-
-                                // Transform unified chunks to client format
-                                let mut output = String::new();
-                                for chunk in processed_chunks {
-                                    if let Ok(formatted) =
-                                        client_t.transform_stream_chunk_out(&chunk, client_protocol)
-                                    {
-                                        output.push_str(&formatted);
-                                    }
-                                }
-                                Ok(axum::body::Bytes::from(output))
-                            }
-                            Err(_) => Ok(bytes),
+        let transform_stream =
+            futures::stream::unfold(streaming_state, |mut state| async move {
+                match state.stream.next().await {
+                    Some(Ok(bytes)) => {
+                        // Track first token time
+                        if state.first_token_time.is_none() {
+                            state.first_token_time = Some(Instant::now());
                         }
-                    } else {
-                        Ok(bytes)
+
+                        // Get transformers
+                        let provider_transformer = state.registry.get(state.provider_protocol);
+                        let client_transformer = state.registry.get(state.client_protocol);
+
+                        let output = if let (Some(provider_t), Some(client_t)) =
+                            (provider_transformer, client_transformer)
+                        {
+                            // Transform chunks from provider format to unified format
+                            match provider_t.transform_stream_chunk_in(&bytes) {
+                                Ok(unified_chunks) => {
+                                    // Process chunks through state tracker
+                                    let processed_chunks =
+                                        state.stream_state.process_chunks(unified_chunks);
+
+                                    // Transform unified chunks to client format
+                                    let mut output = String::new();
+                                    for chunk in processed_chunks {
+                                        if let Ok(formatted) = client_t
+                                            .transform_stream_chunk_out(&chunk, state.client_protocol)
+                                        {
+                                            output.push_str(&formatted);
+                                        }
+                                    }
+                                    axum::body::Bytes::from(output)
+                                }
+                                Err(_) => bytes,
+                            }
+                        } else {
+                            bytes
+                        };
+
+                        Some((Ok::<_, std::io::Error>(output), state))
+                    }
+                    Some(Err(e)) => {
+                        Some((Err(std::io::Error::other(e.to_string())), state))
+                    }
+                    None => {
+                        // Stream ended - record metrics
+                        let final_usage = state.stream_state.get_final_usage(None);
+                        let stats = StreamStats {
+                            model: state.model.clone(),
+                            provider: state.provider.clone(),
+                            api_key_name: state.api_key_name.clone(),
+                            input_tokens: final_usage
+                                .as_ref()
+                                .map(|u| u.input_tokens as usize)
+                                .unwrap_or(0),
+                            output_tokens: final_usage
+                                .as_ref()
+                                .map(|u| u.output_tokens as usize)
+                                .unwrap_or(0),
+                            start_time: state.start_time,
+                            first_token_time: state.first_token_time,
+                        };
+                        record_stream_metrics(&stats);
+                        None
                     }
                 }
-                Err(e) => Err(std::io::Error::other(e.to_string())),
-            }
-        });
+            });
 
         let body = Body::from_stream(transform_stream);
 

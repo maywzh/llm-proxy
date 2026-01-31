@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from app.core.config import get_config
 from app.core.exceptions import TTFTTimeoutError
 from app.core.metrics import TOKEN_USAGE, TTFT, TOKENS_PER_SECOND
+from app.core.stream_metrics import StreamStats, record_stream_metrics
 from app.core.logging import (
     set_provider_context,
     clear_provider_context,
@@ -706,13 +707,6 @@ async def stream_response(
             # Record provider TTFT on first token from provider
             if provider_first_token_time is None:
                 provider_first_token_time = now
-                provider_ttft = now - start_time
-                TTFT.labels(
-                    source="provider",
-                    model=original_model or "unknown",
-                    provider=provider_name,
-                ).observe(provider_ttft)
-                logger.debug(f"Provider TTFT: {provider_ttft:.3f}s")
 
                 # Capture TTFT for Langfuse
                 if generation_data:
@@ -737,33 +731,11 @@ async def stream_response(
                                 log_gemini_response_signatures(json_obj, provider_name)
                                 if "usage" in json_obj and json_obj["usage"]:
                                     usage = json_obj["usage"]
-                                    model_name = original_model or "unknown"
 
-                                    if "prompt_tokens" in usage:
-                                        TOKEN_USAGE.labels(
-                                            model=model_name,
-                                            provider=provider_name,
-                                            token_type="prompt",
-                                            api_key_name=api_key_name,
-                                        ).inc(usage["prompt_tokens"])
-
-                                    if "completion_tokens" in usage:
-                                        TOKEN_USAGE.labels(
-                                            model=model_name,
-                                            provider=provider_name,
-                                            token_type="completion",
-                                            api_key_name=api_key_name,
-                                        ).inc(usage["completion_tokens"])
-
-                                    if "total_tokens" in usage:
-                                        TOKEN_USAGE.labels(
-                                            model=model_name,
-                                            provider=provider_name,
-                                            token_type="total",
-                                            api_key_name=api_key_name,
-                                        ).inc(usage["total_tokens"])
-
+                                    # Capture provider usage (will be used at stream end)
                                     usage_found = True
+                                    input_tokens = usage.get("prompt_tokens", input_tokens)
+                                    output_tokens = usage.get("completion_tokens", output_tokens)
 
                                     # Capture usage for Langfuse
                                     if generation_data:
@@ -779,7 +751,7 @@ async def stream_response(
 
                                     logger.debug(
                                         f"Token usage from provider - "
-                                        f"model={model_name} provider={provider_name} key={api_key_name} "
+                                        f"model={original_model or 'unknown'} provider={provider_name} "
                                         f"prompt={usage.get('prompt_tokens', 0)} "
                                         f"completion={usage.get('completion_tokens', 0)} "
                                         f"total={usage.get('total_tokens', 0)}"
@@ -839,62 +811,31 @@ async def stream_response(
 
             yield rewritten_chunk
 
-        # If no usage was provided by provider, use calculated values (fallback)
+        # Record token usage metrics at stream end (from exit point)
+        # Use provider usage if available, otherwise use calculated fallback
         if not usage_found and request_data:
+            # Fallback: calculate output tokens from accumulated content
             if output_tokens == 0 and accumulated_output:
                 output_tokens = count_tokens(
                     "".join(accumulated_output), model_for_counting
                 )
-            model_name = original_model or "unknown"
-            total_tokens = input_tokens + output_tokens
-
-            TOKEN_USAGE.labels(
-                model=model_name,
-                provider=provider_name,
-                token_type="prompt",
-                api_key_name=api_key_name,
-            ).inc(input_tokens)
-
-            TOKEN_USAGE.labels(
-                model=model_name,
-                provider=provider_name,
-                token_type="completion",
-                api_key_name=api_key_name,
-            ).inc(output_tokens)
-
-            TOKEN_USAGE.labels(
-                model=model_name,
-                provider=provider_name,
-                token_type="total",
-                api_key_name=api_key_name,
-            ).inc(total_tokens)
-
             # Capture fallback usage for Langfuse
             if generation_data:
                 generation_data.prompt_tokens = input_tokens
                 generation_data.completion_tokens = output_tokens
-                generation_data.total_tokens = total_tokens
+                generation_data.total_tokens = input_tokens + output_tokens
 
-            logger.info(
-                f"Token usage calculated (fallback) - "
-                f"model={model_name} provider={provider_name} key={api_key_name} "
-                f"prompt={input_tokens} completion={output_tokens} total={total_tokens}"
-            )
-
-        # Calculate and record TPS metrics
-        end_time = time.time()
-        if token_count > 0:
-            # Provider TPS: from first token to last token
-            if provider_first_token_time is not None:
-                provider_duration = end_time - provider_first_token_time
-                if provider_duration > 0:
-                    provider_tps = token_count / provider_duration
-                    TOKENS_PER_SECOND.labels(
-                        source="provider",
-                        model=original_model or "unknown",
-                        provider=provider_name,
-                    ).observe(provider_tps)
-                    logger.debug(f"Provider TPS: {provider_tps:.2f} tokens/s")
+        # Record all stream metrics using unified function
+        stats = StreamStats(
+            model=original_model or "unknown",
+            provider=provider_name,
+            api_key_name=api_key_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            start_time=start_time,
+            first_token_time=provider_first_token_time,
+        )
+        record_stream_metrics(stats)
 
         # Finalize Langfuse generation data
         if generation_data:
