@@ -34,10 +34,8 @@ export interface ProviderListResponse {
   providers: Provider[];
 }
 
-export interface ProviderCreateResponse {
-  version: number;
-  provider: Provider;
-}
+// Backend returns Provider directly (not wrapped)
+export type ProviderCreateResponse = Provider;
 
 // Credential Types
 export interface Credential {
@@ -69,10 +67,8 @@ export interface CredentialListResponse {
   credentials: Credential[];
 }
 
-export interface CredentialCreateResponse {
-  version: number;
-  credential: Credential;
-}
+// Backend returns Credential directly (not wrapped)
+export type CredentialCreateResponse = Credential;
 
 export interface CredentialRotateResponse {
   version: number;
