@@ -7,6 +7,7 @@ pub mod admin;
 pub mod auth;
 pub mod claude;
 pub mod claude_models;
+pub mod gemini3;
 pub mod handlers;
 pub mod health;
 pub mod models;
