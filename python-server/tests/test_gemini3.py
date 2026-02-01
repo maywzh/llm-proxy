@@ -1,50 +1,46 @@
 """Unit tests for Gemini 3 thought_signature support."""
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from app.utils.gemini3 import (
-    is_gemini3_provider,
+    THOUGHT_SIGNATURE_SEPARATOR,
+    _encode_tool_call_id_with_signature,
+    _get_dummy_thought_signature,
+    is_gemini3_model,
     log_gemini_response_signatures,
     log_gemini_request_signatures,
+    normalize_gemini3_request,
+    normalize_gemini3_response,
 )
 
 
-class TestIsGemini3Provider:
-    """Tests for is_gemini3_provider function."""
+class TestIsGemini3Model:
+    """Tests for is_gemini3_model function."""
 
     def test_gemini3_with_hyphen(self):
         """Should detect gemini-3 variants."""
-        assert is_gemini3_provider("gemini-3-pro") is True
-        assert is_gemini3_provider("Gemini-3-Pro") is True
-        assert is_gemini3_provider("GEMINI-3-FLASH") is True
-        assert is_gemini3_provider("gemini-3") is True
+        assert is_gemini3_model("gemini-3-pro") is True
+        assert is_gemini3_model("Gemini-3-Pro") is True
+        assert is_gemini3_model("GEMINI-3-FLASH") is True
+        assert is_gemini3_model("vertex_ai/gemini-3-pro-preview") is True
 
-    def test_gemini3_without_hyphen(self):
-        """Should detect gemini3 variants."""
-        assert is_gemini3_provider("gemini3-pro") is True
-        assert is_gemini3_provider("Gemini3Pro") is True
-        assert is_gemini3_provider("gemini3") is True
-
-    def test_gemini3_with_underscore(self):
-        """Should detect gemini_3 variants."""
-        assert is_gemini3_provider("gemini_3_pro") is True
-        assert is_gemini3_provider("Gemini_3") is True
-
-    def test_non_gemini3_providers(self):
-        """Should NOT detect non-Gemini 3 providers."""
-        assert is_gemini3_provider("gemini-2.5-pro") is False
-        assert is_gemini3_provider("gemini-flash") is False  # Gemini 1.x
-        assert is_gemini3_provider("gemini-pro") is False  # Gemini 1.x
-        assert is_gemini3_provider("gpt-4") is False
-        assert is_gemini3_provider("claude-3-opus") is False
-        assert is_gemini3_provider("openai") is False
+    def test_non_gemini3_models(self):
+        """Should NOT detect non-Gemini 3 models."""
+        assert is_gemini3_model("gemini-2.5-pro") is False
+        assert is_gemini3_model("gemini-flash") is False  # Gemini 1.x
+        assert is_gemini3_model("gemini-pro") is False  # Gemini 1.x
+        assert is_gemini3_model("gemini3-pro") is False
+        assert is_gemini3_model("gemini_3_pro") is False
+        assert is_gemini3_model("gpt-4") is False
+        assert is_gemini3_model("claude-3-opus") is False
+        assert is_gemini3_model("openai") is False
 
     def test_empty_and_edge_cases(self):
         """Should handle edge cases."""
-        assert is_gemini3_provider("") is False
-        assert is_gemini3_provider("gemini") is False
-        assert is_gemini3_provider("3") is False
+        assert is_gemini3_model("") is False
+        assert is_gemini3_model("gemini") is False
+        assert is_gemini3_model("3") is False
 
 
 class TestLogGeminiResponseSignatures:
@@ -52,7 +48,7 @@ class TestLogGeminiResponseSignatures:
 
     @patch("app.utils.gemini3.logger")
     def test_non_gemini3_provider_no_logging(self, mock_logger):
-        """Should not log for non-Gemini 3 providers."""
+        """Should not log for non-Gemini 3 models."""
         response_data = {
             "choices": [{
                 "message": {
@@ -64,7 +60,7 @@ class TestLogGeminiResponseSignatures:
                 }
             }]
         }
-        log_gemini_response_signatures(response_data, "gpt-4-provider")
+        log_gemini_response_signatures(response_data, "gpt-4")
         mock_logger.debug.assert_not_called()
 
     @patch("app.utils.gemini3.logger")
@@ -200,7 +196,7 @@ class TestLogGeminiRequestSignatures:
 
     @patch("app.utils.gemini3.logger")
     def test_non_gemini3_provider_no_logging(self, mock_logger):
-        """Should not log for non-Gemini 3 providers."""
+        """Should not log for non-Gemini 3 models."""
         request_data = {
             "messages": [{
                 "role": "assistant",
@@ -209,7 +205,7 @@ class TestLogGeminiRequestSignatures:
                 }]
             }]
         }
-        log_gemini_request_signatures(request_data, "openai-provider")
+        log_gemini_request_signatures(request_data, "gpt-4")
         mock_logger.debug.assert_not_called()
 
     @patch("app.utils.gemini3.logger")
@@ -383,3 +379,147 @@ class TestExtraContentPreservation:
 
         tool_call = assistant_msg["tool_calls"][0]
         assert tool_call["extra_content"]["google"]["thought_signature"] == "CvcQAdHN2OekY10ClPFkYA=="
+
+
+class TestGemini3Normalization:
+    """Tests for Gemini 3 request/response normalization."""
+
+    def test_normalize_request_adds_dummy_signature(self):
+        request = {
+            "model": "gemini-3-pro",
+            "messages": [{
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{}"}
+                }]
+            }]
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        tool_call = request["messages"][0]["tool_calls"][0]
+        assert tool_call["provider_specific_fields"]["thought_signature"] == _get_dummy_thought_signature()
+
+    def test_normalize_request_extracts_signature_from_id(self):
+        signature = "sig_from_id"
+        encoded_id = _encode_tool_call_id_with_signature("call_abc", signature)
+        request = {
+            "model": "gemini-3-pro",
+            "messages": [{
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": encoded_id,
+                    "type": "function",
+                    "function": {"name": "do", "arguments": "{}"}
+                }]
+            }]
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        tool_call = request["messages"][0]["tool_calls"][0]
+        assert tool_call["provider_specific_fields"]["thought_signature"] == signature
+
+    def test_normalize_request_strips_signature_for_non_gemini(self):
+        signature = "sig"
+        encoded_id = _encode_tool_call_id_with_signature("call_abc", signature)
+        request = {
+            "model": "gpt-4",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": encoded_id,
+                        "type": "function",
+                        "function": {"name": "do", "arguments": "{}"}
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": encoded_id,
+                    "content": "ok"
+                }
+            ]
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        tool_call_id = request["messages"][0]["tool_calls"][0]["id"]
+        tool_msg_id = request["messages"][1]["tool_call_id"]
+        assert THOUGHT_SIGNATURE_SEPARATOR not in tool_call_id
+        assert THOUGHT_SIGNATURE_SEPARATOR not in tool_msg_id
+
+    def test_normalize_response_embeds_signature(self):
+        signature = "sig_resp"
+        response = {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "do", "arguments": "{}"},
+                        "extra_content": {"google": {"thought_signature": signature}}
+                    }]
+                }
+            }]
+        }
+        changed = normalize_gemini3_response(response, "gemini-3-pro")
+        assert changed is True
+        tool_call = response["choices"][0]["message"]["tool_calls"][0]
+        assert tool_call["provider_specific_fields"]["thought_signature"] == signature
+        assert THOUGHT_SIGNATURE_SEPARATOR in tool_call["id"]
+
+    def test_normalize_response_sets_message_thought_signatures(self):
+        signature = "sig_msg"
+        response = {
+            "choices": [{
+                "message": {
+                    "content": "hello",
+                    "extra_content": {"google": {"thought_signature": signature}}
+                }
+            }]
+        }
+        changed = normalize_gemini3_response(response, "gemini-3-pro")
+        assert changed is True
+        provider_fields = response["choices"][0]["message"]["provider_specific_fields"]
+        assert provider_fields["thought_signatures"] == [signature]
+
+    def test_normalize_request_sets_default_temperature(self):
+        request = {
+            "model": "gemini-3-pro",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        assert request["temperature"] == 1.0
+
+    def test_normalize_request_keeps_existing_temperature(self):
+        request = {
+            "model": "gemini-3-pro",
+            "temperature": 0.2,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is False
+        assert request["temperature"] == 0.2
+
+    def test_normalize_reasoning_effort_maps_thinking_level(self):
+        request = {
+            "model": "gemini-3-pro",
+            "reasoning_effort": "medium",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        assert request["thinking_level"] == "high"
+        assert "reasoning_effort" not in request
+
+    def test_normalize_reasoning_effort_maps_flash(self):
+        request = {
+            "model": "gemini-3-flash-preview",
+            "reasoning_effort": "medium",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        assert request["thinking_level"] == "medium"
+        assert "reasoning_effort" not in request

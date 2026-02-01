@@ -24,7 +24,7 @@ from app.core.logging import (
     get_logger,
     get_api_key_name,
 )
-from app.utils.gemini3 import log_gemini_response_signatures
+from app.utils.gemini3 import log_gemini_response_signatures, normalize_gemini3_response
 
 if TYPE_CHECKING:
     from app.services.langfuse_service import GenerationData
@@ -488,6 +488,7 @@ def build_messages_for_token_count(messages: list, system: Optional[Any]) -> lis
 async def rewrite_sse_chunk(
     chunk: bytes,
     original_model: Optional[str],
+    gemini_model: Optional[str] = None,
 ) -> bytes:
     """Rewrite model field in SSE chunk (compat wrapper)."""
     state = {
@@ -496,13 +497,16 @@ async def rewrite_sse_chunk(
         "usage_found": True,
         "usage_chunk_sent": True,
     }
-    return await rewrite_sse_chunk_with_usage(chunk, original_model, state)
+    return await rewrite_sse_chunk_with_usage(
+        chunk, original_model, state, gemini_model=gemini_model
+    )
 
 
 async def rewrite_sse_chunk_with_usage(
     chunk: bytes,
     original_model: Optional[str],
     state: Dict[str, Any],
+    gemini_model: Optional[str] = None,
 ) -> bytes:
     """Rewrite model field and inject fallback usage into finish_reason chunk
 
@@ -589,6 +593,10 @@ async def rewrite_sse_chunk_with_usage(
                     state["usage_chunk_sent"] = True
                     chunk_modified = True
 
+                # Normalize Gemini 3 tool call signatures (align with LiteLLM handling)
+                if normalize_gemini3_response(json_obj, gemini_model):
+                    chunk_modified = True
+
                 # Rebuild the line with rewritten JSON
                 rewritten_json = json.dumps(json_obj, separators=(", ", ": "))
                 event_lines.append(f"data: {rewritten_json}")
@@ -618,6 +626,7 @@ async def stream_response(
     response: httpx.Response,
     original_model: Optional[str],
     provider_name: str,
+    gemini_model: Optional[str] = None,
     request_data: Optional[Dict[str, Any]] = None,
     ttft_timeout_secs: Optional[int] = None,
     generation_data: Optional["GenerationData"] = None,
@@ -629,6 +638,7 @@ async def stream_response(
         response: HTTP response from provider
         original_model: Original model name from request
         provider_name: Provider name for metrics
+        gemini_model: Model name used for Gemini 3 detection
         request_data: Original request data for fallback token counting
         ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
         generation_data: Optional Langfuse generation data for tracing
@@ -730,7 +740,7 @@ async def stream_response(
                             try:
                                 json_obj = json.loads(json_str)
                                 # Log Gemini 3 response signatures for debugging
-                                log_gemini_response_signatures(json_obj, provider_name)
+                                log_gemini_response_signatures(json_obj, gemini_model)
                                 if "usage" in json_obj and json_obj["usage"]:
                                     usage = json_obj["usage"]
 
@@ -804,7 +814,8 @@ async def stream_response(
             rewritten_chunk = await rewrite_sse_chunk_with_usage(
                 chunk,
                 original_model,
-                rewrite_state
+                rewrite_state,
+                gemini_model=gemini_model,
             )
 
             # Update output_tokens from state (may be modified during rewrite)
@@ -919,6 +930,7 @@ def create_streaming_response(
     response: httpx.Response,
     original_model: Optional[str],
     provider_name: str,
+    gemini_model: Optional[str] = None,
     request_data: Optional[Dict[str, Any]] = None,
     ttft_timeout_secs: Optional[int] = None,
     generation_data: Optional["GenerationData"] = None,
@@ -930,6 +942,7 @@ def create_streaming_response(
         response: HTTP response from provider
         original_model: Original model name from request
         provider_name: Provider name for metrics
+        gemini_model: Model name used for Gemini 3 detection
         request_data: Original request data for fallback token counting
         ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
         generation_data: Optional Langfuse generation data for tracing
@@ -940,6 +953,7 @@ def create_streaming_response(
             response,
             original_model,
             provider_name,
+            gemini_model,
             request_data,
             ttft_timeout_secs,
             generation_data,

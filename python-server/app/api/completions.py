@@ -28,7 +28,12 @@ from app.services.langfuse_service import (
     LangfuseService,
 )
 from app.utils.streaming import create_streaming_response, rewrite_model_in_response
-from app.utils.gemini3 import log_gemini_request_signatures, log_gemini_response_signatures
+from app.utils.gemini3 import (
+    log_gemini_request_signatures,
+    log_gemini_response_signatures,
+    normalize_gemini3_request,
+    normalize_gemini3_response,
+)
 from app.core.config import get_config, get_env_config
 from app.core.exceptions import TTFTTimeoutError
 from app.core.http_client import get_http_client
@@ -321,6 +326,7 @@ async def _handle_streaming_request(
     provider: Provider,
     data: dict,
     effective_model: Optional[str],
+    provider_model: Optional[str],
     generation_data: GenerationData,
     trace_id: Optional[str],
     langfuse_service: LangfuseService,
@@ -338,6 +344,7 @@ async def _handle_streaming_request(
         provider: The selected provider configuration
         data: The request body data
         effective_model: The model name (with provider suffix stripped)
+        provider_model: The model name sent to provider (after mapping)
         generation_data: GenerationData for Langfuse tracing
         trace_id: Langfuse trace ID
         langfuse_service: The Langfuse service instance
@@ -406,6 +413,7 @@ async def _handle_streaming_request(
             response,
             effective_model,
             provider.name,
+            provider_model,
             data,
             config.ttft_timeout_secs,
             generation_data=generation_data if trace_id else None,
@@ -487,6 +495,7 @@ async def _handle_non_streaming_request(
     provider: Provider,
     data: dict,
     effective_model: Optional[str],
+    provider_model: Optional[str],
     generation_data: GenerationData,
     trace_id: Optional[str],
     langfuse_service: LangfuseService,
@@ -614,8 +623,11 @@ async def _handle_non_streaming_request(
         body=response_data,
     )
 
+    # Normalize Gemini 3 response (align with LiteLLM handling)
+    normalize_gemini3_response(response_data, provider_model)
+
     # Log Gemini 3 response signatures for debugging (pass-through, no modification)
-    log_gemini_response_signatures(response_data, provider.name)
+    log_gemini_response_signatures(response_data, provider_model)
 
     # Capture output for Langfuse
     if "choices" in response_data and response_data["choices"]:
@@ -802,6 +814,11 @@ async def proxy_completion_request(
         # Use effective_model for model_mapping lookup (supports wildcard patterns)
         data["model"] = provider.get_mapped_model(effective_model)
 
+    provider_model = data.get("model") if isinstance(data.get("model"), str) else None
+
+    # Normalize Gemini 3 request payload (align with LiteLLM handling)
+    normalize_gemini3_request(data, provider_model)
+
     # Log client request to JSONL (consistent with Rust V1 and Python V2)
     log_request(
         request_id=request_id,
@@ -818,7 +835,7 @@ async def proxy_completion_request(
         set_provider_context(provider.name)
 
         # Log Gemini 3 request signatures for debugging (pass-through, no modification)
-        log_gemini_request_signatures(data, provider.name)
+        log_gemini_request_signatures(data, provider_model)
 
         if data.get("stream", False):
             return await _handle_streaming_request(
@@ -826,6 +843,7 @@ async def proxy_completion_request(
                 provider,
                 data,
                 effective_model,
+                provider_model,
                 generation_data,
                 trace_id,
                 langfuse_service,
@@ -839,6 +857,7 @@ async def proxy_completion_request(
                 provider,
                 data,
                 effective_model,
+                provider_model,
                 generation_data,
                 trace_id,
                 langfuse_service,

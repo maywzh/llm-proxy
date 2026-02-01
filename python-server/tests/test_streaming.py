@@ -290,7 +290,10 @@ class TestCreateStreamingResponse:
         request_data = {"messages": [{"role": "user", "content": "Test"}]}
 
         response = create_streaming_response(
-            mock_response, "gpt-4", "test-provider", request_data
+            mock_response,
+            "gpt-4",
+            "test-provider",
+            request_data=request_data,
         )
 
         assert response.media_type == "text/event-stream"

@@ -3,6 +3,7 @@
 //! This module handles streaming responses from LLM providers, including
 //! model name rewriting and token usage tracking.
 
+use crate::api::gemini3::normalize_response_payload;
 use crate::api::models::Usage;
 use crate::core::error::AppError;
 use crate::core::jsonl_logger::{log_provider_streaming_response, log_streaming_response};
@@ -96,6 +97,7 @@ struct StreamState {
     provider_first_token_time: Option<Instant>,
     input_tokens: usize,
     original_model: String,
+    gemini_model: Option<String>,
     provider_name: String,
     api_key_name: String,
     client: String,
@@ -126,6 +128,7 @@ impl StreamState {
         stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
         input_tokens: usize,
         original_model: String,
+        gemini_model: Option<String>,
         provider_name: String,
         api_key_name: String,
         client: String,
@@ -141,6 +144,7 @@ impl StreamState {
             provider_first_token_time: None,
             input_tokens,
             original_model,
+            gemini_model,
             provider_name,
             api_key_name,
             client,
@@ -836,6 +840,7 @@ fn format_type(props: &Value, indent: usize) -> String {
 /// * `response` - HTTP response from the provider
 /// * `original_model` - Model name from the original request
 /// * `provider_name` - Name of the provider for metrics
+/// * `gemini_model` - Model name for Gemini 3 normalization
 /// * `input_tokens` - Optional input token count for fallback calculation
 /// * `ttft_timeout_secs` - Optional TTFT timeout in seconds
 /// * `generation_data` - Optional Langfuse generation data for tracing
@@ -848,6 +853,7 @@ pub async fn create_sse_stream(
     response: Response,
     original_model: String,
     provider_name: String,
+    gemini_model: Option<String>,
     input_tokens: Option<usize>,
     ttft_timeout_secs: Option<u64>,
     generation_data: Option<GenerationData>,
@@ -868,6 +874,7 @@ pub async fn create_sse_stream(
         stream,
         input_tokens.unwrap_or(0),
         original_model,
+        gemini_model,
         provider_name,
         api_key_name,
         client_name,
@@ -1066,110 +1073,119 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                 continue;
             }
 
-        if let Ok(mut json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
-            // Rewrite model field to original model (like Python does)
-            if json_obj.get("model").is_some() {
-                json_obj["model"] = serde_json::Value::String(state.original_model.clone());
-                chunk_modified = true;
-            }
+            if let Ok(mut json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
+                // Rewrite model field to original model (like Python does)
+                if json_obj.get("model").is_some() {
+                    json_obj["model"] = serde_json::Value::String(state.original_model.clone());
+                    chunk_modified = true;
+                }
 
-            // Check for usage first - only accept if prompt_tokens > 0
-            // Store provider usage for recording at exit (not immediately)
-            if !state.usage_found {
-                if let Some(usage_value) = json_obj.get("usage") {
-                    if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
-                        // Only accept valid usage (prompt_tokens > 0), otherwise keep fallback
-                        if usage.prompt_tokens > 0 {
-                            // Store provider usage for recording at exit
-                            state.provider_usage = Some(usage.clone());
-                            state.usage_found = true;
+                // Check for usage first - only accept if prompt_tokens > 0
+                // Store provider usage for recording at exit (not immediately)
+                if !state.usage_found {
+                    if let Some(usage_value) = json_obj.get("usage") {
+                        if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
+                            // Only accept valid usage (prompt_tokens > 0), otherwise keep fallback
+                            if usage.prompt_tokens > 0 {
+                                // Store provider usage for recording at exit
+                                state.provider_usage = Some(usage.clone());
+                                state.usage_found = true;
 
-                            // Capture usage for Langfuse
-                            if let Some(ref mut gen_data) = state.generation_data {
-                                gen_data.prompt_tokens = usage.prompt_tokens;
-                                gen_data.completion_tokens = usage.completion_tokens;
-                                gen_data.total_tokens = usage.total_tokens;
+                                // Capture usage for Langfuse
+                                if let Some(ref mut gen_data) = state.generation_data {
+                                    gen_data.prompt_tokens = usage.prompt_tokens;
+                                    gen_data.completion_tokens = usage.completion_tokens;
+                                    gen_data.total_tokens = usage.total_tokens;
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // Extract content and finish_reason for token counting and Langfuse
-            let contents = extract_stream_text(&json_obj);
+                // Extract content and finish_reason for token counting and Langfuse
+                let contents = extract_stream_text(&json_obj);
 
-            // Capture finish_reason for Langfuse and check if we need to inject usage
-            let mut has_finish_reason = false;
-            if let Some(choices) = json_obj.get("choices").and_then(|c| c.as_array()) {
-                for choice in choices {
-                    if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
-                        state.finish_reason = Some(reason.to_string());
-                        has_finish_reason = true;
-                    }
-                }
-            }
-
-            if !contents.is_empty() {
-                let now = Instant::now();
-
-                // Record provider first token time (TTFT metrics recorded at stream end)
-                if state.provider_first_token_time.is_none() {
-                    state.provider_first_token_time = Some(now);
-
-                    // Capture TTFT for Langfuse
-                    if let Some(ref mut gen_data) = state.generation_data {
-                        gen_data.ttft_time = Some(Utc::now());
+                // Capture finish_reason for Langfuse and check if we need to inject usage
+                let mut has_finish_reason = false;
+                if let Some(choices) = json_obj.get("choices").and_then(|c| c.as_array()) {
+                    for choice in choices {
+                        if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+                            state.finish_reason = Some(reason.to_string());
+                            has_finish_reason = true;
+                        }
                     }
                 }
 
-                // Accumulate output content for fallback usage and Langfuse
-                for content in contents {
-                    if !state.usage_found || state.generation_data.is_some() {
-                        state.accumulated_output.push(content);
+                if !contents.is_empty() {
+                    let now = Instant::now();
+
+                    // Record provider first token time (TTFT metrics recorded at stream end)
+                    if state.provider_first_token_time.is_none() {
+                        state.provider_first_token_time = Some(now);
+
+                        // Capture TTFT for Langfuse
+                        if let Some(ref mut gen_data) = state.generation_data {
+                            gen_data.ttft_time = Some(Utc::now());
+                        }
+                    }
+
+                    // Accumulate output content for fallback usage and Langfuse
+                    for content in contents {
+                        if !state.usage_found || state.generation_data.is_some() {
+                            state.accumulated_output.push(content);
+                        }
                     }
                 }
-            }
 
-            // Inject fallback usage into finish_reason chunk if provider didn't provide it
-            if has_finish_reason && !state.usage_found {
-                if state.output_tokens == 0 && !state.accumulated_output.is_empty() {
-                    let output_text = state.accumulated_output.join("");
-                    state.output_tokens = count_tokens(&output_text, &state.original_model);
+                // Inject fallback usage into finish_reason chunk if provider didn't provide it
+                if has_finish_reason && !state.usage_found {
+                    if state.output_tokens == 0 && !state.accumulated_output.is_empty() {
+                        let output_text = state.accumulated_output.join("");
+                        state.output_tokens = count_tokens(&output_text, &state.original_model);
+                    }
+                    if state.input_tokens > 0 || state.output_tokens > 0 {
+                        json_obj["usage"] = json!({
+                            "prompt_tokens": state.input_tokens,
+                            "completion_tokens": state.output_tokens,
+                            "total_tokens": state.input_tokens + state.output_tokens
+                        });
+                        chunk_modified = true;
+                        state.usage_chunk_sent = true;
+                    }
                 }
-                if state.input_tokens > 0 || state.output_tokens > 0 {
-                    json_obj["usage"] = json!({
-                        "prompt_tokens": state.input_tokens,
-                        "completion_tokens": state.output_tokens,
-                        "total_tokens": state.input_tokens + state.output_tokens
-                    });
+
+                // Normalize Gemini 3 response payload (align with LiteLLM handling)
+                let gemini_model = state
+                    .gemini_model
+                    .as_deref()
+                    .or(Some(state.original_model.as_str()));
+                if normalize_response_payload(&mut json_obj, gemini_model) {
                     chunk_modified = true;
-                    state.usage_chunk_sent = true;
                 }
-            }
 
-            // Accumulate raw SSE data for JSONL logging
-            if !state.request_id.is_empty() {
+                // Accumulate raw SSE data for JSONL logging
+                if !state.request_id.is_empty() {
+                    let rewritten_json =
+                        serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
+                    state
+                        .accumulated_sse_data
+                        .push(format!("data: {}", rewritten_json));
+                }
+
+                // Rebuild the line with rewritten JSON
                 let rewritten_json =
                     serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
-                state
-                    .accumulated_sse_data
-                    .push(format!("data: {}", rewritten_json));
+                event_lines.push(format!("data: {}", rewritten_json));
+            } else {
+                event_lines.push(line.to_string());
             }
+        }
 
-            // Rebuild the line with rewritten JSON
-            let rewritten_json =
-                serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
-            event_lines.push(format!("data: {}", rewritten_json));
-        } else {
-            event_lines.push(line.to_string());
+        // Add event to rewritten_lines if it had data
+        if event_has_data && !event_lines.is_empty() {
+            rewritten_lines.push(event_lines.join("\n"));
         }
     }
-
-    // Add event to rewritten_lines if it had data
-    if event_has_data && !event_lines.is_empty() {
-        rewritten_lines.push(event_lines.join("\n"));
-    }
-}
 
 // Now add [DONE] if it was detected
 if has_done {
@@ -1536,6 +1552,7 @@ mod tests {
             empty_stream,
             100,
             "gpt-3.5-turbo".to_string(),
+            None,
             "test-provider".to_string(),
             "test-key".to_string(),
             "test-client".to_string(),
@@ -1573,6 +1590,7 @@ mod tests {
             empty_stream,
             100,
             "gpt-3.5-turbo".to_string(),
+            None,
             "test-provider".to_string(),
             "test-key".to_string(),
             "test-client".to_string(),
