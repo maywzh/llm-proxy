@@ -1641,6 +1641,102 @@ pub async fn list_models(
         .await
 }
 
+fn model_allowed_for_info(model_name: &str, allowed_models: &[String]) -> bool {
+    if allowed_models.is_empty() {
+        return true;
+    }
+    if crate::api::auth::model_matches_allowed_list(model_name, allowed_models) {
+        return true;
+    }
+    if !crate::api::models::is_pattern(model_name) {
+        return false;
+    }
+    if let Some(regex) = crate::api::models::compile_pattern(model_name) {
+        for allowed in allowed_models {
+            if crate::api::models::is_pattern(allowed) {
+                continue;
+            }
+            if regex.is_match(allowed) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// List model deployments in LiteLLM-compatible format.
+#[utoipa::path(
+    get,
+    path = "/v1/model/info",
+    tag = "models",
+    responses(
+        (status = 200, description = "List of model deployments", body = ModelInfoList),
+        (status = 401, description = "Unauthorized", body = ApiErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
+#[tracing::instrument(skip(state, headers))]
+pub async fn list_model_info(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ModelInfoList>> {
+    let request_id = generate_request_id();
+
+    REQUEST_ID
+        .scope(request_id.clone(), async move {
+            let key_config = verify_auth(&headers, &state)?;
+
+            tracing::debug!(
+                request_id = %request_id,
+                "Listing model info"
+            );
+
+            let allowed_models = key_config
+                .as_ref()
+                .map(|config| config.allowed_models.clone())
+                .unwrap_or_default();
+
+            let provider_service = state.get_provider_service();
+            let providers = provider_service.get_all_providers();
+
+            let mut data = Vec::new();
+            for provider in providers {
+                let mut model_keys: Vec<String> =
+                    provider.model_mapping.keys().cloned().collect();
+                model_keys.sort();
+                for model_name in model_keys {
+                    if !model_allowed_for_info(&model_name, &allowed_models) {
+                        continue;
+                    }
+                    let mapped_model = provider
+                        .model_mapping
+                        .get(&model_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    data.push(ModelInfoEntry {
+                        model_name: model_name.clone(),
+                        litellm_params: LiteLlmParams {
+                            model: mapped_model,
+                            api_base: provider.api_base.clone(),
+                            custom_llm_provider: provider.provider_type.clone(),
+                        },
+                        model_info: ModelInfoDetails {
+                            provider_name: provider.name.clone(),
+                            provider_type: provider.provider_type.clone(),
+                            weight: provider.weight,
+                            is_pattern: crate::api::models::is_pattern(&model_name),
+                        },
+                    });
+                }
+            }
+
+            Ok(Json(ModelInfoList { data }))
+        })
+        .await
+}
+
 /// Prometheus metrics endpoint.
 #[tracing::instrument]
 pub async fn metrics_handler() -> Result<Response> {
