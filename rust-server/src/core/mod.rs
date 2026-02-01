@@ -20,6 +20,9 @@ pub mod metrics;
 pub mod middleware;
 pub mod rate_limiter;
 pub mod stream_metrics;
+pub mod token_counter;
+pub mod tokenizer;
+pub mod utils;
 
 // Re-export commonly used types
 pub use config::{AppConfig, ProviderConfig, ServerConfig};
@@ -44,3 +47,8 @@ pub use middleware::{
 };
 pub use rate_limiter::RateLimiter;
 pub use stream_metrics::{record_stream_metrics, StreamStats};
+pub use token_counter::OutboundTokenCounter;
+pub use tokenizer::{
+    count_tokens_hf, get_hf_tokenizer, get_tokenizer_info, select_tokenizer, TokenizerSelection,
+    TokenizerType,
+};

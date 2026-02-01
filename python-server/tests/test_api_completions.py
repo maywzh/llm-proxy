@@ -10,8 +10,8 @@ from fastapi import HTTPException
 from app.api.completions import (
     proxy_completion_request,
     _attach_response_metadata,
-    _strip_provider_suffix,
 )
+from app.core.utils import strip_provider_suffix
 from starlette.responses import JSONResponse
 
 
@@ -626,83 +626,71 @@ class TestResponseMetadata:
 
 @pytest.mark.unit
 class TestStripProviderSuffix:
-    """Test _strip_provider_suffix function"""
+    """Test strip_provider_suffix function"""
 
     def test_strip_provider_suffix_with_matching_prefix(self, monkeypatch):
         """Test stripping provider suffix when prefix matches"""
-        import app.api.completions as completions_module
+        import app.core.utils as utils_module
 
         # Create a mock EnvConfig with provider_suffix set
         mock_env_config = Mock()
         mock_env_config.provider_suffix = "Proxy"
-        monkeypatch.setattr(
-            completions_module, "get_env_config", lambda: mock_env_config
-        )
+        monkeypatch.setattr(utils_module, "get_env_config", lambda: mock_env_config)
 
-        result = _strip_provider_suffix("Proxy/gpt-4")
+        result = strip_provider_suffix("Proxy/gpt-4")
         assert result == "gpt-4"
 
     def test_strip_provider_suffix_without_prefix(self, monkeypatch):
         """Test that model without prefix is returned unchanged"""
-        import app.api.completions as completions_module
+        import app.core.utils as utils_module
 
         mock_env_config = Mock()
         mock_env_config.provider_suffix = "Proxy"
-        monkeypatch.setattr(
-            completions_module, "get_env_config", lambda: mock_env_config
-        )
+        monkeypatch.setattr(utils_module, "get_env_config", lambda: mock_env_config)
 
-        result = _strip_provider_suffix("gpt-4")
+        result = strip_provider_suffix("gpt-4")
         assert result == "gpt-4"
 
     def test_strip_provider_suffix_with_different_prefix(self, monkeypatch):
         """Test that model with different prefix is returned unchanged"""
-        import app.api.completions as completions_module
+        import app.core.utils as utils_module
 
         mock_env_config = Mock()
         mock_env_config.provider_suffix = "Proxy"
-        monkeypatch.setattr(
-            completions_module, "get_env_config", lambda: mock_env_config
-        )
+        monkeypatch.setattr(utils_module, "get_env_config", lambda: mock_env_config)
 
-        result = _strip_provider_suffix("Other/gpt-4")
+        result = strip_provider_suffix("Other/gpt-4")
         assert result == "Other/gpt-4"
 
     def test_strip_provider_suffix_no_suffix_configured(self, monkeypatch):
         """Test that model is returned unchanged when no suffix is configured"""
-        import app.api.completions as completions_module
+        import app.core.utils as utils_module
 
         mock_env_config = Mock()
         mock_env_config.provider_suffix = None
-        monkeypatch.setattr(
-            completions_module, "get_env_config", lambda: mock_env_config
-        )
+        monkeypatch.setattr(utils_module, "get_env_config", lambda: mock_env_config)
 
-        result = _strip_provider_suffix("Proxy/gpt-4")
+        result = strip_provider_suffix("Proxy/gpt-4")
         assert result == "Proxy/gpt-4"
 
     def test_strip_provider_suffix_with_multiple_slashes(self, monkeypatch):
         """Test stripping prefix when model name contains multiple slashes"""
-        import app.api.completions as completions_module
+        import app.core.utils as utils_module
 
         mock_env_config = Mock()
         mock_env_config.provider_suffix = "Proxy"
-        monkeypatch.setattr(
-            completions_module, "get_env_config", lambda: mock_env_config
-        )
+        monkeypatch.setattr(utils_module, "get_env_config", lambda: mock_env_config)
 
-        result = _strip_provider_suffix("Proxy/org/model-name")
+        result = strip_provider_suffix("Proxy/org/model-name")
         assert result == "org/model-name"
 
     def test_strip_provider_suffix_empty_suffix(self, monkeypatch):
         """Test that empty suffix is treated as no suffix"""
-        import app.api.completions as completions_module
+        import app.core.utils as utils_module
 
         mock_env_config = Mock()
         mock_env_config.provider_suffix = ""
-        monkeypatch.setattr(
-            completions_module, "get_env_config", lambda: mock_env_config
-        )
+        monkeypatch.setattr(utils_module, "get_env_config", lambda: mock_env_config)
 
-        result = _strip_provider_suffix("Proxy/gpt-4")
+        result = strip_provider_suffix("Proxy/gpt-4")
         assert result == "Proxy/gpt-4"

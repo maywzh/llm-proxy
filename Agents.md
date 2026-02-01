@@ -66,7 +66,7 @@ llm-proxy/
 | **Metrics** | prometheus-client | prometheus crate |
 | **Logging** | loguru | tracing |
 | **Rate Limiting** | limits | governor |
-| **Token Counting** | tiktoken | tiktoken-rs |
+| **Token Counting** | tiktoken | tiktoken-rs, tokenizers (HuggingFace) |
 | **Additional** | urllib3, python-dotenv | arc-swap (hot reload), sha2/hex (key hashing), utoipa (OpenAPI docs) |
 
 ### Web Admin Interfaces
@@ -505,6 +505,7 @@ erDiagram
 | `REQUEST_TIMEOUT_SECS` | Request timeout | No (default: 300) |
 | `TTFT_TIMEOUT_SECS` | Time to first token timeout | No |
 | `PROVIDER_SUFFIX` | Optional prefix for model names. When set, model names like `{PROVIDER_SUFFIX}/{model}` are treated as `{model}` | No |
+| `DISABLE_HF_TOKENIZER_DOWNLOAD` | Disable HuggingFace tokenizer downloads (fallback to tiktoken) | No (default: false) |
 
 ### Langfuse Observability (Optional)
 
@@ -809,4 +810,4 @@ Response includes auto-generated `id` field.
 
 ---
 
-**Last Updated**: 2026-01-22
+**Last Updated**: 2026-02-01

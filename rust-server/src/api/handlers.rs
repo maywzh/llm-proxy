@@ -16,12 +16,13 @@ use crate::core::database::hash_key;
 use crate::core::jsonl_logger::{
     log_provider_request, log_provider_response, log_request, log_response,
 };
-use crate::core::langfuse::{
-    build_langfuse_tags, extract_client_metadata, get_langfuse_service, GenerationData,
-};
+use crate::core::langfuse::{get_langfuse_service, init_langfuse_trace, GenerationData};
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{extract_client, ApiKeyName, HasCredentials, ModelName, ProviderName};
+use crate::core::middleware::{
+    extract_client, ApiKeyName, HasCredentials, ModelName, ProviderName,
+};
+use crate::core::utils::{get_key_name, strip_provider_suffix};
 use crate::core::{AppError, RateLimiter, Result};
 use crate::services::ProviderService;
 use crate::with_request_context;
@@ -331,44 +332,9 @@ fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<Credentia
     Err(AppError::Unauthorized)
 }
 
-/// Get the key name from an optional CredentialConfig
-fn get_key_name(key_config: &Option<CredentialConfig>) -> String {
-    key_config
-        .as_ref()
-        .map(|k| k.name.clone())
-        .unwrap_or_else(|| "anonymous".to_string())
-}
-
-/// Strip the provider suffix from model name if configured.
-///
-/// If provider_suffix is set (e.g., "Proxy"), then:
-/// - "Proxy/gpt-4" -> "gpt-4"
-/// - "gpt-4" -> "gpt-4" (unchanged)
-/// - "Other/gpt-4" -> "Other/gpt-4" (unchanged, different prefix)
-fn strip_provider_suffix(model: &str, provider_suffix: Option<&str>) -> String {
-    let Some(suffix) = provider_suffix.filter(|s| !s.is_empty()) else {
-        return model.to_string();
-    };
-
-    // Check if model starts with "suffix/" without allocating
-    model
-        .strip_prefix(suffix)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .unwrap_or(model)
-        .to_string()
-}
-
 // ============================================================================
 // Helper Types and Structs for Chat Completions
 // ============================================================================
-
-/// Context for Langfuse tracing initialization.
-struct LangfuseContext {
-    /// The trace ID if Langfuse is enabled and sampled
-    trace_id: Option<String>,
-    /// Generation data for tracking the request
-    generation_data: GenerationData,
-}
 
 /// Parsed request data from the chat completion payload.
 struct ParsedRequest {
@@ -395,57 +361,6 @@ struct SelectedProvider {
 // ============================================================================
 // Helper Functions for Chat Completions
 // ============================================================================
-
-/// Initialize Langfuse tracing for a chat completion request.
-///
-/// Creates a trace and initializes generation data if Langfuse is enabled.
-/// Returns the trace context containing trace_id and generation_data.
-///
-/// # Arguments
-/// * `request_id` - Unique identifier for this request
-/// * `api_key_name` - Name of the API key used for authentication
-/// * `headers` - HTTP headers from the request
-fn init_langfuse_trace(
-    request_id: &str,
-    api_key_name: &str,
-    headers: &HeaderMap,
-) -> LangfuseContext {
-    // Extract client metadata from headers for Langfuse tracing
-    let client_metadata = extract_client_metadata(headers);
-    let user_agent = client_metadata.get("user_agent").cloned();
-
-    // Build tags for Langfuse
-    let tags = build_langfuse_tags("/v1/chat/completions", api_key_name, user_agent.as_deref());
-
-    // Initialize Langfuse tracing
-    let langfuse = get_langfuse_service();
-    let trace_id = if let Ok(service) = langfuse.read() {
-        service.create_trace(
-            request_id,
-            api_key_name,
-            "/v1/chat/completions",
-            tags,
-            client_metadata,
-        )
-    } else {
-        None
-    };
-
-    // Initialize generation data for Langfuse
-    let generation_data = GenerationData {
-        trace_id: trace_id.clone().unwrap_or_default(),
-        request_id: request_id.to_string(),
-        credential_name: api_key_name.to_string(),
-        endpoint: "/v1/chat/completions".to_string(),
-        start_time: Utc::now(),
-        ..Default::default()
-    };
-
-    LangfuseContext {
-        trace_id,
-        generation_data,
-    }
-}
 
 /// Parse and validate the chat completion request body.
 ///
@@ -508,21 +423,22 @@ fn parse_request_body(
     }
 
     // Calculate prompt tokens for fallback
-    let prompt_tokens_for_fallback = payload
-        .get("messages")
-        .and_then(|m| m.as_array())
-        .and_then(|messages| {
-            let count_model = effective_model.as_deref().unwrap_or("gpt-3.5-turbo");
-            let tools = payload.get("tools").and_then(|t| t.as_array());
-            let tool_choice = payload.get("tool_choice");
-            calculate_message_tokens_with_tools(
-                messages,
-                count_model,
-                tools.map(|tool_list| tool_list.as_slice()),
-                tool_choice,
-            )
-            .ok()
-        });
+    let prompt_tokens_for_fallback =
+        payload
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .and_then(|messages| {
+                let count_model = effective_model.as_deref().unwrap_or("gpt-3.5-turbo");
+                let tools = payload.get("tools").and_then(|t| t.as_array());
+                let tool_choice = payload.get("tool_choice");
+                calculate_message_tokens_with_tools(
+                    messages,
+                    count_model,
+                    tools.map(|tool_list| tool_list.as_slice()),
+                    tool_choice,
+                )
+                .ok()
+            });
 
     Ok(ParsedRequest {
         original_model,
@@ -792,7 +708,7 @@ async fn handle_streaming_response(
     )
     .await
     {
-        Ok(sse_stream) => Ok(sse_stream.into_response()),
+        Ok(sse_stream) => Ok(sse_stream),
         Err(e) => {
             tracing::error!(
                 provider = %provider_name,
@@ -1051,13 +967,14 @@ pub async fn chat_completions(
         let client = extract_client(&headers);
 
         // Initialize Langfuse tracing
-        let mut langfuse_ctx = init_langfuse_trace(&request_id, &api_key_name, &headers);
+        let (trace_id, mut generation_data) =
+            init_langfuse_trace(&request_id, &api_key_name, &headers, "/v1/chat/completions");
 
         // Validate request body
         if !payload.is_object() {
             record_langfuse_error(
-                &mut langfuse_ctx.generation_data,
-                &langfuse_ctx.trace_id,
+                &mut generation_data,
+                &trace_id,
                 "Request body must be a JSON object",
             );
             return Err(AppError::BadRequest(
@@ -1066,7 +983,7 @@ pub async fn chat_completions(
         }
 
         // Parse request body
-        let parsed = parse_request_body(&payload, &state, &mut langfuse_ctx.generation_data)?;
+        let parsed = parse_request_body(&payload, &state, &mut generation_data)?;
 
         // Model permission is now checked by model_permission_middleware
 
@@ -1075,16 +992,12 @@ pub async fn chat_completions(
             &state,
             parsed.effective_model.as_deref(),
             &parsed.model_label,
-            &mut langfuse_ctx.generation_data,
-            &langfuse_ctx.trace_id,
+            &mut generation_data,
+            &trace_id,
         ) {
             Ok(s) => s,
             Err(e) => {
-                record_langfuse_error(
-                    &mut langfuse_ctx.generation_data,
-                    &langfuse_ctx.trace_id,
-                    &e.to_string(),
-                );
+                record_langfuse_error(&mut generation_data, &trace_id, &e.to_string());
                 return Err(e);
             }
         };
@@ -1111,9 +1024,7 @@ pub async fn chat_completions(
         let model_label = parsed.model_label;
         let is_stream = parsed.is_stream;
         let prompt_tokens_for_fallback = parsed.prompt_tokens_for_fallback;
-        let trace_id = langfuse_ctx.trace_id;
         let gemini_model = gemini_model.clone();
-        let mut generation_data = langfuse_ctx.generation_data;
 
         PROVIDER_CONTEXT
             .scope(provider.name.clone(), async move {
@@ -1629,8 +1540,7 @@ pub async fn list_model_info(
 
             let mut data = Vec::new();
             for provider in providers {
-                let mut model_keys: Vec<String> =
-                    provider.model_mapping.keys().cloned().collect();
+                let mut model_keys: Vec<String> = provider.model_mapping.keys().cloned().collect();
                 model_keys.sort();
                 for model_name in model_keys {
                     if !model_allowed_for_info(&model_name, &allowed_models) {
@@ -1758,86 +1668,6 @@ fn build_error_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_strip_provider_suffix_with_matching_prefix() {
-        // When provider_suffix is "Proxy", "Proxy/gpt-4" should become "gpt-4"
-        assert_eq!(strip_provider_suffix("Proxy/gpt-4", Some("Proxy")), "gpt-4");
-    }
-
-    #[test]
-    fn test_strip_provider_suffix_without_prefix() {
-        // When model doesn't have the prefix, it should remain unchanged
-        assert_eq!(strip_provider_suffix("gpt-4", Some("Proxy")), "gpt-4");
-    }
-
-    #[test]
-    fn test_strip_provider_suffix_different_prefix() {
-        // When model has a different prefix, it should remain unchanged
-        assert_eq!(
-            strip_provider_suffix("Other/gpt-4", Some("Proxy")),
-            "Other/gpt-4"
-        );
-    }
-
-    #[test]
-    fn test_strip_provider_suffix_no_suffix_configured() {
-        // When no provider_suffix is configured, model should remain unchanged
-        assert_eq!(strip_provider_suffix("Proxy/gpt-4", None), "Proxy/gpt-4");
-    }
-
-    #[test]
-    fn test_strip_provider_suffix_empty_suffix() {
-        // When provider_suffix is empty string, model should remain unchanged
-        assert_eq!(
-            strip_provider_suffix("Proxy/gpt-4", Some("")),
-            "Proxy/gpt-4"
-        );
-    }
-
-    #[test]
-    fn test_strip_provider_suffix_complex_model_name() {
-        // Test with more complex model names
-        assert_eq!(
-            strip_provider_suffix("Proxy/gpt-4-turbo-preview", Some("Proxy")),
-            "gpt-4-turbo-preview"
-        );
-        assert_eq!(
-            strip_provider_suffix("Proxy/claude-3-opus-20240229", Some("Proxy")),
-            "claude-3-opus-20240229"
-        );
-    }
-
-    #[test]
-    fn test_strip_provider_suffix_nested_slashes() {
-        // Test with model names that have slashes in them
-        assert_eq!(
-            strip_provider_suffix("Proxy/org/model-name", Some("Proxy")),
-            "org/model-name"
-        );
-    }
-
-    #[test]
-    fn test_strip_provider_suffix_case_sensitive() {
-        // Prefix matching should be case-sensitive
-        assert_eq!(
-            strip_provider_suffix("proxy/gpt-4", Some("Proxy")),
-            "proxy/gpt-4"
-        );
-        assert_eq!(
-            strip_provider_suffix("PROXY/gpt-4", Some("Proxy")),
-            "PROXY/gpt-4"
-        );
-    }
-
-    #[test]
-    fn test_strip_provider_suffix_partial_match() {
-        // Should not strip if it's only a partial match (no slash)
-        assert_eq!(
-            strip_provider_suffix("Proxygpt-4", Some("Proxy")),
-            "Proxygpt-4"
-        );
-    }
 
     // ========================================================================
     // Bedrock Claude Compatibility Tests

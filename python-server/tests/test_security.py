@@ -278,3 +278,154 @@ class TestSecurityIntegration:
         assert await verify_auth("") is None
         assert await verify_auth("Bearer any-key") is None
         assert await verify_auth("invalid-format") is None
+
+
+@pytest.mark.unit
+class TestXApiKeyAuth:
+    """Tests for x-api-key header authentication."""
+
+    def test_valid_x_api_key_auth(self, monkeypatch, clear_config_cache):
+        """Test authentication with valid x-api-key header."""
+        raw_key = "secret-key"
+        hashed_key = hash_key(raw_key)
+
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name="test", api_base="https://api.test.com", api_key="key"
+                )
+            ],
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_key,
+                    name="test-key",
+                    rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
+                )
+            ],
+            verify_ssl=True,
+        )
+
+        from app.core import security as security_module
+
+        monkeypatch.setattr(security_module, "get_config", lambda: config)
+        init_rate_limiter()
+
+        # Use x-api-key instead of Authorization: Bearer
+        is_valid, credential_config = verify_credential_key(x_api_key=raw_key)
+        assert is_valid is True
+        assert credential_config is not None
+        assert credential_config.name == "test-key"
+
+    def test_invalid_x_api_key_auth(self, monkeypatch, clear_config_cache):
+        """Test authentication with invalid x-api-key header."""
+        from fastapi import HTTPException
+
+        raw_key = "secret-key"
+        hashed_key = hash_key(raw_key)
+
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name="test", api_base="https://api.test.com", api_key="key"
+                )
+            ],
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_key,
+                    rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
+                )
+            ],
+            verify_ssl=True,
+        )
+
+        from app.core import security as security_module
+
+        monkeypatch.setattr(security_module, "get_config", lambda: config)
+        init_rate_limiter()
+
+        with pytest.raises(HTTPException) as exc_info:
+            verify_credential_key(x_api_key="invalid-key")
+        assert exc_info.value.status_code == 401
+
+    def test_x_api_key_takes_precedence_over_bearer(
+        self, monkeypatch, clear_config_cache
+    ):
+        """Test that x-api-key takes precedence over Authorization header."""
+        from fastapi import HTTPException
+
+        valid_key = "valid-key"
+        invalid_key = "invalid-key"
+        hashed_valid_key = hash_key(valid_key)
+
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name="test", api_base="https://api.test.com", api_key="key"
+                )
+            ],
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_valid_key,
+                    name="valid-key-name",
+                    rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
+                )
+            ],
+            verify_ssl=True,
+        )
+
+        from app.core import security as security_module
+
+        monkeypatch.setattr(security_module, "get_config", lambda: config)
+        init_rate_limiter()
+
+        # When both headers are present, x-api-key should take precedence
+        # Valid x-api-key with invalid Bearer should succeed
+        is_valid, credential_config = verify_credential_key(
+            authorization=f"Bearer {invalid_key}",
+            x_api_key=valid_key,
+        )
+        assert is_valid is True
+        assert credential_config is not None
+        assert credential_config.name == "valid-key-name"
+
+        # Invalid x-api-key with valid Bearer should fail (x-api-key takes precedence)
+        with pytest.raises(HTTPException) as exc_info:
+            verify_credential_key(
+                authorization=f"Bearer {valid_key}",
+                x_api_key=invalid_key,
+            )
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_verify_auth_with_x_api_key(self, monkeypatch, clear_config_cache):
+        """Test verify_auth dependency with x-api-key header."""
+        from app.api.dependencies import verify_auth
+
+        raw_key = "secret-key"
+        hashed_key = hash_key(raw_key)
+
+        config = AppConfig(
+            providers=[
+                ProviderConfig(
+                    name="test", api_base="https://api.test.com", api_key="key"
+                )
+            ],
+            credentials=[
+                CredentialConfig(
+                    credential_key=hashed_key,
+                    name="test-key",
+                    rate_limit=RateLimitConfig(requests_per_second=10, burst_size=20),
+                )
+            ],
+            verify_ssl=True,
+        )
+
+        from app.core import security as security_module
+
+        monkeypatch.setattr(security_module, "get_config", lambda: config)
+        init_rate_limiter()
+
+        # Test with x-api-key
+        result = await verify_auth(authorization=None, x_api_key=raw_key)
+        assert result is not None
+        assert result.name == "test-key"

@@ -12,6 +12,19 @@
 
 ### Fixed
 
+- **Middleware Duration Logging for Streaming**: Fixed misleading `duration` metric for streaming requests
+  - **Before**: Streaming requests logged `duration` which was actually TTFB (time to first byte)
+  - **After**: Streaming requests now log `ttfb` instead of `duration` for semantic accuracy
+  - Non-streaming requests continue to log `duration` as before
+  - Streaming detection based on `Content-Type: text/event-stream` header
+  - Implemented in [`src/core/middleware.rs`](src/core/middleware.rs)
+
+- **V1 Streaming Response Header Preservation**: Fixed V1 `/v1/chat/completions` endpoint not showing `ttfb` for streaming responses
+  - **Root Cause**: Unnecessary `.into_response()` call was potentially affecting header preservation
+  - **Fix**: Removed redundant `.into_response()` call in `handle_streaming_response` function
+  - V1 streaming responses now correctly show `ttfb` instead of `duration` in logs
+  - Implemented in [`src/api/handlers.rs`](src/api/handlers.rs#L795)
+
 - **Streaming Connection Establishment**: Fixed delayed downstream connection establishment for streaming requests
   - **Before**: Downstream connection was established only after receiving the first token from upstream provider
   - **After**: Downstream connection is established immediately, matching Python server behavior

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 import uuid
 
+from app.core.tokenizer import count_tokens
+
 from .unified import (
     ChunkType,
     StopReason,
@@ -205,9 +207,10 @@ class CrossProtocolStreamState:
 
         This method counts tokens in generated text and adds them to the usage.
         Used for fallback usage calculation when provider doesn't provide usage.
-        """
-        from app.utils.streaming import count_tokens
 
+        Uses the unified tokenizer module which supports both tiktoken (OpenAI)
+        and HuggingFace (Claude) tokenizers.
+        """
         tokens = count_tokens(text, self.model or "gpt-4")
 
         if self.usage is None:

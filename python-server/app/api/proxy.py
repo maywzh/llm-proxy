@@ -27,9 +27,10 @@ from app.services.langfuse_service import (
     build_langfuse_tags,
     LangfuseService,
 )
-from app.core.config import get_config, get_env_config
+from app.core.config import get_config
 from app.core.exceptions import TTFTTimeoutError
 from app.core.http_client import get_http_client
+from app.core.utils import strip_provider_suffix
 from app.core.jsonl_logger import (
     get_jsonl_logger,
     log_request,
@@ -110,19 +111,6 @@ def get_transform_pipeline() -> TransformPipeline:
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-
-def _strip_provider_suffix(model: str) -> str:
-    """Strip the global provider suffix from model name if present."""
-    env_config = get_env_config()
-    provider_suffix = env_config.provider_suffix
-
-    if provider_suffix and "/" in model:
-        prefix, base_model = model.split("/", 1)
-        if prefix == provider_suffix:
-            return base_model
-
-    return model
 
 
 def _get_provider_endpoint(protocol: Protocol) -> str:
@@ -908,7 +896,7 @@ async def handle_proxy_request(
 
     # Extract model and stream flag
     original_model = _extract_model_from_request(data, client_protocol)
-    effective_model = _strip_provider_suffix(original_model)
+    effective_model = strip_provider_suffix(original_model)
     is_streaming = _extract_stream_flag(data, client_protocol)
 
     # Update generation data
@@ -1065,3 +1053,156 @@ async def responses_v2(
     provider (OpenAI, Anthropic, etc.) with automatic protocol transformation.
     """
     return await handle_proxy_request(request, "/v1/responses", provider_svc)
+
+
+@router.get("/models")
+async def list_models_v2(
+    credential_config: Optional["CredentialConfig"] = Depends(verify_auth),
+    provider_svc: ProviderService = Depends(get_provider_svc),
+):
+    """List all available models (V2 - OpenAI compatible).
+
+    Returns a list of all available models that can be used with the API.
+    This endpoint is compatible with the OpenAI Models API.
+    """
+    from app.api.dependencies import model_matches_allowed_list
+    from app.models.config import CredentialConfig
+
+    models_set = provider_svc.get_all_models()
+
+    if credential_config and credential_config.allowed_models:
+        # Filter models using wildcard/regex matching
+        filtered_models = set()
+        for model in models_set:
+            if model_matches_allowed_list(model, credential_config.allowed_models):
+                filtered_models.add(model)
+        models_set = filtered_models
+
+    models_list = [
+        {
+            "id": model,
+            "object": "model",
+            "created": 1677610602,
+            "owned_by": "system",
+            "permission": [],
+            "root": model,
+            "parent": None,
+        }
+        for model in sorted(models_set)
+    ]
+
+    return {"object": "list", "data": models_list}
+
+
+@router.post("/messages/count_tokens")
+async def count_tokens_v2(
+    request: Request,
+    _: None = Depends(verify_auth),
+):
+    """Claude token counting endpoint (V2).
+
+    Provides accurate token count for the given messages using tiktoken.
+    """
+    from app.api.claude import (
+        _build_claude_messages_for_token_count,
+        _convert_claude_tools_for_token_count,
+    )
+    from app.models.claude import ClaudeTokenCountRequest
+    from app.utils.streaming import calculate_message_tokens
+
+    try:
+        data = await request.json()
+        claude_request = ClaudeTokenCountRequest(**data)
+
+        model = claude_request.model
+        combined_messages = _build_claude_messages_for_token_count(
+            claude_request.system, claude_request.messages
+        )
+        tools = _convert_claude_tools_for_token_count(claude_request.tools)
+        total_tokens = calculate_message_tokens(
+            combined_messages,
+            model,
+            tools=tools,
+            tool_choice=claude_request.tool_choice,
+        )
+
+        # Ensure at least 1 token
+        estimated_tokens = max(1, total_tokens)
+
+        return {"input_tokens": estimated_tokens}
+
+    except Exception as e:
+        logger.error(f"Error counting tokens (V2): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/model/info")
+async def model_info_v2(
+    credential_config: Optional["CredentialConfig"] = Depends(verify_auth),
+    provider_svc: ProviderService = Depends(get_provider_svc),
+):
+    """List model deployments in LiteLLM-compatible format (V2)."""
+    from app.api.dependencies import model_matches_allowed_list
+    from app.models.config import CredentialConfig
+    from app.models.provider import _compile_pattern, _is_pattern
+
+    def _model_allowed_for_info(model_name: str, allowed_models: list[str]) -> bool:
+        if not allowed_models:
+            return True
+        if model_matches_allowed_list(model_name, allowed_models):
+            return True
+        if not _is_pattern(model_name):
+            return False
+        try:
+            compiled = _compile_pattern(model_name)
+        except Exception:
+            return False
+        for allowed in allowed_models:
+            if _is_pattern(allowed):
+                continue
+            if compiled.match(allowed):
+                return True
+        return False
+
+    providers = provider_svc.get_all_providers()
+    allowed_models = credential_config.allowed_models if credential_config else []
+
+    data = []
+    for provider in providers:
+        for model_name in sorted(provider.model_mapping.keys()):
+            if not _model_allowed_for_info(model_name, allowed_models):
+                continue
+            mapped_model = provider.model_mapping[model_name]
+            data.append(
+                {
+                    "model_name": model_name,
+                    "litellm_params": {
+                        "model": mapped_model,
+                        "api_base": provider.api_base,
+                        "custom_llm_provider": provider.provider_type,
+                    },
+                    "model_info": {
+                        "provider_name": provider.name,
+                        "provider_type": provider.provider_type,
+                        "weight": provider.weight,
+                        "is_pattern": _is_pattern(model_name),
+                    },
+                }
+            )
+
+    return {"data": data}
+
+
+@router.post("/completions")
+async def completions_v2(
+    request: Request,
+    _: None = Depends(verify_auth),
+    provider_svc: ProviderService = Depends(get_provider_svc),
+):
+    """Legacy completions endpoint (V2 - OpenAI compatible).
+
+    This endpoint is compatible with the OpenAI Completions API (legacy).
+    """
+    from app.api.completions import proxy_completion_request
+
+    return await proxy_completion_request(request, "completions", provider_svc)
