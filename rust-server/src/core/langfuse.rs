@@ -168,6 +168,51 @@ pub fn build_langfuse_tags(
     tags
 }
 
+/// Initialize Langfuse trace for request tracking.
+///
+/// Creates a trace and generation data for Langfuse observability.
+/// Returns the trace ID and generation data.
+///
+/// # Arguments
+///
+/// * `request_id` - Unique request identifier
+/// * `api_key_name` - Name of the API key used for authentication
+/// * `headers` - HTTP headers for extracting client metadata
+/// * `endpoint` - API endpoint path (e.g., "/v1/chat/completions")
+///
+/// # Returns
+///
+/// Tuple of (trace_id, generation_data)
+pub fn init_langfuse_trace(
+    request_id: &str,
+    api_key_name: &str,
+    headers: &axum::http::HeaderMap,
+    endpoint: &str,
+) -> (Option<String>, GenerationData) {
+    let client_metadata = extract_client_metadata(headers);
+    let user_agent = client_metadata.get("user_agent").cloned();
+
+    let tags = build_langfuse_tags(endpoint, api_key_name, user_agent.as_deref());
+
+    let langfuse = get_langfuse_service();
+    let trace_id = if let Ok(service) = langfuse.read() {
+        service.create_trace(request_id, api_key_name, endpoint, tags, client_metadata)
+    } else {
+        None
+    };
+
+    let generation_data = GenerationData {
+        trace_id: trace_id.clone().unwrap_or_default(),
+        request_id: request_id.to_string(),
+        credential_name: api_key_name.to_string(),
+        endpoint: endpoint.to_string(),
+        start_time: chrono::Utc::now(),
+        ..Default::default()
+    };
+
+    (trace_id, generation_data)
+}
+
 // ============================================================================
 // Data Models
 // ============================================================================
