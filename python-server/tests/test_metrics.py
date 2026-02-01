@@ -35,6 +35,7 @@ class TestMetricsDefinitions:
             provider="test",
             status_code="200",
             api_key_name="test-key",
+            client="test-client",
         ).inc()
 
         # Should not raise error
@@ -54,6 +55,7 @@ class TestMetricsDefinitions:
             model="gpt-4",
             provider="test",
             api_key_name="test-key",
+            client="test-client",
         ).observe(1.5)
 
         assert True
@@ -100,7 +102,11 @@ class TestMetricsDefinitions:
     def test_token_usage_labels(self):
         """Test TOKEN_USAGE has correct labels"""
         TOKEN_USAGE.labels(
-            model="gpt-4", provider="test", token_type="prompt", api_key_name="test-key"
+            model="gpt-4",
+            provider="test",
+            token_type="prompt",
+            api_key_name="test-key",
+            client="test-client",
         ).inc(10)
 
         TOKEN_USAGE.labels(
@@ -108,10 +114,15 @@ class TestMetricsDefinitions:
             provider="test",
             token_type="completion",
             api_key_name="test-key",
+            client="test-client",
         ).inc(20)
 
         TOKEN_USAGE.labels(
-            model="gpt-4", provider="test", token_type="total", api_key_name="test-key"
+            model="gpt-4",
+            provider="test",
+            token_type="total",
+            api_key_name="test-key",
+            client="test-client",
         ).inc(30)
 
         assert True
@@ -161,6 +172,7 @@ class TestMetricsUsage:
             provider="none",
             status_code="200",
             api_key_name="test-key",
+            client="test-client",
         )._value.get()
 
         REQUEST_COUNT.labels(
@@ -170,6 +182,7 @@ class TestMetricsUsage:
             provider="none",
             status_code="200",
             api_key_name="test-key",
+            client="test-client",
         ).inc()
 
         final_value = REQUEST_COUNT.labels(
@@ -179,6 +192,7 @@ class TestMetricsUsage:
             provider="none",
             status_code="200",
             api_key_name="test-key",
+            client="test-client",
         )._value.get()
 
         assert final_value > initial_value
@@ -191,6 +205,7 @@ class TestMetricsUsage:
             model="gpt-4",
             provider="test",
             api_key_name="test-key",
+            client="test-client",
         ).observe(2.5)
 
         # Check that observation was recorded
@@ -200,6 +215,7 @@ class TestMetricsUsage:
             model="gpt-4",
             provider="test",
             api_key_name="test-key",
+            client="test-client",
         )
 
         assert metric._sum.get() > 0
@@ -224,6 +240,7 @@ class TestMetricsUsage:
             provider="test-provider",
             token_type="prompt",
             api_key_name="test-key",
+            client="test-client",
         ).inc(100)
 
         TOKEN_USAGE.labels(
@@ -231,6 +248,7 @@ class TestMetricsUsage:
             provider="test-provider",
             token_type="completion",
             api_key_name="test-key",
+            client="test-client",
         ).inc(200)
 
         TOKEN_USAGE.labels(
@@ -238,6 +256,7 @@ class TestMetricsUsage:
             provider="test-provider",
             token_type="total",
             api_key_name="test-key",
+            client="test-client",
         ).inc(300)
 
         # Verify values were recorded
@@ -246,6 +265,7 @@ class TestMetricsUsage:
             provider="test-provider",
             token_type="prompt",
             api_key_name="test-key",
+            client="test-client",
         )
         assert prompt_metric._value.get() >= 100
 
@@ -288,6 +308,7 @@ class TestMetricsLabels:
                 provider="test",
                 status_code="200",
                 api_key_name="test-key",
+                client="test-client",
             ).inc()
 
         # All models should have separate counters
@@ -299,6 +320,7 @@ class TestMetricsLabels:
                 provider="test",
                 status_code="200",
                 api_key_name="test-key",
+                client="test-client",
             )
             assert metric._value.get() > 0
 
@@ -312,6 +334,7 @@ class TestMetricsLabels:
                 provider=provider,
                 token_type="total",
                 api_key_name="test-key",
+                client="test-client",
             ).inc(100)
 
         # All providers should have separate counters
@@ -321,6 +344,7 @@ class TestMetricsLabels:
                 provider=provider,
                 token_type="total",
                 api_key_name="test-key",
+                client="test-client",
             )
             assert metric._value.get() >= 100
 
@@ -336,6 +360,7 @@ class TestMetricsLabels:
                 provider="test",
                 status_code=code,
                 api_key_name="test-key",
+                client="test-client",
             ).inc()
 
         # Each status code should have its own counter
@@ -347,6 +372,7 @@ class TestMetricsLabels:
                 provider="test",
                 status_code=code,
                 api_key_name="test-key",
+                client="test-client",
             )
             assert metric._value.get() > 0
 
@@ -360,6 +386,7 @@ class TestMetricsLabels:
                 provider="test",
                 token_type=token_type,
                 api_key_name="test-key",
+                client="test-client",
             ).inc(50)
 
         # Each token type should have its own counter
@@ -369,6 +396,7 @@ class TestMetricsLabels:
                 provider="test",
                 token_type=token_type,
                 api_key_name="test-key",
+                client="test-client",
             )
             assert metric._value.get() >= 50
 
@@ -385,6 +413,7 @@ class TestMetricsEdgeCases:
             model="none",
             provider="none",
             api_key_name="test-key",
+            client="test-client",
         ).observe(0.0)
 
         # Should not raise error
@@ -398,6 +427,7 @@ class TestMetricsEdgeCases:
             model="gpt-4",
             provider="test",
             api_key_name="test-key",
+            client="test-client",
         ).observe(1000.0)
 
         # Should be recorded in the +Inf bucket
@@ -415,11 +445,19 @@ class TestMetricsEdgeCases:
     def test_large_token_count(self):
         """Test tracking large token counts"""
         TOKEN_USAGE.labels(
-            model="gpt-4", provider="test", token_type="total", api_key_name="test-key"
+            model="gpt-4",
+            provider="test",
+            token_type="total",
+            api_key_name="test-key",
+            client="test-client",
         ).inc(1000000)
 
         metric = TOKEN_USAGE.labels(
-            model="gpt-4", provider="test", token_type="total", api_key_name="test-key"
+            model="gpt-4",
+            provider="test",
+            token_type="total",
+            api_key_name="test-key",
+            client="test-client",
         )
         assert metric._value.get() >= 1000000
 
@@ -433,6 +471,7 @@ class TestMetricsEdgeCases:
             provider="provider-1",
             status_code="200",
             api_key_name="test-key",
+            client="test-client",
         ).inc()
 
         assert True
