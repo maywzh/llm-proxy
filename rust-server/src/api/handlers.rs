@@ -3,6 +3,10 @@
 //! This module contains all endpoint handlers including chat completions,
 //! model listings, and metrics.
 
+use crate::api::gemini3::{
+    log_gemini_request_signatures, log_gemini_response_signatures, normalize_request_payload,
+    normalize_response_payload,
+};
 use crate::api::models::*;
 use crate::api::streaming::{
     calculate_message_tokens_with_tools, create_sse_stream, rewrite_model_in_response,
@@ -71,103 +75,6 @@ fn convert_provider(
         weight: p.weight as u32,
         model_mapping: p.model_mapping.0.clone(),
         provider_type: p.provider_type.clone(),
-    }
-}
-
-// ============================================================================
-// Gemini 3 Thought Signature Support
-// ============================================================================
-
-/// Check if provider name indicates Gemini 3 (for thought_signature handling)
-fn is_gemini3_provider_name(name: &str) -> bool {
-    let name_lower = name.to_lowercase();
-    name_lower.contains("gemini-3")
-        || name_lower.contains("gemini3")
-        || name_lower.contains("gemini_3")
-}
-
-/// Log thought_signature presence in response for debugging (pass-through, no modification)
-fn log_gemini_response_signatures(response: &serde_json::Value, provider_name: &str) {
-    if !is_gemini3_provider_name(provider_name) {
-        return;
-    }
-
-    if let Some(choices) = response.get("choices").and_then(|c| c.as_array()) {
-        for choice in choices {
-            if let Some(message) = choice.get("message") {
-                check_and_log_signatures(message, "message");
-            }
-            if let Some(delta) = choice.get("delta") {
-                check_and_log_signatures(delta, "delta");
-            }
-        }
-    }
-}
-
-fn check_and_log_signatures(content: &serde_json::Value, location: &str) {
-    if let Some(sig) = content
-        .get("extra_content")
-        .and_then(|e| e.get("google"))
-        .and_then(|g| g.get("thought_signature"))
-    {
-        tracing::debug!(
-            location,
-            sig_len = sig.as_str().map(|s| s.len()).unwrap_or(0),
-            "Found thought_signature in {}.extra_content",
-            location
-        );
-    }
-
-    if let Some(tool_calls) = content.get("tool_calls").and_then(|t| t.as_array()) {
-        let sig_count = tool_calls
-            .iter()
-            .filter(|tc| {
-                tc.get("extra_content")
-                    .and_then(|e| e.get("google"))
-                    .and_then(|g| g.get("thought_signature"))
-                    .is_some()
-            })
-            .count();
-
-        if sig_count > 0 {
-            tracing::debug!(
-                location,
-                sig_count,
-                "Found {} thought_signatures in {}.tool_calls",
-                sig_count,
-                location
-            );
-        }
-    }
-}
-
-/// Log thought_signature presence in request for debugging (pass-through, no modification)
-fn log_gemini_request_signatures(payload: &serde_json::Value, provider_name: &str) {
-    if !is_gemini3_provider_name(provider_name) {
-        return;
-    }
-
-    if let Some(messages) = payload.get("messages").and_then(|m| m.as_array()) {
-        for message in messages {
-            if let Some(tool_calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
-                let signatures_count = tool_calls
-                    .iter()
-                    .filter(|tc| {
-                        tc.get("extra_content")
-                            .and_then(|e| e.get("google"))
-                            .and_then(|g| g.get("thought_signature"))
-                            .is_some()
-                    })
-                    .count();
-
-                if signatures_count > 0 {
-                    tracing::debug!(
-                        signatures_count,
-                        "Gemini 3 request contains thought_signatures in extra_content (pass-through)"
-                    );
-                }
-            }
-        }
     }
 }
 
@@ -839,6 +746,7 @@ async fn handle_backend_error(
 /// * `response` - HTTP response from provider
 /// * `model_label` - Model label for metrics
 /// * `provider_name` - Provider name for metrics
+/// * `gemini_model` - Model name for Gemini 3 normalization
 /// * `prompt_tokens_for_fallback` - Estimated prompt tokens
 /// * `ttft_timeout_secs` - Time to first token timeout
 /// * `generation_data` - Generation data for Langfuse (consumed)
@@ -852,6 +760,7 @@ async fn handle_streaming_response(
     response: reqwest::Response,
     model_label: String,
     provider_name: String,
+    gemini_model: Option<String>,
     prompt_tokens_for_fallback: Option<usize>,
     ttft_timeout_secs: Option<u64>,
     generation_data: GenerationData,
@@ -872,6 +781,7 @@ async fn handle_streaming_response(
         response,
         model_label.clone(),
         provider_name.clone(),
+        gemini_model,
         prompt_tokens_for_fallback,
         ttft_timeout_secs,
         langfuse_data,
@@ -908,6 +818,7 @@ async fn handle_streaming_response(
 /// * `response` - HTTP response from provider
 /// * `model_label` - Model label for metrics
 /// * `provider_name` - Provider name for metrics
+/// * `gemini_model` - Model name for Gemini 3 normalization
 /// * `generation_data` - Mutable reference to generation data for Langfuse
 /// * `trace_id` - Optional trace ID for Langfuse
 /// * `api_key_name` - API key name for error responses
@@ -919,6 +830,7 @@ async fn handle_non_streaming_response(
     response: reqwest::Response,
     model_label: &str,
     provider_name: &str,
+    gemini_model: Option<&str>,
     generation_data: &mut GenerationData,
     trace_id: &Option<String>,
     api_key_name: &str,
@@ -928,7 +840,7 @@ async fn handle_non_streaming_response(
 ) -> Result<Response> {
     let status = response.status();
 
-    let response_data: serde_json::Value = match response.json().await {
+    let mut response_data: serde_json::Value = match response.json().await {
         Ok(data) => {
             // Log provider response to JSONL (the raw response from provider)
             log_provider_response(request_id, provider_name, status.as_u16(), None, &data);
@@ -1039,8 +951,11 @@ async fn handle_non_streaming_response(
         }
     }
 
+    // Normalize Gemini 3 response payload (align with LiteLLM handling)
+    normalize_response_payload(&mut response_data, gemini_model);
+
     // Log Gemini 3 thought_signature presence in response (pass-through debugging)
-    log_gemini_response_signatures(&response_data, provider_name);
+    log_gemini_response_signatures(&response_data, gemini_model);
 
     // Log response to JSONL file (non-streaming)
     log_response(request_id, status.as_u16(), None, &response_data);
@@ -1182,6 +1097,14 @@ pub async fn chat_completions(
             &parsed.effective_model,
         );
 
+        let gemini_model = payload
+            .get("model")
+            .and_then(|model| model.as_str())
+            .map(|model| model.to_string());
+
+        // Normalize Gemini 3 request payload (align with LiteLLM handling)
+        normalize_request_payload(&mut payload, gemini_model.as_deref());
+
         // Execute request within provider context scope
         let provider = selected.provider;
         let url = selected.url;
@@ -1189,6 +1112,7 @@ pub async fn chat_completions(
         let is_stream = parsed.is_stream;
         let prompt_tokens_for_fallback = parsed.prompt_tokens_for_fallback;
         let trace_id = langfuse_ctx.trace_id;
+        let gemini_model = gemini_model.clone();
         let mut generation_data = langfuse_ctx.generation_data;
 
         PROVIDER_CONTEXT
@@ -1223,7 +1147,7 @@ pub async fn chat_completions(
                 }
 
                 // Log Gemini 3 thought_signature presence in request (pass-through debugging)
-                log_gemini_request_signatures(&payload, &provider.name);
+                log_gemini_request_signatures(&payload, gemini_model.as_deref());
 
                 // Log request immediately to JSONL
                 log_request(
@@ -1315,6 +1239,7 @@ pub async fn chat_completions(
                         response,
                         model_label.clone(),
                         provider.name.clone(),
+                        gemini_model.clone(),
                         prompt_tokens_for_fallback,
                         state.config.ttft_timeout_secs,
                         generation_data,
@@ -1330,6 +1255,7 @@ pub async fn chat_completions(
                         response,
                         &model_label,
                         &provider.name,
+                        gemini_model.as_deref(),
                         &mut generation_data,
                         &trace_id,
                         &api_key_name,

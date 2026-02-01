@@ -740,6 +740,7 @@ async fn handle_streaming_proxy_response(
             response,
             model_label.clone(),
             provider_name.clone(),
+            Some(ctx.mapped_model.clone()),
             input_tokens,
             state.app_state.config.ttft_timeout_secs,
             langfuse_data,
