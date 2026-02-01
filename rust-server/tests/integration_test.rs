@@ -14,7 +14,7 @@ use axum::{
     Json, Router,
 };
 use llm_proxy_rust::{
-    api::{chat_completions, completions, list_models, metrics_handler, AppState},
+    api::{chat_completions, completions, list_model_info, list_models, metrics_handler, AppState},
     core::{init_metrics, AppConfig, MetricsMiddleware},
     services::ProviderService,
 };
@@ -61,6 +61,7 @@ fn create_test_app(config: AppConfig) -> Router {
         )
         .route("/v1/completions", axum::routing::post(completions))
         .route("/v1/models", axum::routing::get(list_models))
+        .route("/v1/model/info", axum::routing::get(list_model_info))
         .route("/metrics", axum::routing::get(metrics_handler))
         .route(
             "/api/event_logging/batch",
@@ -174,6 +175,48 @@ async fn test_list_models_endpoint() {
     assert!(models.contains(&"gpt-4".to_string()));
     assert!(models.contains(&"gpt-3.5-turbo".to_string()));
     assert!(models.contains(&"claude-3".to_string()));
+}
+
+#[tokio::test]
+async fn test_list_model_info_endpoint() {
+    let app = create_test_app(create_test_config_no_auth());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/model/info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert!(json["data"].is_array());
+    let entries = json["data"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+
+    let model_names: Vec<String> = entries
+        .iter()
+        .map(|m| m["model_name"].as_str().unwrap().to_string())
+        .collect();
+
+    assert!(model_names.contains(&"gpt-4".to_string()));
+    assert!(model_names.contains(&"gpt-3.5-turbo".to_string()));
+    assert!(model_names.contains(&"claude-3".to_string()));
+
+    let gpt4_entry = entries
+        .iter()
+        .find(|m| m["model_name"].as_str() == Some("gpt-4"))
+        .unwrap();
+    assert_eq!(gpt4_entry["litellm_params"]["model"], "test-gpt-4");
+    assert_eq!(gpt4_entry["litellm_params"]["custom_llm_provider"], "openai");
 }
 
 #[tokio::test]

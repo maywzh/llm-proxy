@@ -473,6 +473,38 @@ class TestModelsEndpoint:
 
 
 @pytest.mark.unit
+class TestModelInfoEndpoint:
+    """Test /model/info endpoint"""
+
+    def test_model_info_success(self, app_client):
+        """Test listing model info"""
+        response = app_client.get(
+            "/v1/model/info", headers={"Authorization": "Bearer test-credential-key"}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "data" in data
+        assert isinstance(data["data"], list)
+        assert len(data["data"]) == 4
+
+        entry = data["data"][0]
+        assert "model_name" in entry
+        assert "litellm_params" in entry
+        assert "model_info" in entry
+
+        model_names = [item["model_name"] for item in data["data"]]
+        assert model_names.count("gpt-4") == 2
+        assert "gpt-3.5-turbo" in model_names
+        assert "claude-3" in model_names
+
+    def test_model_info_unauthorized(self, app_client):
+        """Test model info without authorization"""
+        response = app_client.get("/v1/model/info")
+        assert response.status_code == 401
+
+
+@pytest.mark.unit
 class TestAPIEdgeCases:
     """Test API edge cases"""
 

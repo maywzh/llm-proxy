@@ -321,6 +321,80 @@ pub struct ModelList {
     pub data: Vec<ModelInfo>,
 }
 
+/// LiteLLM-compatible model params for /v1/model/info.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "model": "gpt-4-0613",
+    "api_base": "https://api.provider1.com/v1",
+    "custom_llm_provider": "openai"
+}))]
+pub struct LiteLlmParams {
+    pub model: String,
+    pub api_base: String,
+    pub custom_llm_provider: String,
+}
+
+/// LiteLLM-compatible model info for /v1/model/info.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "provider_name": "provider1",
+    "provider_type": "openai",
+    "weight": 2,
+    "is_pattern": false
+}))]
+pub struct ModelInfoDetails {
+    pub provider_name: String,
+    pub provider_type: String,
+    pub weight: u32,
+    pub is_pattern: bool,
+}
+
+/// LiteLLM-compatible model entry for /v1/model/info.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "model_name": "gpt-4",
+    "litellm_params": {
+        "model": "gpt-4-0613",
+        "api_base": "https://api.provider1.com/v1",
+        "custom_llm_provider": "openai"
+    },
+    "model_info": {
+        "provider_name": "provider1",
+        "provider_type": "openai",
+        "weight": 2,
+        "is_pattern": false
+    }
+}))]
+pub struct ModelInfoEntry {
+    pub model_name: String,
+    pub litellm_params: LiteLlmParams,
+    pub model_info: ModelInfoDetails,
+}
+
+/// LiteLLM-compatible model info list.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "data": [
+        {
+            "model_name": "gpt-4",
+            "litellm_params": {
+                "model": "gpt-4-0613",
+                "api_base": "https://api.provider1.com/v1",
+                "custom_llm_provider": "openai"
+            },
+            "model_info": {
+                "provider_name": "provider1",
+                "provider_type": "openai",
+                "weight": 2,
+                "is_pattern": false
+            }
+        }
+    ]
+}))]
+pub struct ModelInfoList {
+    pub data: Vec<ModelInfoEntry>,
+}
+
 /// Error response for API errors.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({

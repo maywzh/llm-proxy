@@ -73,19 +73,22 @@ build_image() {
     if [ "$FORCE_BUILD" = true ]; then
         echo "Force building Docker image (no cache)..."
     else
-        echo "Building Docker image..."
+        echo "Building Docker image with BuildKit cache optimization..."
     fi
-    
+
+    # Enable BuildKit for cache mount support
+    export DOCKER_BUILDKIT=1
+
     # Prepare build args
     BUILD_ARGS=""
-    
+
     # Add --no-cache if force build is enabled
     if [ "$FORCE_BUILD" = true ]; then
         BUILD_ARGS="--no-cache"
     fi
     if [ -n "$ARGS_FILE" ] && [ -f "$ARGS_FILE" ]; then
         echo "Using build args file: $ARGS_FILE"
-        
+
         if [ "$ARGS_TYPE" = "json" ]; then
             # Handle JSON format - use temporary file to avoid process substitution
             BUILD_ARGS=""
@@ -111,11 +114,12 @@ build_image() {
             done < "$ARGS_FILE"
         fi
     fi
-    
-    # Build with build args (including --no-cache if force build)
-    echo "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
+
+    # Build with BuildKit and cache optimization
+    # Uses cargo-chef for dependency caching + BuildKit cache mounts
+    echo "DOCKER_BUILDKIT=1 docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
     eval "docker build --platform linux/amd64 $BUILD_ARGS -t $IMAGE_NAME ."
-    
+
     echo "Image built successfully: $IMAGE_NAME:latest"
 }
 
