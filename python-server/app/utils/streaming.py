@@ -704,9 +704,11 @@ async def stream_response(
         # Set provider context for logging
         set_provider_context(provider_name)
 
-        # Create async iterator for response bytes
-        response_iter = response.aiter_bytes()
+        # Use aiter_lines() instead of aiter_bytes() to ensure complete SSE lines
+        # This prevents JSON truncation issues caused by TCP packet fragmentation
+        response_iter = response.aiter_lines()
         first_chunk_received = False
+        sse_buffer = ""  # Buffer for accumulating partial SSE events
 
         # Apply TTFT timeout for the first chunk if configured
         ttft_enabled = ttft_timeout_secs is not None and ttft_timeout_secs > 0
@@ -715,21 +717,34 @@ async def stream_response(
             try:
                 if not first_chunk_received and ttft_enabled:
                     try:
-                        chunk = await asyncio.wait_for(
+                        line = await asyncio.wait_for(
                             response_iter.__anext__(), timeout=float(ttft_timeout_secs)
                         )
                     except asyncio.TimeoutError:
                         raise TTFTTimeoutError(ttft_timeout_secs, provider_name)
                 else:
-                    chunk = await response_iter.__anext__()
+                    line = await response_iter.__anext__()
             except StopAsyncIteration:
                 break
 
             first_chunk_received = True
             now = time.time()
 
-            # Track token usage from streaming chunks
-            chunk_str = chunk.decode("utf-8", errors="ignore")
+            # Accumulate lines into SSE events (events are separated by blank lines)
+            # Each SSE event ends with \n\n, so we buffer until we have complete events
+            sse_buffer += line + "\n"
+
+            # Check if we have a complete SSE event (ends with double newline or is a blank line)
+            if not line.strip():
+                # We have a complete event, process the buffer
+                chunk_str = sse_buffer.rstrip("\n")
+                sse_buffer = ""
+            else:
+                # Continue accumulating lines
+                continue
+
+            # Convert back to bytes for downstream processing
+            chunk = chunk_str.encode("utf-8")
 
             # Record provider TTFT on first token from provider
             if provider_first_token_time is None:
@@ -741,13 +756,13 @@ async def stream_response(
 
             # Try to extract usage from provider (preferred method)
             # Only process complete lines to avoid parsing incomplete JSON
-            if '"usage":' in chunk_str and "\n" in chunk_str:
+            if '"usage":' in chunk_str:
                 try:
-                    lines = chunk_str.split("\n")
-                    for line in lines:
+                    sse_lines = chunk_str.split("\n")
+                    for sse_line in sse_lines:
                         # Only process complete SSE data lines
-                        if line.startswith("data: ") and line != "data: [DONE]":
-                            json_str = line[6:].strip()
+                        if sse_line.startswith("data: ") and sse_line != "data: [DONE]":
+                            json_str = sse_line[6:].strip()
                             # Skip if line appears incomplete (no closing brace)
                             if not json_str or not json_str.endswith("}"):
                                 continue
@@ -791,10 +806,10 @@ async def stream_response(
 
             # Count tokens in this chunk for TPS calculation and accumulate output
             try:
-                lines = chunk_str.split("\n")
-                for line in lines:
-                    if line.startswith("data: ") and line != "data: [DONE]":
-                        json_str = line[6:]
+                sse_lines = chunk_str.split("\n")
+                for sse_line in sse_lines:
+                    if sse_line.startswith("data: ") and sse_line != "data: [DONE]":
+                        json_str = sse_line[6:]
                         json_obj = json.loads(json_str)
                         if "choices" in json_obj:
                             for choice in json_obj["choices"]:
@@ -833,6 +848,32 @@ async def stream_response(
 
             # Update usage_chunk_sent from state
             usage_chunk_sent = rewrite_state["usage_chunk_sent"]
+
+            yield rewritten_chunk
+
+        # Process any remaining content in the SSE buffer
+        if sse_buffer.strip():
+            chunk_str = sse_buffer.rstrip("\n")
+            chunk = chunk_str.encode("utf-8")
+
+            # Get current usage from token counter for SSE rewriting
+            current_usage = token_counter.finalize()
+
+            # Create state dict for usage injection
+            rewrite_state = {
+                "input_tokens": current_usage["prompt_tokens"],
+                "output_tokens": current_usage["completion_tokens"],
+                "usage_found": usage_found,
+                "usage_chunk_sent": usage_chunk_sent,
+            }
+
+            # Rewrite chunk with model and inject fallback usage if needed
+            rewritten_chunk = await rewrite_sse_chunk_with_usage(
+                chunk,
+                original_model,
+                rewrite_state,
+                gemini_model=gemini_model,
+            )
 
             yield rewritten_chunk
 

@@ -130,6 +130,8 @@ struct StreamState {
     accumulated_sse_data: Vec<String>,
     /// Request ID for JSONL logging
     request_id: String,
+    /// SSE line buffer for handling TCP fragmentation
+    sse_line_buffer: String,
 }
 
 impl StreamState {
@@ -168,6 +170,7 @@ impl StreamState {
             stream_start_logged: false,
             accumulated_sse_data: Vec::new(),
             request_id: String::new(),
+            sse_line_buffer: String::new(),
         }
     }
 }
@@ -1015,6 +1018,16 @@ pub async fn create_sse_stream(
                 Some((Ok(error_message.into_bytes()), state))
             }
             None => {
+                // Process any remaining data in the SSE line buffer
+                if !state.sse_line_buffer.trim().is_empty() {
+                    let remaining = std::mem::take(&mut state.sse_line_buffer);
+                    let output = process_remaining_buffer(&mut state, &remaining);
+                    if !output.is_empty() {
+                        // Need to emit remaining data before finalizing
+                        // We'll use a marker to know we need to finalize next iteration
+                        return Some((Ok(output), state));
+                    }
+                }
                 // Finalize and end stream
                 finalize_stream(&mut state);
                 None
@@ -1034,7 +1047,8 @@ pub async fn create_sse_stream(
         .unwrap())
 }
 
-/// Process a chunk of streaming data
+/// Process a chunk of streaming data with SSE line buffering
+/// Returns complete SSE events only, buffering incomplete data
 fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
     // Log stream start on first chunk
     if !state.stream_start_logged {
@@ -1049,49 +1063,43 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
     // Increment chunk counter
     state.chunk_count += 1;
 
-    // Fast check: Does this chunk contain SSE data?
-    let has_data_line = bytes.windows(6).any(|w| w == b"data: ");
-    if !has_data_line {
-        // Log non-SSE chunk at TRACE level
-        if tracing::enabled!(tracing::Level::TRACE) {
-            let chunk_str = String::from_utf8_lossy(&bytes);
-            tracing::trace!(
-                provider = %state.provider_name,
-                chunk_num = state.chunk_count,
-                "[Stream Chunk #{}] (non-SSE) {}",
-                state.chunk_count,
-                chunk_str.trim()
-            );
-        }
-        return bytes.to_vec();
-    }
-
-    // Parse and process chunk, rewrite model field
+    // Append incoming bytes to SSE line buffer
     let chunk_str = String::from_utf8_lossy(&bytes);
+    state.sse_line_buffer.push_str(&chunk_str);
 
-    // Log SSE chunk at DEBUG level
-    if tracing::enabled!(tracing::Level::DEBUG) {
-        // Log each data line separately for better readability
-        for line in chunk_str.lines() {
-            if line.starts_with("data: ") {
-                tracing::debug!(
-                    provider = %state.provider_name,
-                    "[Stream Chunk #{}] {}",
-                    state.chunk_count,
-                    line
-                );
-            }
+    // Extract complete SSE events from buffer (events end with \n\n)
+    let mut complete_events = Vec::new();
+    while let Some(pos) = state.sse_line_buffer.find("\n\n") {
+        let event = state.sse_line_buffer[..pos].to_string();
+        state.sse_line_buffer = state.sse_line_buffer[pos + 2..].to_string();
+        if !event.trim().is_empty() {
+            complete_events.push(event);
         }
     }
 
+    // If no complete events yet, return empty (wait for more data)
+    if complete_events.is_empty() {
+        return Vec::new();
+    }
+
+    // Process complete events
     let mut rewritten_lines = Vec::new();
     let mut chunk_modified = false;
     let mut has_done = false;
 
-    // Split by SSE event delimiter (\n\n) to preserve event boundaries
-    for event in chunk_str.split("\n\n") {
-        if event.trim().is_empty() {
-            continue;
+    for event in complete_events {
+        // Log SSE chunk at DEBUG level
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            for line in event.lines() {
+                if line.starts_with("data: ") {
+                    tracing::debug!(
+                        provider = %state.provider_name,
+                        "[Stream Chunk #{}] {}",
+                        state.chunk_count,
+                        line
+                    );
+                }
+            }
         }
 
         // Process each line in the event
@@ -1259,6 +1267,78 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
         result.into_bytes()
     } else {
         bytes.to_vec()
+    }
+}
+
+/// Process remaining data in the SSE line buffer at stream end
+fn process_remaining_buffer(state: &mut StreamState, remaining: &str) -> Vec<u8> {
+    if remaining.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let mut rewritten_lines = Vec::new();
+    let mut chunk_modified = false;
+    let mut has_done = false;
+
+    // Process each line in the remaining buffer
+    let mut event_lines = Vec::new();
+    let mut event_has_data = false;
+
+    for line in remaining.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Check for [DONE] marker
+        if line == "data: [DONE]" {
+            has_done = true;
+            continue;
+        }
+
+        if !line.starts_with("data: ") {
+            event_lines.push(line.to_string());
+            continue;
+        }
+
+        event_has_data = true;
+        let json_str = line[6..].trim();
+        if json_str.is_empty() || !json_str.ends_with('}') {
+            event_lines.push(line.to_string());
+            continue;
+        }
+
+        if let Ok(mut json_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
+            // Rewrite model field
+            if json_obj.get("model").is_some() {
+                json_obj["model"] = serde_json::Value::String(state.original_model.clone());
+                chunk_modified = true;
+            }
+
+            let rewritten_json =
+                serde_json::to_string(&json_obj).unwrap_or_else(|_| json_str.to_string());
+            event_lines.push(format!("data: {}", rewritten_json));
+        } else {
+            event_lines.push(line.to_string());
+        }
+    }
+
+    if event_has_data && !event_lines.is_empty() {
+        rewritten_lines.push(event_lines.join("\n"));
+    }
+
+    if has_done {
+        rewritten_lines.push("data: [DONE]".to_string());
+        chunk_modified = true;
+    }
+
+    if chunk_modified || !rewritten_lines.is_empty() {
+        let mut result = rewritten_lines.join("\n\n");
+        if !result.is_empty() {
+            result.push_str("\n\n");
+        }
+        result.into_bytes()
+    } else {
+        Vec::new()
     }
 }
 
@@ -1831,5 +1911,212 @@ mod tests {
         assert!(contents.contains(&"{\"city\":\"NYC\"}".to_string()));
         assert!(contents.contains(&"get_time".to_string()));
         assert!(contents.contains(&"{\"timezone\":\"EST\"}".to_string()));
+    }
+
+    #[test]
+    fn test_sse_line_buffer_initialization() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        let state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            None,
+            "test-provider".to_string(),
+            "test-key".to_string(),
+            "test-client".to_string(),
+            None,
+            None,
+        );
+
+        // SSE line buffer should be initialized empty
+        assert!(state.sse_line_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_process_chunk_buffers_incomplete_event() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        let mut state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            None,
+            "test-provider".to_string(),
+            "test-key".to_string(),
+            "test-client".to_string(),
+            None,
+            None,
+        );
+
+        // Send incomplete SSE event (no \n\n terminator)
+        let incomplete_chunk = Bytes::from("data: {\"model\":\"gpt-4\",\"content\":\"Hello\"");
+        let output = process_chunk(&mut state, incomplete_chunk);
+
+        // Should return empty - data is buffered waiting for event boundary
+        assert!(output.is_empty());
+        // Buffer should contain the incomplete data
+        assert!(state.sse_line_buffer.contains("data:"));
+    }
+
+    #[test]
+    fn test_process_chunk_emits_complete_event() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        let mut state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            None,
+            "test-provider".to_string(),
+            "test-key".to_string(),
+            "test-client".to_string(),
+            None,
+            None,
+        );
+
+        // Send complete SSE event with \n\n terminator
+        let complete_chunk = Bytes::from("data: {\"model\":\"gpt-4\",\"content\":\"Hello\"}\n\n");
+        let output = process_chunk(&mut state, complete_chunk);
+
+        // Should return the processed event
+        assert!(!output.is_empty());
+        // Buffer should be empty after processing
+        assert!(state.sse_line_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_process_chunk_reassembles_fragmented_event() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        let mut state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            None,
+            "test-provider".to_string(),
+            "test-key".to_string(),
+            "test-client".to_string(),
+            None,
+            None,
+        );
+
+        // First chunk: incomplete event
+        let chunk1 = Bytes::from("data: {\"model\":\"gpt-4\",");
+        let output1 = process_chunk(&mut state, chunk1);
+        assert!(output1.is_empty()); // Buffered
+
+        // Second chunk: completes the event
+        let chunk2 = Bytes::from("\"content\":\"Hello\"}\n\n");
+        let output2 = process_chunk(&mut state, chunk2);
+
+        // Now we should get output
+        assert!(!output2.is_empty());
+        let output_str = String::from_utf8_lossy(&output2);
+        assert!(output_str.contains("Hello"));
+        // Buffer should be empty
+        assert!(state.sse_line_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_process_chunk_handles_multiple_events() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        let mut state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            None,
+            "test-provider".to_string(),
+            "test-key".to_string(),
+            "test-client".to_string(),
+            None,
+            None,
+        );
+
+        // Send two complete events in one chunk
+        let multi_chunk = Bytes::from(
+            "data: {\"content\":\"Hello\"}\n\ndata: {\"content\":\"World\"}\n\n",
+        );
+        let output = process_chunk(&mut state, multi_chunk);
+
+        // Should contain both events
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(output_str.contains("Hello"));
+        assert!(output_str.contains("World"));
+    }
+
+    #[test]
+    fn test_process_chunk_handles_done_marker() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        let mut state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            None,
+            "test-provider".to_string(),
+            "test-key".to_string(),
+            "test-client".to_string(),
+            None,
+            None,
+        );
+
+        // Send [DONE] marker
+        let done_chunk = Bytes::from("data: [DONE]\n\n");
+        let output = process_chunk(&mut state, done_chunk);
+
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(output_str.contains("[DONE]"));
+    }
+
+    #[test]
+    fn test_process_remaining_buffer_handles_leftover_data() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        let mut state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            None,
+            "test-provider".to_string(),
+            "test-key".to_string(),
+            "test-client".to_string(),
+            None,
+            None,
+        );
+
+        // Process remaining buffer with valid JSON
+        let remaining = "data: {\"model\":\"gpt-4\",\"content\":\"final\"}";
+        let output = process_remaining_buffer(&mut state, remaining);
+
+        // Should process the remaining data
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(output_str.contains("final"));
+    }
+
+    #[test]
+    fn test_process_remaining_buffer_empty() {
+        use futures::stream;
+        let empty_stream = stream::empty();
+        let mut state = StreamState::new(
+            empty_stream,
+            100,
+            "gpt-3.5-turbo".to_string(),
+            None,
+            "test-provider".to_string(),
+            "test-key".to_string(),
+            "test-client".to_string(),
+            None,
+            None,
+        );
+
+        // Empty remaining buffer
+        let output = process_remaining_buffer(&mut state, "");
+        assert!(output.is_empty());
+
+        // Whitespace-only remaining buffer
+        let output2 = process_remaining_buffer(&mut state, "   \n  ");
+        assert!(output2.is_empty());
     }
 }

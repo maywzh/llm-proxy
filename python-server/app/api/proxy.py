@@ -451,17 +451,41 @@ async def _create_cross_protocol_stream(
     if client_protocol == provider_protocol:
         # Direct passthrough with model rewriting
         # Track total bytes for bypass streaming metrics
+        # Use aiter_lines() to ensure complete SSE lines (prevents JSON truncation)
         total_bypass_bytes = 0
-        async for chunk in response.aiter_bytes():
+        sse_buffer = ""
+        async for line in response.aiter_lines():
+            # Accumulate lines into SSE events (events are separated by blank lines)
+            sse_buffer += line + "\n"
+
+            # Check if we have a complete SSE event (blank line marks end of event)
+            if not line.strip():
+                # We have a complete event, process the buffer
+                chunk_str = sse_buffer
+                sse_buffer = ""
+            else:
+                # Continue accumulating lines
+                continue
+
+            chunk = chunk_str.encode("utf-8")
             # Track first token time
             if usage_tracker is not None and usage_tracker.first_token_time is None:
                 usage_tracker.first_token_time = time.time()
             # Collect raw SSE data for JSONL logging
             if chunk_collector is not None:
-                chunk_collector.append(chunk.decode("utf-8", errors="replace"))
+                chunk_collector.append(chunk_str)
             # Track bytes for bypass streaming metrics
             total_bypass_bytes += len(chunk)
             yield chunk
+
+        # Process any remaining content in the buffer
+        if sse_buffer.strip():
+            chunk = sse_buffer.encode("utf-8")
+            if chunk_collector is not None:
+                chunk_collector.append(sse_buffer)
+            total_bypass_bytes += len(chunk)
+            yield chunk
+
         # Record bypass streaming bytes metric
         _record_bypass_streaming_bytes(provider_name, total_bypass_bytes)
         return
@@ -472,7 +496,8 @@ async def _create_cross_protocol_stream(
     )
     sse_parser = SseParser()
 
-    async for chunk in response.aiter_bytes():
+    # Use aiter_lines() to ensure complete lines (prevents JSON truncation)
+    async for line in response.aiter_lines():
         try:
             # Track first token time
             if usage_tracker is not None and usage_tracker.first_token_time is None:
@@ -480,9 +505,11 @@ async def _create_cross_protocol_stream(
 
             # Collect raw SSE data for JSONL logging
             if chunk_collector is not None:
-                chunk_collector.append(chunk.decode("utf-8", errors="replace"))
+                chunk_collector.append(line + "\n")
 
-            # Parse SSE events from chunk
+            # Feed line to SSE parser (adding newline back for parser)
+            # The parser expects bytes and handles event boundaries
+            chunk = (line + "\n").encode("utf-8")
             events = sse_parser.parse(chunk)
 
             for event in events:

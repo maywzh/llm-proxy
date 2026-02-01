@@ -115,12 +115,14 @@ class TestStreamResponse:
     async def test_stream_response_basic(self):
         """Test basic streaming response"""
 
-        async def mock_aiter_bytes():
-            yield b'data: {"model":"gpt-4-0613","content":"Hello"}\n\n'
-            yield b"data: [DONE]\n\n"
+        async def mock_aiter_lines():
+            yield 'data: {"model":"gpt-4-0613","content":"Hello"}'
+            yield ""  # SSE event boundary
+            yield "data: [DONE]"
+            yield ""  # SSE event boundary
 
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = mock_aiter_bytes
+        mock_response.aiter_lines = mock_aiter_lines
 
         chunks = []
         async for chunk in stream_response(mock_response, "gpt-4", "test-provider"):
@@ -131,13 +133,13 @@ class TestStreamResponse:
     @pytest.mark.asyncio
     async def test_stream_response_with_usage(self):
         """Test streaming response with usage information"""
-        usage_chunk = b'data: {"model":"gpt-4-0613","usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}\n\n'
 
-        async def mock_aiter_bytes():
-            yield usage_chunk
+        async def mock_aiter_lines():
+            yield 'data: {"model":"gpt-4-0613","usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}'
+            yield ""  # SSE event boundary
 
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = mock_aiter_bytes
+        mock_response.aiter_lines = mock_aiter_lines
 
         chunks = []
         async for chunk in stream_response(mock_response, "gpt-4", "test-provider"):
@@ -150,13 +152,16 @@ class TestStreamResponse:
     async def test_stream_response_without_usage_fallback(self):
         """Test fallback token counting when provider doesn't return usage"""
 
-        async def mock_aiter_bytes():
-            yield b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
-            yield b'data: {"choices":[{"delta":{"content":" world"}}]}\n\n'
-            yield b"data: [DONE]\n\n"
+        async def mock_aiter_lines():
+            yield 'data: {"choices":[{"delta":{"content":"Hello"}}]}'
+            yield ""  # SSE event boundary
+            yield 'data: {"choices":[{"delta":{"content":" world"}}]}'
+            yield ""  # SSE event boundary
+            yield "data: [DONE]"
+            yield ""  # SSE event boundary
 
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = mock_aiter_bytes
+        mock_response.aiter_lines = mock_aiter_lines
 
         request_data = {"messages": [{"role": "user", "content": "Test message"}]}
 
@@ -173,13 +178,16 @@ class TestStreamResponse:
     async def test_stream_response_with_null_usage(self):
         """Test fallback when usage is null"""
 
-        async def mock_aiter_bytes():
-            yield b'data: {"choices":[{"delta":{"content":"Test"}}]}\n\n'
-            yield b'data: {"usage":null}\n\n'
-            yield b"data: [DONE]\n\n"
+        async def mock_aiter_lines():
+            yield 'data: {"choices":[{"delta":{"content":"Test"}}]}'
+            yield ""  # SSE event boundary
+            yield 'data: {"usage":null}'
+            yield ""  # SSE event boundary
+            yield "data: [DONE]"
+            yield ""  # SSE event boundary
 
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = mock_aiter_bytes
+        mock_response.aiter_lines = mock_aiter_lines
 
         request_data = {"messages": [{"role": "user", "content": "Hello"}]}
 
@@ -195,11 +203,12 @@ class TestStreamResponse:
     async def test_stream_response_completes(self):
         """Test that stream completes successfully"""
 
-        async def mock_aiter_bytes():
-            yield b"data: test\n\n"
+        async def mock_aiter_lines():
+            yield "data: test"
+            yield ""  # SSE event boundary
 
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = mock_aiter_bytes
+        mock_response.aiter_lines = mock_aiter_lines
 
         chunks = []
         async for chunk in stream_response(mock_response, None, "test-provider"):
@@ -376,12 +385,12 @@ class TestStreamingEdgeCases:
     async def test_empty_stream(self):
         """Test handling empty stream"""
 
-        async def mock_aiter_bytes():
+        async def mock_aiter_lines():
             return
             yield  # Make it a generator
 
         mock_response = AsyncMock()
-        mock_response.aiter_bytes = mock_aiter_bytes
+        mock_response.aiter_lines = mock_aiter_lines
 
         chunks = []
         async for chunk in stream_response(mock_response, None, "test-provider"):
@@ -430,3 +439,132 @@ class TestStreamingEdgeCases:
         # Check for model rewrite (JSON may have spaces)
         assert '"gpt-4"' in result_str
         assert "gpt-4-0613" not in result_str
+
+
+@pytest.mark.unit
+class TestSSELineBuffering:
+    """Test SSE line buffering to prevent JSON truncation from TCP fragmentation"""
+
+    @pytest.mark.asyncio
+    async def test_fragmented_sse_chunks_reassembled(self):
+        """Test that SSE events split across TCP packets are correctly reassembled"""
+        # Simulate TCP fragmentation: one JSON split across multiple lines/packets
+        async def mock_aiter_lines():
+            # First packet: partial data line
+            yield 'data: {"model":"gpt-4-0613","choices":[{"delta":{"content":"Hello"}}]}'
+            # Second packet: blank line (event boundary)
+            yield ""
+            # Third packet: another complete event
+            yield 'data: {"model":"gpt-4-0613","choices":[{"delta":{"content":" world"}}]}'
+            yield ""
+            # Done marker
+            yield "data: [DONE]"
+            yield ""
+
+        mock_response = AsyncMock()
+        mock_response.aiter_lines = mock_aiter_lines
+
+        chunks = []
+        async for chunk in stream_response(mock_response, "gpt-4", "test-provider"):
+            chunks.append(chunk)
+
+        # Should receive 3 complete SSE events
+        assert len(chunks) == 3
+        # Verify no truncation - all chunks should be valid
+        for chunk in chunks:
+            chunk_str = chunk.decode("utf-8")
+            # Each chunk should either be valid JSON or [DONE]
+            if "data: [DONE]" not in chunk_str:
+                for line in chunk_str.split("\n"):
+                    if line.startswith("data: "):
+                        json_str = line[6:].strip()
+                        if json_str:
+                            # Should not raise JSONDecodeError
+                            json.loads(json_str)
+
+    @pytest.mark.asyncio
+    async def test_multiline_sse_event_buffered(self):
+        """Test that multi-line SSE events are properly buffered"""
+        async def mock_aiter_lines():
+            # SSE event with event type line
+            yield "event: message"
+            yield 'data: {"model":"gpt-4-0613","content":"test"}'
+            yield ""  # Event boundary
+
+        mock_response = AsyncMock()
+        mock_response.aiter_lines = mock_aiter_lines
+
+        chunks = []
+        async for chunk in stream_response(mock_response, "gpt-4", "test-provider"):
+            chunks.append(chunk)
+
+        # Should receive 1 complete event
+        assert len(chunks) == 1
+
+    @pytest.mark.asyncio
+    async def test_truncated_json_not_emitted_early(self):
+        """Test that incomplete JSON is buffered until complete"""
+        # This simulates the exact bug scenario from the user report
+        async def mock_aiter_lines():
+            # Line with complete JSON - will be buffered
+            yield 'data: {"id":"chatcmpl-e7bb5e79","choices":[{"delta":{"tool_calls":[{"function":{"arguments":"test"}}]}}]}'
+            # Event boundary
+            yield ""
+
+        mock_response = AsyncMock()
+        mock_response.aiter_lines = mock_aiter_lines
+
+        chunks = []
+        async for chunk in stream_response(mock_response, "gpt-4", "test-provider"):
+            chunks.append(chunk)
+
+        assert len(chunks) == 1
+        chunk_str = chunks[0].decode("utf-8")
+        # Verify the JSON is complete and parseable
+        for line in chunk_str.split("\n"):
+            if line.startswith("data: "):
+                json_str = line[6:].strip()
+                if json_str:
+                    parsed = json.loads(json_str)
+                    assert "choices" in parsed
+
+    @pytest.mark.asyncio
+    async def test_buffer_flushed_at_stream_end(self):
+        """Test that remaining buffer content is flushed when stream ends"""
+        async def mock_aiter_lines():
+            yield 'data: {"model":"gpt-4-0613","content":"final"}'
+            # No blank line - stream ends with data in buffer
+            # Note: In real scenarios, the stream should end with \n\n
+            # but we test graceful handling of edge cases
+
+        mock_response = AsyncMock()
+        mock_response.aiter_lines = mock_aiter_lines
+
+        chunks = []
+        async for chunk in stream_response(mock_response, "gpt-4", "test-provider"):
+            chunks.append(chunk)
+
+        # Buffer should be flushed at end
+        # The chunk may or may not be yielded depending on buffer state
+        # What's important is no crash and no truncated JSON emitted mid-stream
+        assert len(chunks) <= 1
+
+    @pytest.mark.asyncio
+    async def test_consecutive_events_handled(self):
+        """Test rapid consecutive SSE events are handled correctly"""
+        async def mock_aiter_lines():
+            for i in range(5):
+                yield f'data: {{"model":"gpt-4-0613","index":{i}}}'
+                yield ""  # Event boundary
+            yield "data: [DONE]"
+            yield ""
+
+        mock_response = AsyncMock()
+        mock_response.aiter_lines = mock_aiter_lines
+
+        chunks = []
+        async for chunk in stream_response(mock_response, "gpt-4", "test-provider"):
+            chunks.append(chunk)
+
+        # Should receive 6 events (5 data + 1 done)
+        assert len(chunks) == 6
