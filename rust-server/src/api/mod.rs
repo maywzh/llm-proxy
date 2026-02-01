@@ -21,7 +21,9 @@ pub use claude_models::{
     ClaudeErrorResponse, ClaudeMessagesRequest, ClaudeResponse, ClaudeTokenCountRequest,
     ClaudeTokenCountResponse, ClaudeUsage,
 };
-pub use handlers::{chat_completions, completions, list_models, metrics_handler, AppState};
+pub use handlers::{
+    chat_completions, completions, list_model_info, list_models, metrics_handler, AppState,
+};
 pub use health::{
     health_router, HealthCheckRequest, HealthCheckResponse, HealthStatus, ModelHealthStatus,
     ProviderHealthStatus,
