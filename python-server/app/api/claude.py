@@ -30,6 +30,7 @@ from app.services.claude_converter import (
     openai_to_claude_response,
     convert_openai_streaming_to_claude,
 )
+from app.utils.gemini3 import normalize_gemini3_request, strip_gemini3_provider_fields
 from app.utils.streaming import calculate_message_tokens
 from app.models.claude import ClaudeMessagesRequest, ClaudeTokenCountRequest
 from app.core.http_client import get_http_client
@@ -266,6 +267,11 @@ async def create_message(
             claude_request,
             model_mapping=provider.model_mapping,
         )
+        provider_model = (
+            openai_request.get("model")
+            if isinstance(openai_request.get("model"), str)
+            else None
+        )
 
         generation_data.mapped_model = openai_request.get("model", claude_request.model)
         generation_data.input_messages = openai_request.get("messages", [])
@@ -297,6 +303,8 @@ async def create_message(
             url = f"{provider.api_base}/v1/messages"
         else:
             url = f"{provider.api_base}/chat/completions"
+            normalize_gemini3_request(openai_request, provider_model)
+            strip_gemini3_provider_fields(openai_request, provider_model)
 
         try:
             set_provider_context(provider.name)
@@ -505,6 +513,7 @@ async def _handle_streaming_request(
                 model=model_name,
                 provider=provider.name,
                 api_key_name=api_key_name,
+                client=client,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 start_time=start_time,

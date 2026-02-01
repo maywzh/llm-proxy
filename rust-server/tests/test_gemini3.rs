@@ -5,7 +5,7 @@ use base64::Engine;
 use llm_proxy_rust::api::gemini3::{
     encode_tool_call_id_with_signature, extract_thought_signature_from_tool_call,
     is_gemini3_model, normalize_request_payload, normalize_response_payload,
-    THOUGHT_SIGNATURE_SEPARATOR,
+    strip_gemini3_provider_fields, THOUGHT_SIGNATURE_SEPARATOR,
 };
 use serde_json::json;
 
@@ -62,6 +62,14 @@ fn test_normalize_request_adds_dummy_signature() {
         .as_str()
         .unwrap();
     assert_eq!(thought_signature, expected_dummy);
+    let fn_signature = payload["messages"][0]["tool_calls"][0]["function"]["provider_specific_fields"]["thought_signature"]
+        .as_str()
+        .unwrap();
+    assert_eq!(fn_signature, expected_dummy);
+    let extra_signature = payload["messages"][0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"]
+        .as_str()
+        .unwrap();
+    assert_eq!(extra_signature, expected_dummy);
 }
 
 #[test]
@@ -129,6 +137,51 @@ fn test_normalize_response_embeds_signature() {
 }
 
 #[test]
+fn test_normalize_response_noop_for_non_gemini() {
+    let mut response = json!({
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "id": "call_1__thought__sig",
+                            "type": "function",
+                            "function": {"name": "do", "arguments": "{}"},
+                            "extra_content": {
+                                "google": {"thought_signature": "sig_resp"}
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    });
+
+    let changed = normalize_response_payload(&mut response, Some("gpt-4"));
+    assert!(!changed);
+
+    let tool_call = &response["choices"][0]["message"]["tool_calls"][0];
+    assert!(tool_call.get("provider_specific_fields").is_none());
+    assert_eq!(tool_call["id"], "call_1__thought__sig");
+}
+
+#[test]
+fn test_strip_gemini3_provider_fields_non_gemini_noop() {
+    let mut payload = json!({
+        "model": "gpt-4",
+        "thinkingConfig": {"thinkingLevel": "low"},
+        "thinking_level": "low",
+        "thinking_config": {"thinkingLevel": "high"}
+    });
+
+    let changed = strip_gemini3_provider_fields(&mut payload, Some("gpt-4"));
+    assert!(!changed);
+    assert!(payload.get("thinkingConfig").is_some());
+    assert!(payload.get("thinking_level").is_some());
+    assert!(payload.get("thinking_config").is_some());
+}
+
+#[test]
 fn test_extra_content_roundtrip_preserved() {
     let original = json!({
         "choices": [{
@@ -192,4 +245,115 @@ fn test_reasoning_effort_maps_flash() {
     assert!(changed);
     assert_eq!(payload["thinking_level"], "medium");
     assert!(payload.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn test_default_thinking_level_sets_config() {
+    let mut payload = json!({
+        "model": "gemini-3-pro",
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    let changed = normalize_request_payload(&mut payload, Some("gemini-3-pro"));
+    assert!(changed);
+    assert_eq!(payload["thinking_level"], "low");
+    assert_eq!(payload["thinkingConfig"]["thinkingLevel"], "low");
+}
+
+#[test]
+fn test_default_thinking_level_flash_sets_config() {
+    let mut payload = json!({
+        "model": "gemini-3-flash-preview",
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    let changed = normalize_request_payload(&mut payload, Some("gemini-3-flash-preview"));
+    assert!(changed);
+    assert_eq!(payload["thinking_level"], "minimal");
+    assert_eq!(payload["thinkingConfig"]["thinkingLevel"], "minimal");
+}
+
+#[test]
+fn test_default_thinking_level_skips_image_models() {
+    let mut payload = json!({
+        "model": "gemini-3-pro-image-preview",
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    let changed = normalize_request_payload(&mut payload, Some("gemini-3-pro-image-preview"));
+    assert!(changed);
+    assert!(payload.get("thinking_level").is_none());
+    assert!(payload.get("thinkingConfig").is_none());
+}
+
+#[test]
+fn test_normalize_request_strips_penalty_params() {
+    let mut payload = json!({
+        "model": "gemini-3-pro",
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.2,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    let changed = normalize_request_payload(&mut payload, Some("gemini-3-pro"));
+    assert!(changed);
+    assert!(payload.get("frequency_penalty").is_none());
+    assert!(payload.get("presence_penalty").is_none());
+}
+
+#[test]
+fn test_reasoning_effort_sets_thinking_config() {
+    let mut payload = json!({
+        "model": "gemini-3-pro",
+        "reasoning_effort": "medium",
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    let changed = normalize_request_payload(&mut payload, Some("gemini-3-pro"));
+    assert!(changed);
+    assert_eq!(payload["thinkingConfig"]["thinkingLevel"], "high");
+    assert_eq!(payload["thinkingConfig"]["includeThoughts"], true);
+}
+
+#[test]
+fn test_strip_gemini3_provider_fields_removes_thinking_config() {
+    let mut payload = json!({
+        "model": "gemini-3-pro",
+        "thinking_level": "low",
+        "thinkingConfig": {"thinkingLevel": "low"},
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    let changed = strip_gemini3_provider_fields(&mut payload, Some("gemini-3-pro"));
+    assert!(changed);
+    assert!(payload.get("thinking_level").is_none());
+    assert!(payload.get("thinkingConfig").is_none());
+}
+
+#[test]
+fn test_normalize_response_parses_parts_thinking_blocks() {
+    let mut response = json!({
+        "choices": [
+            {
+                "message": {
+                    "parts": [
+                        {"text": "hidden", "thought": true, "thoughtSignature": "sig1"},
+                        {"text": "visible"}
+                    ]
+                }
+            }
+        ]
+    });
+
+    let changed = normalize_response_payload(&mut response, Some("gemini-3-pro"));
+    assert!(changed);
+    let message = &response["choices"][0]["message"];
+    assert_eq!(message["content"], "visible");
+    assert_eq!(message["reasoning_content"], "hidden");
+    assert_eq!(message["thinking_blocks"][0]["thinking"], "hidden");
+    assert_eq!(message["thinking_blocks"][0]["signature"], "sig1");
+    assert_eq!(
+        message["provider_specific_fields"]["thought_signatures"],
+        json!(["sig1"])
+    );
 }

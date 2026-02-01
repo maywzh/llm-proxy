@@ -214,6 +214,7 @@ class TestMetricsIntegration:
             provider="provider1",
             status_code="200",
             api_key_name="anonymous",
+            client="testclient",
         )._value.get()
 
         initial_count_p2 = REQUEST_COUNT.labels(
@@ -223,6 +224,7 @@ class TestMetricsIntegration:
             provider="provider2",
             status_code="200",
             api_key_name="anonymous",
+            client="testclient",
         )._value.get()
 
         # TOKEN_USAGE is recorded by handler with api_key_name="test-key"
@@ -231,6 +233,7 @@ class TestMetricsIntegration:
             provider="provider1",
             token_type="total",
             api_key_name="test-key",
+            client="testclient",
         )._value.get()
 
         initial_tokens_p2 = TOKEN_USAGE.labels(
@@ -238,6 +241,7 @@ class TestMetricsIntegration:
             provider="provider2",
             token_type="total",
             api_key_name="test-key",
+            client="testclient",
         )._value.get()
 
         response = app_client.post(
@@ -256,6 +260,7 @@ class TestMetricsIntegration:
             provider="provider1",
             status_code="200",
             api_key_name="anonymous",
+            client="testclient",
         )._value.get()
 
         final_count_p2 = REQUEST_COUNT.labels(
@@ -265,6 +270,7 @@ class TestMetricsIntegration:
             provider="provider2",
             status_code="200",
             api_key_name="anonymous",
+            client="testclient",
         )._value.get()
 
         final_tokens_p1 = TOKEN_USAGE.labels(
@@ -272,6 +278,7 @@ class TestMetricsIntegration:
             provider="provider1",
             token_type="total",
             api_key_name="test-key",
+            client="testclient",
         )._value.get()
 
         final_tokens_p2 = TOKEN_USAGE.labels(
@@ -279,6 +286,7 @@ class TestMetricsIntegration:
             provider="provider2",
             token_type="total",
             api_key_name="test-key",
+            client="testclient",
         )._value.get()
 
         # One of the providers should have received the request

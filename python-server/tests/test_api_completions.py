@@ -163,11 +163,13 @@ class TestChatCompletionsEndpoint:
             mock_response.status_code = 200
             mock_response.headers = {"content-type": "text/event-stream"}
 
-            async def iter_bytes():
-                yield b'data: {"model":"gpt-4-0613","choices":[{"delta":{"content":"Hi"}}]}\n\n'
-                yield b"data: [DONE]\n\n"
+            async def iter_lines():
+                yield 'data: {"model":"gpt-4-0613","choices":[{"delta":{"content":"Hi"}}]}'
+                yield ""
+                yield "data: [DONE]"
+                yield ""
 
-            mock_response.aiter_bytes = iter_bytes
+            mock_response.aiter_lines = iter_lines
 
             mock_stream_ctx = MagicMock()
 
@@ -292,6 +294,7 @@ class TestProxyCompletionRequest:
                 "messages": [{"role": "user", "content": "Hi"}],
             }
         )
+        request.headers = {}
         request.state = Mock()
 
         respx.post("https://api.provider1.com/v1/chat/completions").mock(
@@ -331,6 +334,7 @@ class TestProxyCompletionRequest:
         request.json = AsyncMock(
             return_value={"messages": [{"role": "user", "content": "Hi"}]}
         )
+        request.headers = {}
         request.state = Mock()
 
         respx.post("https://api.provider1.com/v1/chat/completions").mock(
@@ -361,6 +365,7 @@ class TestProxyCompletionRequest:
                 "messages": [{"role": "user", "content": "Hi"}],
             }
         )
+        request.headers = {}
         request.state = Mock()
 
         respx.post("https://api.provider1.com/v1/chat/completions").mock(
@@ -404,12 +409,14 @@ class TestProxyCompletionRequest:
             provider="provider1",
             token_type="total",
             api_key_name="anonymous",
+            client="unknown",
         )
         provider2_metric = TOKEN_USAGE.labels(
             model="gpt-4",
             provider="provider2",
             token_type="total",
             api_key_name="anonymous",
+            client="unknown",
         )
         assert (
             provider1_metric._value.get() >= 30 or provider2_metric._value.get() >= 30

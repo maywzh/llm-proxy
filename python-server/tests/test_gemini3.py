@@ -12,6 +12,7 @@ from app.utils.gemini3 import (
     log_gemini_request_signatures,
     normalize_gemini3_request,
     normalize_gemini3_response,
+    strip_gemini3_provider_fields,
 )
 
 
@@ -400,6 +401,14 @@ class TestGemini3Normalization:
         assert changed is True
         tool_call = request["messages"][0]["tool_calls"][0]
         assert tool_call["provider_specific_fields"]["thought_signature"] == _get_dummy_thought_signature()
+        assert (
+            tool_call["function"]["provider_specific_fields"]["thought_signature"]
+            == _get_dummy_thought_signature()
+        )
+        assert (
+            tool_call["extra_content"]["google"]["thought_signature"]
+            == _get_dummy_thought_signature()
+        )
 
     def test_normalize_request_extracts_signature_from_id(self):
         signature = "sig_from_id"
@@ -419,6 +428,8 @@ class TestGemini3Normalization:
         assert changed is True
         tool_call = request["messages"][0]["tool_calls"][0]
         assert tool_call["provider_specific_fields"]["thought_signature"] == signature
+        assert tool_call["function"]["provider_specific_fields"]["thought_signature"] == signature
+        assert tool_call["extra_content"]["google"]["thought_signature"] == signature
 
     def test_normalize_request_strips_signature_for_non_gemini(self):
         signature = "sig"
@@ -499,8 +510,10 @@ class TestGemini3Normalization:
             "messages": [{"role": "user", "content": "hi"}],
         }
         changed = normalize_gemini3_request(request, request["model"])
-        assert changed is False
+        assert changed is True
         assert request["temperature"] == 0.2
+        assert request["thinking_level"] == "low"
+        assert request["thinkingConfig"]["thinkingLevel"] == "low"
 
     def test_normalize_reasoning_effort_maps_thinking_level(self):
         request = {
@@ -523,3 +536,89 @@ class TestGemini3Normalization:
         assert changed is True
         assert request["thinking_level"] == "medium"
         assert "reasoning_effort" not in request
+
+    def test_normalize_request_sets_default_thinking_level(self):
+        request = {
+            "model": "gemini-3-pro",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        assert request["thinking_level"] == "low"
+        assert request["thinkingConfig"]["thinkingLevel"] == "low"
+
+    def test_normalize_request_sets_default_thinking_level_flash(self):
+        request = {
+            "model": "gemini-3-flash-preview",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        assert request["thinking_level"] == "minimal"
+        assert request["thinkingConfig"]["thinkingLevel"] == "minimal"
+
+    def test_normalize_request_skips_thinking_defaults_for_image(self):
+        request = {
+            "model": "gemini-3-pro-image-preview",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        assert "thinking_level" not in request
+        assert "thinkingConfig" not in request
+
+    def test_normalize_request_strips_penalty_params(self):
+        request = {
+            "model": "gemini-3-pro",
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.2,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        assert "frequency_penalty" not in request
+        assert "presence_penalty" not in request
+
+    def test_reasoning_effort_sets_thinking_config(self):
+        request = {
+            "model": "gemini-3-pro",
+            "reasoning_effort": "medium",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = normalize_gemini3_request(request, request["model"])
+        assert changed is True
+        thinking_config = request["thinkingConfig"]
+        assert thinking_config["thinkingLevel"] == "high"
+        assert thinking_config["includeThoughts"] is True
+
+    def test_strip_gemini3_provider_fields_removes_thinking_config(self):
+        request = {
+            "model": "gemini-3-pro",
+            "thinking_level": "low",
+            "thinkingConfig": {"thinkingLevel": "low"},
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        changed = strip_gemini3_provider_fields(request, request["model"])
+        assert changed is True
+        assert "thinking_level" not in request
+        assert "thinkingConfig" not in request
+
+    def test_normalize_response_parses_parts_thinking_blocks(self):
+        response = {
+            "choices": [{
+                "message": {
+                    "parts": [
+                        {"text": "hidden", "thought": True, "thoughtSignature": "sig1"},
+                        {"text": "visible"}
+                    ]
+                }
+            }]
+        }
+        changed = normalize_gemini3_response(response, "gemini-3-pro")
+        assert changed is True
+        message = response["choices"][0]["message"]
+        assert message["content"] == "visible"
+        assert message["reasoning_content"] == "hidden"
+        assert message["thinking_blocks"][0]["thinking"] == "hidden"
+        assert message["thinking_blocks"][0]["signature"] == "sig1"
+        assert message["provider_specific_fields"]["thought_signatures"] == ["sig1"]

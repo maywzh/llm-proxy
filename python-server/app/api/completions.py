@@ -33,6 +33,7 @@ from app.utils.gemini3 import (
     log_gemini_response_signatures,
     normalize_gemini3_request,
     normalize_gemini3_response,
+    strip_gemini3_provider_fields,
 )
 from app.core.config import get_config, get_env_config
 from app.core.exceptions import TTFTTimeoutError
@@ -339,6 +340,8 @@ async def _handle_streaming_request(
     }
     url = f"{provider.api_base}/{endpoint}"
 
+    strip_gemini3_provider_fields(data, provider_model)
+
     # Log provider request to JSONL (consistent with Rust V1)
     log_provider_request(
         request_id=request_id,
@@ -349,8 +352,8 @@ async def _handle_streaming_request(
     )
 
     # Use shared HTTP client for streaming
-    client = get_http_client()
-    stream_ctx = client.stream("POST", url, json=data, headers=headers)
+    http_client = get_http_client()
+    stream_ctx = http_client.stream("POST", url, json=data, headers=headers)
     try:
         response = await stream_ctx.__aenter__()
     except Exception:
@@ -528,6 +531,8 @@ async def _handle_non_streaming_request(
     }
     url = f"{provider.api_base}/{endpoint}"
 
+    strip_gemini3_provider_fields(data, provider_model)
+
     # Log provider request to JSONL (consistent with Rust V1)
     log_provider_request(
         request_id=request_id,
@@ -538,8 +543,8 @@ async def _handle_non_streaming_request(
     )
 
     # Use shared HTTP client for non-streaming requests
-    client = get_http_client()
-    response = await client.post(url, json=data, headers=headers)
+    http_client = get_http_client()
+    response = await http_client.post(url, json=data, headers=headers)
 
     # Check if backend API returned an error status code
     # Faithfully pass through the backend error

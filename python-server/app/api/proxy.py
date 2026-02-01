@@ -31,6 +31,8 @@ from app.core.config import get_config
 from app.core.exceptions import TTFTTimeoutError
 from app.core.http_client import get_http_client
 from app.core.utils import strip_provider_suffix
+from app.utils.client import extract_client
+from app.utils.gemini3 import normalize_gemini3_request, strip_gemini3_provider_fields
 from app.core.jsonl_logger import (
     get_jsonl_logger,
     log_request,
@@ -137,6 +139,16 @@ def _extract_stream_flag(payload: dict[str, Any], protocol: Protocol) -> bool:
 def _provider_type_to_protocol(provider_type: str) -> Protocol:
     """Convert provider_type string to Protocol enum."""
     return Protocol.from_provider_type(provider_type)
+
+
+def _normalize_gemini3_provider_payload(
+    provider_payload: dict[str, Any], ctx: TransformContext
+) -> None:
+    if ctx.provider_protocol != Protocol.OPENAI:
+        return
+    model = provider_payload.get("model") if isinstance(provider_payload.get("model"), str) else None
+    normalize_gemini3_request(provider_payload, model)
+    strip_gemini3_provider_fields(provider_payload, model)
 
 
 def _attach_response_metadata(
@@ -279,10 +291,12 @@ async def _cleanup_stream_context(
 
     # Record token usage metrics at exit point
     if usage_tracker is not None:
+        client = ctx.metadata.get("client", "unknown")
         stats = StreamStats(
             model=ctx.original_model or "unknown",
             provider=ctx.provider_name,
             api_key_name=get_api_key_name(),
+            client=client,
             input_tokens=usage_tracker.input_tokens,
             output_tokens=usage_tracker.output_tokens,
             start_time=usage_tracker.start_time,
@@ -610,6 +624,7 @@ async def _handle_streaming_request(
 
     # Transform request
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)
+    _normalize_gemini3_provider_payload(provider_payload, ctx)
 
     # Record bypass/cross-protocol metrics
     _record_protocol_metrics(ctx, bypassed)
@@ -777,6 +792,7 @@ async def _handle_non_streaming_request(
 
     # Transform request
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)
+    _normalize_gemini3_provider_payload(provider_payload, ctx)
 
     # Record bypass/cross-protocol metrics
     _record_protocol_metrics(ctx, bypassed)
@@ -900,6 +916,7 @@ async def handle_proxy_request(
     request_id, credential_name, trace_id, generation_data = _init_langfuse_trace(
         request, path, langfuse_service
     )
+    client = extract_client(request)
 
     # Detect client protocol from path (before parsing body)
     client_protocol = ProtocolDetector.detect_with_path_hint({}, path)
@@ -965,6 +982,7 @@ async def handle_proxy_request(
         mapped_model=provider.get_mapped_model(effective_model),
         provider_name=provider.name,
         stream=is_streaming,
+        metadata={"client": client},
     )
 
     # Log client request to JSONL

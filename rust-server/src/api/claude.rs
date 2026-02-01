@@ -9,6 +9,7 @@ use crate::api::claude_models::{
     ClaudeMessagesRequest, ClaudeSystemPrompt, ClaudeTokenCountRequest, ClaudeTokenCountResponse,
     ClaudeTool,
 };
+use crate::api::gemini3::{normalize_request_payload, strip_gemini3_provider_fields};
 use crate::api::handlers::AppState;
 use crate::api::streaming::calculate_message_tokens_with_tools;
 use crate::core::config::CredentialConfig;
@@ -294,12 +295,16 @@ pub async fn create_message(
         }
 
         // Convert Claude request to OpenAI format
-        let openai_request = claude_to_openai_request(
+        let mut openai_request = claude_to_openai_request(
             &claude_request,
             Some(&provider.model_mapping),
             state.config.min_tokens_limit,
             state.config.max_tokens_limit,
         );
+        let gemini_model = openai_request
+            .get("model")
+            .and_then(|model| model.as_str())
+            .map(|model| model.to_string());
 
         // Capture input messages for Langfuse tracing
         generation_data.input_messages = openai_request
@@ -320,6 +325,10 @@ pub async fn create_message(
 
         // Determine URL based on provider_type
         let is_anthropic = provider.provider_type == "anthropic";
+        if !is_anthropic {
+            normalize_request_payload(&mut openai_request, gemini_model.as_deref());
+            strip_gemini3_provider_fields(&mut openai_request, gemini_model.as_deref());
+        }
         let url = if is_anthropic {
             format!("{}/v1/messages", provider.api_base)
         } else {
