@@ -125,12 +125,13 @@ class TestStreamingTransformationError:
             stream=True,
         )
 
-        # Mock httpx response
+        # Mock httpx response - use aiter_lines (returns strings, one line at a time)
         async def mock_stream():
-            yield b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}\n\n'
+            yield 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}'
+            yield ""  # SSE event boundary
 
         mock_response = Mock()
-        mock_response.aiter_bytes = mock_stream
+        mock_response.aiter_lines = mock_stream
 
         # Mock generation data
         generation_data = GenerationData(
@@ -190,13 +191,15 @@ class TestStreamingTransformationError:
             stream=True,
         )
 
-        # Mock httpx response with multiple chunks
+        # Mock httpx response with multiple chunks - use aiter_lines (returns strings)
         async def mock_stream():
-            yield b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"First"}}\n\n'
-            yield b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Second"}}\n\n'
+            yield 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"First"}}'
+            yield ""  # SSE event boundary
+            yield 'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Second"}}'
+            yield ""  # SSE event boundary
 
         mock_response = Mock()
-        mock_response.aiter_bytes = mock_stream
+        mock_response.aiter_lines = mock_stream
 
         # Mock generation data
         generation_data = GenerationData(

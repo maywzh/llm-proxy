@@ -773,6 +773,8 @@ async fn handle_streaming_proxy_response(
             first_token_time: Option<Instant>,
             // Flag to track if we've sent the final output
             finalized: bool,
+            // SSE line buffer for handling TCP fragmentation
+            sse_line_buffer: String,
         }
 
         let streaming_state = CrossProtocolStreamingState {
@@ -788,6 +790,7 @@ async fn handle_streaming_proxy_response(
             start_time: request_start,
             first_token_time: None,
             finalized: false,
+            sse_line_buffer: String::new(),
         };
 
         let transform_stream = futures::stream::unfold(streaming_state, |mut state| async move {
@@ -803,6 +806,25 @@ async fn handle_streaming_proxy_response(
                         state.first_token_time = Some(Instant::now());
                     }
 
+                    // Append incoming bytes to SSE line buffer
+                    let chunk_str = String::from_utf8_lossy(&bytes);
+                    state.sse_line_buffer.push_str(&chunk_str);
+
+                    // Extract complete SSE events from buffer (events end with \n\n)
+                    let mut complete_events = Vec::new();
+                    while let Some(pos) = state.sse_line_buffer.find("\n\n") {
+                        let event = state.sse_line_buffer[..pos].to_string();
+                        state.sse_line_buffer = state.sse_line_buffer[pos + 2..].to_string();
+                        if !event.trim().is_empty() {
+                            complete_events.push(event);
+                        }
+                    }
+
+                    // If no complete events yet, return empty and wait for more data
+                    if complete_events.is_empty() {
+                        return Some((Ok::<_, std::io::Error>(axum::body::Bytes::new()), state));
+                    }
+
                     // Get transformers
                     let provider_transformer = state.registry.get(state.provider_protocol);
                     let client_transformer = state.registry.get(state.client_protocol);
@@ -810,15 +832,68 @@ async fn handle_streaming_proxy_response(
                     let output = if let (Some(provider_t), Some(client_t)) =
                         (provider_transformer, client_transformer)
                     {
-                        // Transform chunks from provider format to unified format
-                        match provider_t.transform_stream_chunk_in(&bytes) {
-                            Ok(unified_chunks) => {
-                                // Process chunks through state tracker
+                        let mut output = String::new();
+
+                        // Process each complete SSE event
+                        for event in complete_events {
+                            // Reconstruct bytes with \n\n for the transformer
+                            let event_bytes = bytes::Bytes::from(format!("{}\n\n", event));
+
+                            // Transform chunks from provider format to unified format
+                            match provider_t.transform_stream_chunk_in(&event_bytes) {
+                                Ok(unified_chunks) => {
+                                    // Process chunks through state tracker
+                                    let processed_chunks =
+                                        state.stream_state.process_chunks(unified_chunks);
+
+                                    // Transform unified chunks to client format
+                                    for chunk in processed_chunks {
+                                        if let Ok(formatted) = client_t
+                                            .transform_stream_chunk_out(&chunk, state.client_protocol)
+                                        {
+                                            output.push_str(&formatted);
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    // Passthrough on error
+                                    output.push_str(&event);
+                                    output.push_str("\n\n");
+                                }
+                            }
+                        }
+                        axum::body::Bytes::from(output)
+                    } else {
+                        // No transformers, reconstruct the events
+                        let output: String = complete_events
+                            .into_iter()
+                            .map(|e| format!("{}\n\n", e))
+                            .collect();
+                        axum::body::Bytes::from(output)
+                    };
+
+                    Some((Ok::<_, std::io::Error>(output), state))
+                }
+                Some(Err(e)) => Some((Err(std::io::Error::other(e.to_string())), state)),
+                None => {
+                    // Process any remaining data in the SSE line buffer
+                    let provider_transformer = state.registry.get(state.provider_protocol);
+                    let client_transformer = state.registry.get(state.client_protocol);
+
+                    let mut output = String::new();
+
+                    if !state.sse_line_buffer.trim().is_empty() {
+                        let remaining = std::mem::take(&mut state.sse_line_buffer);
+                        if let (Some(provider_t), Some(client_t)) =
+                            (provider_transformer.as_ref(), client_transformer.as_ref())
+                        {
+                            // Process remaining buffer as an event
+                            let event_bytes = bytes::Bytes::from(format!("{}\n\n", remaining));
+                            if let Ok(unified_chunks) =
+                                provider_t.transform_stream_chunk_in(&event_bytes)
+                            {
                                 let processed_chunks =
                                     state.stream_state.process_chunks(unified_chunks);
-
-                                // Transform unified chunks to client format
-                                let mut output = String::new();
                                 for chunk in processed_chunks {
                                     if let Ok(formatted) = client_t
                                         .transform_stream_chunk_out(&chunk, state.client_protocol)
@@ -826,20 +901,11 @@ async fn handle_streaming_proxy_response(
                                         output.push_str(&formatted);
                                     }
                                 }
-                                axum::body::Bytes::from(output)
                             }
-                            Err(_) => bytes,
                         }
-                    } else {
-                        bytes
-                    };
+                    }
 
-                    Some((Ok::<_, std::io::Error>(output), state))
-                }
-                Some(Err(e)) => Some((Err(std::io::Error::other(e.to_string())), state)),
-                None => {
                     // Stream ended - finalize and emit closing events
-                    let client_transformer = state.registry.get(state.client_protocol);
 
                     // DEBUG: Log state before finalize
                     tracing::debug!(
@@ -860,7 +926,6 @@ async fn handle_streaming_proxy_response(
                         "finalize() returned chunks"
                     );
 
-                    let mut output = String::new();
                     if let Some(client_t) = client_transformer {
                         for chunk in &final_chunks {
                             if let Ok(formatted) =
