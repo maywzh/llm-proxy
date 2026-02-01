@@ -22,6 +22,7 @@ THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
 _DUMMY_THOUGHT_SIGNATURE = base64.b64encode(
     b"skip_thought_signature_validator"
 ).decode("utf-8")
+_GEMINI3_UNSUPPORTED_PENALTY_PARAMS = ("frequency_penalty", "presence_penalty")
 
 
 def is_gemini3_model(model: Optional[str]) -> bool:
@@ -42,6 +43,10 @@ def is_gemini3_model(model: Optional[str]) -> bool:
 def _is_gemini3_flash(model: str) -> bool:
     model_lower = model.lower()
     return "gemini-3-flash" in model_lower
+
+
+def _is_gemini3_image(model: str) -> bool:
+    return "image" in model.lower()
 
 
 def _get_dummy_thought_signature() -> str:
@@ -66,6 +71,22 @@ def _map_reasoning_effort_to_thinking_level(
     if effort in ("disable", "none"):
         return "minimal" if is_flash else "low"
     return None
+
+
+def _map_reasoning_effort_to_thinking_config(
+    reasoning_effort: str, model: str
+) -> Optional[dict[str, Any]]:
+    thinking_level = _map_reasoning_effort_to_thinking_level(reasoning_effort, model)
+    if not thinking_level:
+        return None
+    include_thoughts = reasoning_effort.lower() not in ("disable", "none")
+    return {"thinkingLevel": thinking_level, "includeThoughts": include_thoughts}
+
+
+def _default_thinking_level(model: str) -> Optional[str]:
+    if _is_gemini3_image(model):
+        return None
+    return "minimal" if _is_gemini3_flash(model) else "low"
 
 
 def _encode_tool_call_id_with_signature(
@@ -112,6 +133,91 @@ def _signature_from_provider_fields(fields: Any) -> Optional[str]:
     return None
 
 
+def _merge_thought_signatures(
+    provider_fields: dict[str, Any], signatures: list[str]
+) -> bool:
+    if not signatures:
+        return False
+    existing = provider_fields.get("thought_signatures")
+    if isinstance(existing, list):
+        merged = list(existing)
+        changed = False
+        for sig in signatures:
+            if sig not in merged:
+                merged.append(sig)
+                changed = True
+        if changed:
+            provider_fields["thought_signatures"] = merged
+        return changed
+    provider_fields["thought_signatures"] = signatures
+    return True
+
+
+def _extract_parts_from_message(content: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
+    parts = content.get("parts")
+    if isinstance(parts, list):
+        return parts
+    inner_content = content.get("content")
+    if isinstance(inner_content, dict):
+        inner_parts = inner_content.get("parts")
+        if isinstance(inner_parts, list):
+            return inner_parts
+    return None
+
+
+def _apply_parts_thought_signatures(message: dict[str, Any]) -> bool:
+    parts = _extract_parts_from_message(message)
+    if not parts:
+        return False
+
+    thought_signatures: list[str] = []
+    thinking_blocks: list[dict[str, Any]] = []
+    thinking_texts: list[str] = []
+    content_texts: list[str] = []
+    changed = False
+
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        signature = part.get("thoughtSignature")
+        if isinstance(signature, str) and signature:
+            thought_signatures.append(signature)
+
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            if part.get("thought") is True:
+                block: dict[str, Any] = {"type": "thinking", "thinking": text}
+                if isinstance(signature, str) and signature:
+                    block["signature"] = signature
+                thinking_blocks.append(block)
+                thinking_texts.append(text)
+            else:
+                content_texts.append(text)
+
+    if content_texts and not isinstance(message.get("content"), str):
+        message["content"] = "".join(content_texts)
+        changed = True
+
+    if thinking_blocks:
+        existing_blocks = message.get("thinking_blocks")
+        if isinstance(existing_blocks, list):
+            existing_blocks.extend(thinking_blocks)
+        else:
+            message["thinking_blocks"] = thinking_blocks
+        changed = True
+
+        if "reasoning_content" not in message and thinking_texts:
+            message["reasoning_content"] = "\n".join(thinking_texts)
+            changed = True
+
+    if thought_signatures:
+        provider_fields = _ensure_provider_specific_fields(message)
+        if _merge_thought_signatures(provider_fields, thought_signatures):
+            changed = True
+
+    return changed
+
+
 def _extract_thought_signature_from_tool_call(
     tool_call: dict[str, Any],
     model: Optional[str],
@@ -149,6 +255,18 @@ def _ensure_provider_specific_fields(target: dict[str, Any]) -> dict[str, Any]:
         provider_fields = {}
         target["provider_specific_fields"] = provider_fields
     return provider_fields
+
+
+def _ensure_extra_content_google(target: dict[str, Any]) -> dict[str, Any]:
+    extra_content = target.get("extra_content")
+    if not isinstance(extra_content, dict):
+        extra_content = {}
+        target["extra_content"] = extra_content
+    google_content = extra_content.get("google")
+    if not isinstance(google_content, dict):
+        google_content = {}
+        extra_content["google"] = google_content
+    return google_content
 
 
 def _check_and_log_signatures(content: dict[str, Any], location: str) -> int:
@@ -313,17 +431,76 @@ def normalize_gemini3_request(data: dict[str, Any], model: Optional[str]) -> boo
         data["temperature"] = 1.0
         changed = True
 
-    if "reasoning_effort" in data:
-        reasoning_effort = data.get("reasoning_effort")
-        if "thinking_level" not in data and isinstance(reasoning_effort, str):
+    for penalty_param in _GEMINI3_UNSUPPORTED_PENALTY_PARAMS:
+        if penalty_param in data:
+            data.pop(penalty_param, None)
+            changed = True
+
+    mapped_thinking_config = None
+    reasoning_effort = data.get("reasoning_effort")
+    if isinstance(reasoning_effort, str):
+        mapped_thinking_config = _map_reasoning_effort_to_thinking_config(
+            reasoning_effort, model
+        )
+        if "thinking_level" not in data:
             thinking_level = _map_reasoning_effort_to_thinking_level(
                 reasoning_effort, model
             )
             if thinking_level:
                 data["thinking_level"] = thinking_level
                 changed = True
-        if "reasoning_effort" in data:
-            data.pop("reasoning_effort", None)
+        data.pop("reasoning_effort", None)
+        changed = True
+    elif "reasoning_effort" in data:
+        data.pop("reasoning_effort", None)
+        changed = True
+
+    thinking_config: dict[str, Any] = {}
+    raw_thinking_config = data.get("thinkingConfig")
+    if isinstance(raw_thinking_config, dict):
+        thinking_config.update(raw_thinking_config)
+
+    raw_thinking_config_snake = data.pop("thinking_config", None)
+    if isinstance(raw_thinking_config_snake, dict):
+        for key, value in raw_thinking_config_snake.items():
+            if key == "thinking_level" and "thinkingLevel" not in thinking_config:
+                thinking_config["thinkingLevel"] = value
+            elif key == "include_thoughts" and "includeThoughts" not in thinking_config:
+                thinking_config["includeThoughts"] = value
+            elif key not in thinking_config:
+                thinking_config[key] = value
+        changed = True
+
+    thinking_level = None
+    if isinstance(thinking_config.get("thinkingLevel"), str):
+        thinking_level = thinking_config.get("thinkingLevel")
+    elif isinstance(data.get("thinking_level"), str):
+        thinking_level = data.get("thinking_level")
+    elif isinstance(mapped_thinking_config, dict):
+        thinking_level = mapped_thinking_config.get("thinkingLevel")
+    else:
+        default_level = _default_thinking_level(model)
+        if default_level:
+            thinking_level = default_level
+            data["thinking_level"] = default_level
+            changed = True
+
+    if thinking_level and "thinkingLevel" not in thinking_config:
+        thinking_config["thinkingLevel"] = thinking_level
+        changed = True
+
+    if (
+        isinstance(mapped_thinking_config, dict)
+        and "includeThoughts" not in thinking_config
+    ):
+        include_thoughts = mapped_thinking_config.get("includeThoughts")
+        if include_thoughts is not None:
+            thinking_config["includeThoughts"] = include_thoughts
+            changed = True
+
+    if thinking_config:
+        if data.get("thinkingConfig") != thinking_config:
+            data["thinkingConfig"] = thinking_config
             changed = True
 
     for message in messages:
@@ -343,6 +520,16 @@ def normalize_gemini3_request(data: dict[str, Any], model: Optional[str]) -> boo
                     if provider_fields.get("thought_signature") != signature:
                         provider_fields["thought_signature"] = signature
                         changed = True
+                    google_content = _ensure_extra_content_google(tc)
+                    if google_content.get("thought_signature") != signature:
+                        google_content["thought_signature"] = signature
+                        changed = True
+                    function = tc.get("function")
+                    if isinstance(function, dict):
+                        fn_provider_fields = _ensure_provider_specific_fields(function)
+                        if fn_provider_fields.get("thought_signature") != signature:
+                            fn_provider_fields["thought_signature"] = signature
+                            changed = True
 
         function_call = message.get("function_call")
         if isinstance(function_call, dict):
@@ -359,6 +546,21 @@ def normalize_gemini3_request(data: dict[str, Any], model: Optional[str]) -> boo
                     provider_fields["thought_signature"] = signature
                     changed = True
 
+    return changed
+
+
+def strip_gemini3_provider_fields(data: dict[str, Any], model: Optional[str]) -> bool:
+    """Strip Gemini 3 fields not supported by OpenAI-compatible providers."""
+    if not isinstance(data, dict):
+        return False
+    if not is_gemini3_model(model):
+        return False
+
+    changed = False
+    for key in ("thinkingConfig", "thinking_level", "thinking_config"):
+        if key in data:
+            data.pop(key, None)
+            changed = True
     return changed
 
 
@@ -382,12 +584,15 @@ def normalize_gemini3_response(response_data: dict[str, Any], model: Optional[st
             if not isinstance(message, dict):
                 continue
 
+            # Map parts thoughtSignature and thinking blocks (Gemini native responses)
+            if _apply_parts_thought_signatures(message):
+                changed = True
+
             # Map message-level extra_content to provider_specific_fields.thought_signatures
             extra_sig = _signature_from_extra_content(message)
             if extra_sig:
                 provider_fields = _ensure_provider_specific_fields(message)
-                if "thought_signatures" not in provider_fields:
-                    provider_fields["thought_signatures"] = [extra_sig]
+                if _merge_thought_signatures(provider_fields, [extra_sig]):
                     changed = True
 
             tool_calls = message.get("tool_calls")

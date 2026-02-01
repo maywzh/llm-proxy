@@ -5,6 +5,7 @@ use base64::Engine;
 use serde_json::{Map, Value};
 
 pub const THOUGHT_SIGNATURE_SEPARATOR: &str = "__thought__";
+const GEMINI3_UNSUPPORTED_PENALTY_PARAMS: [&str; 2] = ["frequency_penalty", "presence_penalty"];
 
 pub fn is_gemini3_model(model: &str) -> bool {
     model.to_lowercase().contains("gemini-3")
@@ -12,6 +13,10 @@ pub fn is_gemini3_model(model: &str) -> bool {
 
 fn is_gemini3_flash(model: &str) -> bool {
     model.to_lowercase().contains("gemini-3-flash")
+}
+
+fn is_gemini3_image(model: &str) -> bool {
+    model.to_lowercase().contains("image")
 }
 
 fn dummy_thought_signature() -> String {
@@ -33,6 +38,22 @@ fn map_reasoning_effort_to_thinking_level(
         "disable" | "none" => Some(if is_flash { "minimal" } else { "low" }),
         _ => None,
     }
+}
+
+fn map_reasoning_effort_to_thinking_config(
+    reasoning_effort: &str,
+    model: &str,
+) -> Option<(String, bool)> {
+    let thinking_level = map_reasoning_effort_to_thinking_level(reasoning_effort, model)?;
+    let include_thoughts = !matches!(reasoning_effort.to_lowercase().as_str(), "disable" | "none");
+    Some((thinking_level.to_string(), include_thoughts))
+}
+
+fn default_thinking_level(model: &str) -> Option<&'static str> {
+    if is_gemini3_image(model) {
+        return None;
+    }
+    Some(if is_gemini3_flash(model) { "minimal" } else { "low" })
 }
 
 fn signature_from_provider_fields(value: &Value) -> Option<String> {
@@ -128,6 +149,130 @@ fn ensure_provider_specific_fields(obj: &mut Map<String, Value>) -> &mut Map<Str
     entry.as_object_mut().expect("provider_specific_fields must be object")
 }
 
+fn ensure_extra_content_google(obj: &mut Map<String, Value>) -> &mut Map<String, Value> {
+    let entry = obj
+        .entry("extra_content".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !entry.is_object() {
+        *entry = Value::Object(Map::new());
+    }
+    let extra = entry.as_object_mut().expect("extra_content must be object");
+    let google = extra
+        .entry("google".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !google.is_object() {
+        *google = Value::Object(Map::new());
+    }
+    google.as_object_mut().expect("extra_content.google must be object")
+}
+
+fn merge_thought_signatures(
+    provider_fields: &mut Map<String, Value>,
+    signatures: Vec<String>,
+) -> bool {
+    if signatures.is_empty() {
+        return false;
+    }
+    if let Some(Value::Array(existing)) = provider_fields.get_mut("thought_signatures") {
+        let mut changed = false;
+        for sig in signatures {
+            if !existing.iter().any(|v| v.as_str() == Some(sig.as_str())) {
+                existing.push(Value::String(sig));
+                changed = true;
+            }
+        }
+        return changed;
+    }
+    provider_fields.insert(
+        "thought_signatures".to_string(),
+        Value::Array(signatures.into_iter().map(Value::String).collect()),
+    );
+    true
+}
+
+fn apply_parts_thought_signatures(message: &mut Map<String, Value>) -> bool {
+    let parts = message
+        .get("parts")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .or_else(|| {
+            message
+                .get("content")
+                .and_then(|v| v.as_object())
+                .and_then(|obj| obj.get("parts"))
+                .and_then(|v| v.as_array())
+                .cloned()
+        });
+
+    let Some(parts) = parts else {
+        return false;
+    };
+
+    let mut thought_signatures = Vec::new();
+    let mut thinking_blocks: Vec<Value> = Vec::new();
+    let mut thinking_texts: Vec<String> = Vec::new();
+    let mut content_texts: Vec<String> = Vec::new();
+    let mut changed = false;
+
+    for part in parts {
+        let Some(part_obj) = part.as_object() else {
+            continue;
+        };
+        let signature = part_obj.get("thoughtSignature").and_then(|v| v.as_str());
+        if let Some(sig) = signature {
+            thought_signatures.push(sig.to_string());
+        }
+        if let Some(text) = part_obj.get("text").and_then(|v| v.as_str()) {
+            if part_obj.get("thought").and_then(|v| v.as_bool()) == Some(true) {
+                let mut block = Map::new();
+                block.insert("type".to_string(), Value::String("thinking".to_string()));
+                block.insert("thinking".to_string(), Value::String(text.to_string()));
+                if let Some(sig) = signature {
+                    block.insert("signature".to_string(), Value::String(sig.to_string()));
+                }
+                thinking_blocks.push(Value::Object(block));
+                thinking_texts.push(text.to_string());
+            } else {
+                content_texts.push(text.to_string());
+            }
+        }
+    }
+
+    if !content_texts.is_empty()
+        && !message.get("content").and_then(|v| v.as_str()).is_some()
+    {
+        message.insert("content".to_string(), Value::String(content_texts.join("")));
+        changed = true;
+    }
+
+    if !thinking_blocks.is_empty() {
+        match message.get_mut("thinking_blocks") {
+            Some(Value::Array(existing)) => existing.extend(thinking_blocks),
+            _ => {
+                message.insert("thinking_blocks".to_string(), Value::Array(thinking_blocks));
+            }
+        }
+        changed = true;
+
+        if !message.contains_key("reasoning_content") && !thinking_texts.is_empty() {
+            message.insert(
+                "reasoning_content".to_string(),
+                Value::String(thinking_texts.join("\n")),
+            );
+            changed = true;
+        }
+    }
+
+    if !thought_signatures.is_empty() {
+        let provider_fields = ensure_provider_specific_fields(message);
+        if merge_thought_signatures(provider_fields, thought_signatures) {
+            changed = true;
+        }
+    }
+
+    changed
+}
+
 pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bool {
     let model_name = match model {
         Some(name) => name,
@@ -194,7 +339,19 @@ pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bo
             changed = true;
         }
 
-        if let Some(reasoning_effort) = obj.get("reasoning_effort").and_then(|v| v.as_str()) {
+        for penalty_param in GEMINI3_UNSUPPORTED_PENALTY_PARAMS {
+            if obj.remove(penalty_param).is_some() {
+                changed = true;
+            }
+        }
+
+        let mut mapped_thinking_level: Option<String> = None;
+        let mut mapped_include_thoughts: Option<bool> = None;
+        let reasoning_effort = obj
+            .get("reasoning_effort")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string());
+        if let Some(reasoning_effort) = reasoning_effort.as_deref() {
             if obj.get("thinking_level").is_none() {
                 if let Some(thinking_level) =
                     map_reasoning_effort_to_thinking_level(reasoning_effort, model_name)
@@ -203,14 +360,93 @@ pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bo
                         "thinking_level".to_string(),
                         Value::String(thinking_level.to_string()),
                     );
+                    mapped_thinking_level = Some(thinking_level.to_string());
                     changed = true;
                 }
+            }
+            if let Some((level, include_thoughts)) =
+                map_reasoning_effort_to_thinking_config(reasoning_effort, model_name)
+            {
+                if mapped_thinking_level.is_none() {
+                    mapped_thinking_level = Some(level);
+                }
+                mapped_include_thoughts = Some(include_thoughts);
             }
         }
 
         if obj.contains_key("reasoning_effort") {
             obj.remove("reasoning_effort");
             changed = true;
+        }
+
+        let mut thinking_config = obj
+            .get("thinkingConfig")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+
+        if let Some(Value::Object(thinking_config_snake)) = obj.remove("thinking_config") {
+            for (key, value) in thinking_config_snake {
+                if key == "thinking_level" && !thinking_config.contains_key("thinkingLevel") {
+                    thinking_config.insert("thinkingLevel".to_string(), value);
+                } else if key == "include_thoughts"
+                    && !thinking_config.contains_key("includeThoughts")
+                {
+                    thinking_config.insert("includeThoughts".to_string(), value);
+                } else if !thinking_config.contains_key(&key) {
+                    thinking_config.insert(key, value);
+                }
+            }
+            changed = true;
+        }
+
+        let mut thinking_level = thinking_config
+            .get("thinkingLevel")
+            .and_then(|v| v.as_str())
+            .map(|v| v.to_string());
+        if thinking_level.is_none() {
+            thinking_level = obj
+                .get("thinking_level")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+        }
+        if thinking_level.is_none() {
+            thinking_level = mapped_thinking_level;
+        }
+        if thinking_level.is_none() {
+            if let Some(default_level) = default_thinking_level(model_name) {
+                obj.insert(
+                    "thinking_level".to_string(),
+                    Value::String(default_level.to_string()),
+                );
+                thinking_level = Some(default_level.to_string());
+                changed = true;
+            }
+        }
+
+        if let Some(level) = thinking_level {
+            if !thinking_config.contains_key("thinkingLevel") {
+                thinking_config.insert("thinkingLevel".to_string(), Value::String(level));
+                changed = true;
+            }
+        }
+
+        if let Some(include_thoughts) = mapped_include_thoughts {
+            if !thinking_config.contains_key("includeThoughts") {
+                thinking_config.insert(
+                    "includeThoughts".to_string(),
+                    Value::Bool(include_thoughts),
+                );
+                changed = true;
+            }
+        }
+
+        if !thinking_config.is_empty() {
+            let existing = obj.get("thinkingConfig").and_then(|v| v.as_object());
+            if existing.map(|v| v != &thinking_config).unwrap_or(true) {
+                obj.insert("thinkingConfig".to_string(), Value::Object(thinking_config));
+                changed = true;
+            }
         }
     }
 
@@ -244,9 +480,37 @@ pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bo
                         if current != signature {
                             provider_fields.insert(
                                 "thought_signature".to_string(),
-                                Value::String(signature),
+                                Value::String(signature.clone()),
                             );
                             changed = true;
+                        }
+                        let google_fields = ensure_extra_content_google(tc_obj);
+                        let google_current = google_fields
+                            .get("thought_signature")
+                            .and_then(|sig| sig.as_str())
+                            .unwrap_or("");
+                        if google_current != signature {
+                            google_fields.insert(
+                                "thought_signature".to_string(),
+                                Value::String(signature.clone()),
+                            );
+                            changed = true;
+                        }
+                        if let Some(function) = tc_obj.get_mut("function") {
+                            if let Some(fn_obj) = function.as_object_mut() {
+                                let fn_provider_fields = ensure_provider_specific_fields(fn_obj);
+                                let fn_current = fn_provider_fields
+                                    .get("thought_signature")
+                                    .and_then(|sig| sig.as_str())
+                                    .unwrap_or("");
+                                if fn_current != signature {
+                                    fn_provider_fields.insert(
+                                        "thought_signature".to_string(),
+                                        Value::String(signature.clone()),
+                                    );
+                                    changed = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -266,6 +530,24 @@ pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bo
                     changed = true;
                 }
             }
+        }
+    }
+
+    changed
+}
+
+pub fn strip_gemini3_provider_fields(payload: &mut Value, model: Option<&str>) -> bool {
+    if !matches!(model, Some(name) if is_gemini3_model(name)) {
+        return false;
+    }
+    let Some(obj) = payload.as_object_mut() else {
+        return false;
+    };
+
+    let mut changed = false;
+    for key in ["thinkingConfig", "thinking_level", "thinking_config"] {
+        if obj.remove(key).is_some() {
+            changed = true;
         }
     }
 
@@ -302,13 +584,13 @@ pub fn normalize_response_payload(response: &mut Value, model: Option<&str>) -> 
                 continue;
             };
 
+            if apply_parts_thought_signatures(msg_obj) {
+                changed = true;
+            }
+
             if let Some(signature) = extra_signature {
                 let provider_fields = ensure_provider_specific_fields(msg_obj);
-                if !provider_fields.contains_key("thought_signatures") {
-                    provider_fields.insert(
-                        "thought_signatures".to_string(),
-                        Value::Array(vec![Value::String(signature)]),
-                    );
+                if merge_thought_signatures(provider_fields, vec![signature]) {
                     changed = true;
                 }
             }

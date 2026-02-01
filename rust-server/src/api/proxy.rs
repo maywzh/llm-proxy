@@ -19,6 +19,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use crate::api::claude_models::{ClaudeTokenCountRequest, ClaudeTokenCountResponse};
+use crate::api::gemini3::{normalize_request_payload, strip_gemini3_provider_fields};
 use crate::api::handlers::AppState;
 use crate::api::models::{
     LiteLlmParams, ModelInfo, ModelInfoDetails, ModelInfoEntry, ModelInfoList, ModelList,
@@ -290,7 +291,7 @@ pub async fn handle_proxy_request(
         generation_data.mapped_model = transform_ctx.mapped_model.clone();
 
         // Transform request with bypass optimization
-        let (provider_payload, bypassed) = state
+        let (mut provider_payload, bypassed) = state
             .transform_pipeline
             .transform_request_with_bypass(payload.clone(), &transform_ctx)?;
 
@@ -318,6 +319,8 @@ pub async fn handle_proxy_request(
                 ])
                 .inc();
         }
+
+        normalize_gemini3_provider_payload(&mut provider_payload, provider_protocol);
 
         let url = format!(
             "{}{}",
@@ -571,6 +574,18 @@ fn extract_stream_flag(payload: &Value, protocol: Protocol) -> bool {
             .and_then(|s| s.as_bool())
             .unwrap_or(false),
     }
+}
+
+fn normalize_gemini3_provider_payload(provider_payload: &mut Value, protocol: Protocol) {
+    if protocol != Protocol::OpenAI {
+        return;
+    }
+    let gemini_model = provider_payload
+        .get("model")
+        .and_then(|model| model.as_str())
+        .map(|model| model.to_string());
+    normalize_request_payload(provider_payload, gemini_model.as_deref());
+    strip_gemini3_provider_fields(provider_payload, gemini_model.as_deref());
 }
 
 /// Get the endpoint path for a provider protocol
@@ -1667,5 +1682,59 @@ mod tests {
             get_provider_endpoint(Protocol::ResponseApi),
             "/v1/responses"
         );
+    }
+
+    #[test]
+    fn test_normalize_gemini3_provider_payload_openai() {
+        let mut payload = json!({
+            "model": "gemini-3-pro",
+            "thinking_level": "low",
+            "thinkingConfig": {"thinkingLevel": "low"},
+            "messages": [{
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "do", "arguments": "{}"}
+                }]
+            }]
+        });
+
+        normalize_gemini3_provider_payload(&mut payload, Protocol::OpenAI);
+
+        assert!(payload.get("thinking_level").is_none());
+        assert!(payload.get("thinkingConfig").is_none());
+
+        let tool_call = &payload["messages"][0]["tool_calls"][0];
+        assert!(tool_call["provider_specific_fields"]["thought_signature"].is_string());
+        assert!(tool_call["function"]["provider_specific_fields"]["thought_signature"].is_string());
+        assert!(tool_call["extra_content"]["google"]["thought_signature"].is_string());
+    }
+
+    #[test]
+    fn test_normalize_gemini3_provider_payload_non_gemini_noop() {
+        let mut payload = json!({
+            "model": "gpt-4",
+            "thinking_level": "low",
+            "thinkingConfig": {"thinkingLevel": "low"},
+            "messages": [{
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "do", "arguments": "{}"}
+                }]
+            }]
+        });
+
+        normalize_gemini3_provider_payload(&mut payload, Protocol::OpenAI);
+
+        assert!(payload.get("thinking_level").is_some());
+        assert!(payload.get("thinkingConfig").is_some());
+
+        let tool_call = &payload["messages"][0]["tool_calls"][0];
+        assert!(tool_call.get("provider_specific_fields").is_none());
+        assert!(tool_call["function"].get("provider_specific_fields").is_none());
+        assert!(tool_call.get("extra_content").is_none());
     }
 }

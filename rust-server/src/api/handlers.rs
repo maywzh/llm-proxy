@@ -5,7 +5,7 @@
 
 use crate::api::gemini3::{
     log_gemini_request_signatures, log_gemini_response_signatures, normalize_request_payload,
-    normalize_response_payload,
+    normalize_response_payload, strip_gemini3_provider_fields,
 };
 use crate::api::models::*;
 use crate::api::streaming::{
@@ -1067,6 +1067,8 @@ pub async fn chat_completions(
                     &provider.name,
                     &payload,
                 );
+
+                strip_gemini3_provider_fields(&mut payload, gemini_model.as_deref());
 
                 let api_key_name = get_api_key_name();
 

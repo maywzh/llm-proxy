@@ -365,3 +365,46 @@ class TestBypassMetrics:
         # Verify metric was recorded
         metric = BYPASS_STREAMING_BYTES.labels(provider="test-provider")
         assert metric._value.get() >= 1024
+
+
+class TestGemini3ProxyNormalization:
+    """Test Gemini 3 normalization for provider payload in V2 proxy."""
+
+    def test_normalize_gemini3_provider_payload(self):
+        from app.api.proxy import _normalize_gemini3_provider_payload
+        from app.transformer import TransformContext
+
+        payload = {
+            "model": "gemini-3-pro",
+            "thinking_level": "low",
+            "thinkingConfig": {"thinkingLevel": "low"},
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "do", "arguments": "{}"},
+                        }
+                    ],
+                }
+            ],
+        }
+
+        ctx = TransformContext(provider_protocol=Protocol.OPENAI)
+        _normalize_gemini3_provider_payload(payload, ctx)
+
+        assert "thinking_level" not in payload
+        assert "thinkingConfig" not in payload
+
+        tool_call = payload["messages"][0]["tool_calls"][0]
+        assert isinstance(
+            tool_call["provider_specific_fields"]["thought_signature"], str
+        )
+        assert isinstance(
+            tool_call["function"]["provider_specific_fields"]["thought_signature"], str
+        )
+        assert isinstance(
+            tool_call["extra_content"]["google"]["thought_signature"], str
+        )

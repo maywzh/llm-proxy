@@ -46,10 +46,11 @@ async def test_remote_protocol_error_streaming(app_with_config):
         mock_response.status_code = 200
 
         async def failing_iter():
-            yield b'data: {"id": "test"}\n\n'
+            yield 'data: {"id": "test"}'
+            yield ""
             raise httpx.RemoteProtocolError("Connection closed during streaming")
 
-        mock_response.aiter_bytes = failing_iter
+        mock_response.aiter_lines = failing_iter
 
         mock_stream_ctx = MagicMock()
 
