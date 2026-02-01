@@ -14,7 +14,8 @@ use llm_proxy_rust::{
     admin_router,
     api::{
         chat_completions, chat_completions_v2, claude_count_tokens, claude_create_message,
-        completions, list_models, messages_v2, metrics_handler, responses_v2, AdminState, AppState,
+        completions, completions_v2, count_tokens_v2, list_model_info_v2, list_models,
+        list_models_v2, messages_v2, metrics_handler, responses_v2, AdminState, AppState,
         ProxyState,
     },
     combined_openapi,
@@ -264,8 +265,12 @@ fn build_router(
     // Build v2 API routes with ProxyState (transformer-based)
     let api_routes_v2 = Router::new()
         .route("/v2/chat/completions", post(chat_completions_v2))
+        .route("/v2/completions", post(completions_v2))
         .route("/v2/messages", post(messages_v2))
+        .route("/v2/messages/count_tokens", post(count_tokens_v2))
         .route("/v2/responses", post(responses_v2))
+        .route("/v2/models", get(list_models_v2))
+        .route("/v2/model/info", get(list_model_info_v2))
         .layer(axum::middleware::from_fn(MetricsMiddleware::track_metrics))
         .layer(axum::middleware::from_fn_with_state(
             proxy_state.clone(),

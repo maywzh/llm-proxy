@@ -361,6 +361,7 @@ LLM Proxy supports two configuration modes:
 | `ADMIN_KEY` | Admin API authentication key | Required for database mode |
 | `PORT` | Server port | No (default: 18000) |
 | `PROVIDER_SUFFIX` | Optional prefix for model names. When set, model names like `{PROVIDER_SUFFIX}/{model}` are treated as `{model}` | No |
+| `DISABLE_HF_TOKENIZER_DOWNLOAD` | Disable HuggingFace tokenizer downloads (fallback to tiktoken) | No (default: false) |
 
 ### Database Migration
 

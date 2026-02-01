@@ -25,3 +25,11 @@ c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:scripts/verify_auth.sh:curl-auth-header
 c28031f8cd21988acec11c9cd41277a39035a1c0:python-server/README.md:curl-auth-header:181
 c28031f8cd21988acec11c9cd41277a39035a1c0:python-server/README_CN.md:curl-auth-header:169
 c28031f8cd21988acec11c9cd41277a39035a1c0:python-server/README_CN.md:curl-auth-header:181
+
+# STREAMING_USAGE_FIX.md - example API keys for documentation
+d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:generic-api-key:27
+d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:generic-api-key:370
+d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:curl-auth-header:15
+d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:curl-auth-header:25
+d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:curl-auth-header:350
+d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:curl-auth-header:368

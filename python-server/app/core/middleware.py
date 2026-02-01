@@ -35,6 +35,12 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         method = request.method
         client = extract_client(request)
 
+        # LLM endpoints that should show detailed logging
+        llm_endpoints = (
+            '/v1/chat/completions', '/v1/messages', '/v1/completions',
+            '/v2/chat/completions', '/v2/messages', '/v2/completions', '/v2/responses'
+        )
+
         # Skip metrics endpoint itself
         if endpoint == '/metrics':
             return await call_next(request)
@@ -84,7 +90,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
             # Log request details - show model/provider/key/client for LLM endpoints
             log_message = f"{method} {endpoint}"
-            if endpoint in ('/v1/chat/completions', '/v1/messages'):
+            if endpoint in llm_endpoints:
                 log_message += f" - status={status_code} client={client} key={api_key_name} model={model} provider={provider}"
             log_message += f" duration={duration:.3f}s"
             logger.info(log_message)
@@ -94,7 +100,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             duration = time.time() - start_time
             log_message = f"{method} {endpoint}"
-            if endpoint in ('/v1/chat/completions', '/v1/messages'):
+            if endpoint in llm_endpoints:
                 model = getattr(request.state, 'model', 'unknown')
                 provider = getattr(request.state, 'provider', 'unknown')
                 api_key_name = get_api_key_name()

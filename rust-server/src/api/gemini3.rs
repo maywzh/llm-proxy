@@ -1,3 +1,5 @@
+//! Gemini 3 thought_signature handling aligned with LiteLLM.
+
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use serde_json::{Map, Value};
@@ -75,10 +77,7 @@ fn signature_from_tool_call_id(value: &Value) -> Option<String> {
 }
 
 pub fn encode_tool_call_id_with_signature(tool_call_id: &str, signature: &str) -> String {
-    format!(
-        "{}{}{}",
-        tool_call_id, THOUGHT_SIGNATURE_SEPARATOR, signature
-    )
+    format!("{}{}{}", tool_call_id, THOUGHT_SIGNATURE_SEPARATOR, signature)
 }
 
 fn strip_signature_from_id(tool_call_id: &str) -> Option<String> {
@@ -126,9 +125,7 @@ fn ensure_provider_specific_fields(obj: &mut Map<String, Value>) -> &mut Map<Str
     if !entry.is_object() {
         *entry = Value::Object(Map::new());
     }
-    entry
-        .as_object_mut()
-        .expect("provider_specific_fields must be object")
+    entry.as_object_mut().expect("provider_specific_fields must be object")
 }
 
 pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bool {
@@ -152,10 +149,12 @@ pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bo
                 continue;
             };
 
-            if msg_obj.get("role").and_then(|role| role.as_str()) == Some("assistant") {
-                if let Some(tool_calls) =
-                    msg_obj.get_mut("tool_calls").and_then(|v| v.as_array_mut())
-                {
+            if msg_obj
+                .get("role")
+                .and_then(|role| role.as_str())
+                == Some("assistant")
+            {
+                if let Some(tool_calls) = msg_obj.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
                     for tool_call in tool_calls.iter_mut() {
                         let Some(tc_obj) = tool_call.as_object_mut() else {
                             continue;
@@ -170,7 +169,11 @@ pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bo
                 }
             }
 
-            if msg_obj.get("role").and_then(|role| role.as_str()) == Some("tool") {
+            if msg_obj
+                .get("role")
+                .and_then(|role| role.as_str())
+                == Some("tool")
+            {
                 if let Some(tool_call_id) = msg_obj.get("tool_call_id").and_then(|id| id.as_str()) {
                     if let Some(base) = strip_signature_from_id(tool_call_id) {
                         msg_obj.insert("tool_call_id".to_string(), Value::String(base));
@@ -226,8 +229,11 @@ pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bo
 
         if let Some(tool_calls) = msg_obj.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
             for tool_call in tool_calls.iter_mut() {
-                let signature =
-                    extract_thought_signature_from_tool_call(tool_call, Some(model_name), true);
+                let signature = extract_thought_signature_from_tool_call(
+                    tool_call,
+                    Some(model_name),
+                    true,
+                );
                 if let Some(signature) = signature {
                     if let Some(tc_obj) = tool_call.as_object_mut() {
                         let provider_fields = ensure_provider_specific_fields(tc_obj);
@@ -236,8 +242,10 @@ pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bo
                             .and_then(|sig| sig.as_str())
                             .unwrap_or("");
                         if current != signature {
-                            provider_fields
-                                .insert("thought_signature".to_string(), Value::String(signature));
+                            provider_fields.insert(
+                                "thought_signature".to_string(),
+                                Value::String(signature),
+                            );
                             changed = true;
                         }
                     }
@@ -251,8 +259,10 @@ pub fn normalize_request_payload(payload: &mut Value, model: Option<&str>) -> bo
                 let signature = dummy_thought_signature();
                 if let Some(fn_obj) = function_call.as_object_mut() {
                     let provider_fields = ensure_provider_specific_fields(fn_obj);
-                    provider_fields
-                        .insert("thought_signature".to_string(), Value::String(signature));
+                    provider_fields.insert(
+                        "thought_signature".to_string(),
+                        Value::String(signature),
+                    );
                     changed = true;
                 }
             }
@@ -327,8 +337,10 @@ pub fn normalize_response_payload(response: &mut Value, model: Option<&str>) -> 
 
                             if let Some(id_value) = tc_obj.get("id").and_then(|id| id.as_str()) {
                                 if !id_value.contains(THOUGHT_SIGNATURE_SEPARATOR) {
-                                    let encoded =
-                                        encode_tool_call_id_with_signature(id_value, &signature);
+                                    let encoded = encode_tool_call_id_with_signature(
+                                        id_value,
+                                        &signature,
+                                    );
                                     tc_obj.insert("id".to_string(), Value::String(encoded));
                                     changed = true;
                                 }

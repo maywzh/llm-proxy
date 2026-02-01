@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from app.api.dependencies import verify_auth, get_provider_svc
-from app.api.proxy import _strip_provider_suffix
+from app.core.utils import strip_provider_suffix
 from app.services.provider_service import ProviderService
 from app.services.langfuse_service import (
     get_langfuse_service,
@@ -96,9 +96,11 @@ def _build_claude_messages_for_token_count(
             system_content: Any = system
         elif isinstance(system, list):
             system_content = [
-                {"type": "text", "text": block.text}
-                if hasattr(block, "text")
-                else {"type": "text", "text": block.get("text", "")}
+                (
+                    {"type": "text", "text": block.text}
+                    if hasattr(block, "text")
+                    else {"type": "text", "text": block.get("text", "")}
+                )
                 for block in system
             ]
         else:
@@ -110,15 +112,16 @@ def _build_claude_messages_for_token_count(
             content_value: Any = msg.content
         else:
             content_value = [
-                _convert_claude_block_for_token_count(block)
-                for block in msg.content
+                _convert_claude_block_for_token_count(block) for block in msg.content
             ]
         combined.append({"role": msg.role, "content": content_value})
 
     return combined
 
 
-def _convert_claude_tools_for_token_count(tools: Optional[list]) -> Optional[list[dict[str, Any]]]:
+def _convert_claude_tools_for_token_count(
+    tools: Optional[list],
+) -> Optional[list[dict[str, Any]]]:
     if not tools:
         return None
     converted: list[dict[str, Any]] = []
@@ -227,7 +230,7 @@ async def create_message(
         )
 
         # Strip provider suffix before selecting provider (P0 fix: ensure consistency with Rust v1)
-        effective_model = _strip_provider_suffix(claude_request.model)
+        effective_model = strip_provider_suffix(claude_request.model)
         logger.debug(
             f"Effective model after stripping provider suffix: {effective_model}"
         )

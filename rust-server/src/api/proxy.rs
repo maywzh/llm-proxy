@@ -3,6 +3,7 @@
 //! This module provides a unified proxy handler that uses the transformer
 //! system for protocol conversion between different LLM API formats.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -17,20 +18,25 @@ use chrono::Utc;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
+use crate::api::claude_models::{ClaudeTokenCountRequest, ClaudeTokenCountResponse};
 use crate::api::handlers::AppState;
-use crate::api::streaming::create_sse_stream;
+use crate::api::models::{
+    LiteLlmParams, ModelInfo, ModelInfoDetails, ModelInfoEntry, ModelInfoList, ModelList,
+};
+use crate::api::streaming::{calculate_message_tokens_with_tools, create_sse_stream};
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
 use crate::core::jsonl_logger::{
     log_provider_request, log_provider_response, log_request, log_response,
 };
-use crate::core::langfuse::{
-    build_langfuse_tags, extract_client_metadata, get_langfuse_service, GenerationData,
-};
-use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT};
+use crate::core::langfuse::{get_langfuse_service, init_langfuse_trace, GenerationData};
+use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{extract_client, ApiKeyName, HasCredentials, ModelName, ProviderName};
+use crate::core::middleware::{
+    extract_client, ApiKeyName, HasCredentials, ModelName, ProviderName,
+};
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
+use crate::core::utils::{get_key_name, strip_provider_suffix};
 use crate::core::{AppError, Result};
 use crate::transformer::{
     provider_type_to_protocol, CrossProtocolStreamState, Protocol, ProtocolDetector,
@@ -116,27 +122,6 @@ pub fn verify_auth_multi_format(
     }
 
     Err(AppError::Unauthorized)
-}
-
-/// Get the key name from an optional CredentialConfig
-fn get_key_name(key_config: &Option<CredentialConfig>) -> String {
-    key_config
-        .as_ref()
-        .map(|k| k.name.clone())
-        .unwrap_or_else(|| "anonymous".to_string())
-}
-
-/// Strip the provider suffix from model name if configured.
-fn strip_provider_suffix(model: &str, provider_suffix: Option<&str>) -> String {
-    let Some(suffix) = provider_suffix.filter(|s| !s.is_empty()) else {
-        return model.to_string();
-    };
-
-    model
-        .strip_prefix(suffix)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .unwrap_or(model)
-        .to_string()
 }
 
 // ============================================================================
@@ -275,6 +260,16 @@ pub async fn handle_proxy_request(
 
         // Determine provider protocol from provider_type field
         let provider_protocol = provider_type_to_protocol(&provider.provider_type);
+
+        // DEBUG: Log protocol information for debugging usage issues
+        tracing::debug!(
+            request_id = %request_id,
+            client_protocol = %client_protocol,
+            provider_protocol = %provider_protocol,
+            provider_type = %provider.provider_type,
+            is_same_protocol = (client_protocol == provider_protocol),
+            "Protocol detection for streaming request"
+        );
 
         // Build transform context
         let transform_ctx = TransformContext {
@@ -475,8 +470,12 @@ pub async fn handle_proxy_request(
 
                             if let Some(system) = payload.get("system") {
                                 let system_message = match system {
-                                    Value::String(text) => json!({"role": "system", "content": text}),
-                                    Value::Array(blocks) => json!({"role": "system", "content": blocks}),
+                                    Value::String(text) => {
+                                        json!({"role": "system", "content": text})
+                                    }
+                                    Value::Array(blocks) => {
+                                        json!({"role": "system", "content": blocks})
+                                    }
                                     _ => json!({"role": "system", "content": ""}),
                                 };
                                 combined_messages.push(system_message);
@@ -484,13 +483,14 @@ pub async fn handle_proxy_request(
 
                             combined_messages.extend(arr.iter().cloned());
 
-                            let total_tokens = crate::api::streaming::calculate_message_tokens_with_tools(
-                                &combined_messages,
-                                model_label,
-                                tools.map(|tool_list| tool_list.as_slice()),
-                                tool_choice,
-                            )
-                            .ok();
+                            let total_tokens =
+                                crate::api::streaming::calculate_message_tokens_with_tools(
+                                    &combined_messages,
+                                    model_label,
+                                    tools.map(|tool_list| tool_list.as_slice()),
+                                    tool_choice,
+                                )
+                                .ok();
 
                             tracing::debug!(
                                 request_id = %request_id,
@@ -542,37 +542,6 @@ pub async fn handle_proxy_request(
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/// Initialize Langfuse tracing
-fn init_langfuse_trace(
-    request_id: &str,
-    api_key_name: &str,
-    headers: &HeaderMap,
-    endpoint: &str,
-) -> (Option<String>, GenerationData) {
-    let client_metadata = extract_client_metadata(headers);
-    let user_agent = client_metadata.get("user_agent").cloned();
-
-    let tags = build_langfuse_tags(endpoint, api_key_name, user_agent.as_deref());
-
-    let langfuse = get_langfuse_service();
-    let trace_id = if let Ok(service) = langfuse.read() {
-        service.create_trace(request_id, api_key_name, endpoint, tags, client_metadata)
-    } else {
-        None
-    };
-
-    let generation_data = GenerationData {
-        trace_id: trace_id.clone().unwrap_or_default(),
-        request_id: request_id.to_string(),
-        credential_name: api_key_name.to_string(),
-        endpoint: endpoint.to_string(),
-        start_time: Utc::now(),
-        ..Default::default()
-    };
-
-    (trace_id, generation_data)
-}
 
 /// Extract model from request based on protocol
 fn extract_model_from_request(payload: &Value, protocol: Protocol) -> String {
@@ -779,8 +748,18 @@ async fn handle_streaming_proxy_response(
         use futures::stream::Stream;
         use std::pin::Pin;
 
+        // DEBUG: Log that we're entering cross-protocol streaming path
+        tracing::debug!(
+            request_id = %request_id,
+            client_protocol = %client_protocol,
+            provider_protocol = %provider_protocol,
+            "Entering cross-protocol streaming path"
+        );
+
         struct CrossProtocolStreamingState {
-            stream: Pin<Box<dyn Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>> + Send>>,
+            stream: Pin<
+                Box<dyn Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>> + Send>,
+            >,
             stream_state: CrossProtocolStreamState,
             registry: Arc<TransformerRegistry>,
             client_protocol: Protocol,
@@ -792,6 +771,8 @@ async fn handle_streaming_proxy_response(
             client: String,
             start_time: Instant,
             first_token_time: Option<Instant>,
+            // Flag to track if we've sent the final output
+            finalized: bool,
         }
 
         let streaming_state = CrossProtocolStreamingState {
@@ -806,77 +787,128 @@ async fn handle_streaming_proxy_response(
             client: client.clone(),
             start_time: request_start,
             first_token_time: None,
+            finalized: false,
         };
 
-        let transform_stream =
-            futures::stream::unfold(streaming_state, |mut state| async move {
-                match state.stream.next().await {
-                    Some(Ok(bytes)) => {
-                        // Track first token time
-                        if state.first_token_time.is_none() {
-                            state.first_token_time = Some(Instant::now());
-                        }
+        let transform_stream = futures::stream::unfold(streaming_state, |mut state| async move {
+            // If we've already finalized, end the stream
+            if state.finalized {
+                return None;
+            }
 
-                        // Get transformers
-                        let provider_transformer = state.registry.get(state.provider_protocol);
-                        let client_transformer = state.registry.get(state.client_protocol);
+            match state.stream.next().await {
+                Some(Ok(bytes)) => {
+                    // Track first token time
+                    if state.first_token_time.is_none() {
+                        state.first_token_time = Some(Instant::now());
+                    }
 
-                        let output = if let (Some(provider_t), Some(client_t)) =
-                            (provider_transformer, client_transformer)
-                        {
-                            // Transform chunks from provider format to unified format
-                            match provider_t.transform_stream_chunk_in(&bytes) {
-                                Ok(unified_chunks) => {
-                                    // Process chunks through state tracker
-                                    let processed_chunks =
-                                        state.stream_state.process_chunks(unified_chunks);
+                    // Get transformers
+                    let provider_transformer = state.registry.get(state.provider_protocol);
+                    let client_transformer = state.registry.get(state.client_protocol);
 
-                                    // Transform unified chunks to client format
-                                    let mut output = String::new();
-                                    for chunk in processed_chunks {
-                                        if let Ok(formatted) = client_t
-                                            .transform_stream_chunk_out(&chunk, state.client_protocol)
-                                        {
-                                            output.push_str(&formatted);
-                                        }
+                    let output = if let (Some(provider_t), Some(client_t)) =
+                        (provider_transformer, client_transformer)
+                    {
+                        // Transform chunks from provider format to unified format
+                        match provider_t.transform_stream_chunk_in(&bytes) {
+                            Ok(unified_chunks) => {
+                                // Process chunks through state tracker
+                                let processed_chunks =
+                                    state.stream_state.process_chunks(unified_chunks);
+
+                                // Transform unified chunks to client format
+                                let mut output = String::new();
+                                for chunk in processed_chunks {
+                                    if let Ok(formatted) = client_t
+                                        .transform_stream_chunk_out(&chunk, state.client_protocol)
+                                    {
+                                        output.push_str(&formatted);
                                     }
-                                    axum::body::Bytes::from(output)
                                 }
-                                Err(_) => bytes,
+                                axum::body::Bytes::from(output)
                             }
-                        } else {
-                            bytes
-                        };
+                            Err(_) => bytes,
+                        }
+                    } else {
+                        bytes
+                    };
 
-                        Some((Ok::<_, std::io::Error>(output), state))
-                    }
-                    Some(Err(e)) => {
-                        Some((Err(std::io::Error::other(e.to_string())), state))
-                    }
-                    None => {
-                        // Stream ended - record metrics
-                        let final_usage = state.stream_state.get_final_usage(None);
-                        let stats = StreamStats {
-                            model: state.model.clone(),
-                            provider: state.provider.clone(),
-                            api_key_name: state.api_key_name.clone(),
-                            client: state.client.clone(),
-                            input_tokens: final_usage
-                                .as_ref()
-                                .map(|u| u.input_tokens as usize)
-                                .unwrap_or(0),
-                            output_tokens: final_usage
-                                .as_ref()
-                                .map(|u| u.output_tokens as usize)
-                                .unwrap_or(0),
-                            start_time: state.start_time,
-                            first_token_time: state.first_token_time,
-                        };
-                        record_stream_metrics(&stats);
-                        None
-                    }
+                    Some((Ok::<_, std::io::Error>(output), state))
                 }
-            });
+                Some(Err(e)) => Some((Err(std::io::Error::other(e.to_string())), state)),
+                None => {
+                    // Stream ended - finalize and emit closing events
+                    let client_transformer = state.registry.get(state.client_protocol);
+
+                    // DEBUG: Log state before finalize
+                    tracing::debug!(
+                        model = %state.model,
+                        provider = %state.provider,
+                        accumulated_usage = ?state.stream_state.usage(),
+                        message_delta_emitted = state.stream_state.message_delta_emitted,
+                        "Stream ended, calling finalize()"
+                    );
+
+                    // Generate final events (message_delta with usage, message_stop)
+                    let final_chunks = state.stream_state.finalize();
+
+                    // DEBUG: Log final chunks
+                    tracing::debug!(
+                        final_chunks_count = final_chunks.len(),
+                        final_chunks = ?final_chunks.iter().map(|c| format!("{:?} usage={:?}", c.chunk_type, c.usage)).collect::<Vec<_>>(),
+                        "finalize() returned chunks"
+                    );
+
+                    let mut output = String::new();
+                    if let Some(client_t) = client_transformer {
+                        for chunk in &final_chunks {
+                            if let Ok(formatted) =
+                                client_t.transform_stream_chunk_out(chunk, state.client_protocol)
+                            {
+                                output.push_str(&formatted);
+                            }
+                        }
+                    }
+
+                    // DEBUG: Log final output
+                    tracing::debug!(
+                        output_len = output.len(),
+                        output_preview = %if output.len() > 500 { &output[..500] } else { &output },
+                        "Final output before [DONE]"
+                    );
+
+                    // Add [DONE] marker
+                    output.push_str("data: [DONE]\n\n");
+
+                    // Record metrics
+                    let final_usage = state.stream_state.get_final_usage(None);
+                    let stats = StreamStats {
+                        model: state.model.clone(),
+                        provider: state.provider.clone(),
+                        api_key_name: state.api_key_name.clone(),
+                        client: state.client.clone(),
+                        input_tokens: final_usage
+                            .as_ref()
+                            .map(|u| u.input_tokens as usize)
+                            .unwrap_or(0),
+                        output_tokens: final_usage
+                            .as_ref()
+                            .map(|u| u.output_tokens as usize)
+                            .unwrap_or(0),
+                        start_time: state.start_time,
+                        first_token_time: state.first_token_time,
+                    };
+                    record_stream_metrics(&stats);
+
+                    // Mark as finalized so next iteration returns None
+                    state.finalized = true;
+
+                    // Return final output with closing events
+                    Some((Ok(axum::body::Bytes::from(output)), state))
+                }
+            }
+        });
 
         let body = Body::from_stream(transform_stream);
 
@@ -1065,6 +1097,477 @@ pub async fn responses_v2(
     handle_proxy_request(state, headers, "/v1/responses", payload).await
 }
 
+/// List available models (V2).
+///
+/// Returns a list of all available models that can be used with the API.
+/// This endpoint is compatible with the OpenAI Models API.
+pub async fn list_models_v2(
+    State(state): State<Arc<ProxyState>>,
+    headers: HeaderMap,
+) -> Result<Json<ModelList>> {
+    let request_id = generate_request_id();
+
+    REQUEST_ID
+        .scope(request_id.clone(), async move {
+            let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+
+            tracing::debug!(
+                request_id = %request_id,
+                "Listing available models (V2)"
+            );
+
+            // Get fresh provider service from DynamicConfig
+            let provider_service = state.app_state.get_provider_service();
+            let all_models = provider_service.get_all_models();
+
+            // Filter models based on allowed_models if configured
+            let filtered_models: HashSet<String> = if let Some(ref config) = key_config {
+                if !config.allowed_models.is_empty() {
+                    // Use wildcard/regex matching for filtering
+                    all_models
+                        .into_iter()
+                        .filter(|m| {
+                            crate::api::auth::model_matches_allowed_list(m, &config.allowed_models)
+                        })
+                        .collect()
+                } else {
+                    all_models
+                }
+            } else {
+                all_models
+            };
+
+            let mut model_list: Vec<ModelInfo> = filtered_models
+                .into_iter()
+                .map(|model| ModelInfo {
+                    id: model.clone(),
+                    object: "model".to_string(),
+                    created: 1677610602,
+                    owned_by: "system".to_string(),
+                    // OpenAI compatibility fields
+                    permission: vec![],
+                    root: model,
+                    parent: None,
+                })
+                .collect();
+
+            model_list.sort_by(|a, b| a.id.cmp(&b.id));
+
+            Ok(Json(ModelList {
+                object: "list".to_string(),
+                data: model_list,
+            }))
+        })
+        .await
+}
+
+/// List model deployments in LiteLLM-compatible format (V2).
+pub async fn list_model_info_v2(
+    State(state): State<Arc<ProxyState>>,
+    headers: HeaderMap,
+) -> Result<Json<ModelInfoList>> {
+    let request_id = generate_request_id();
+
+    REQUEST_ID
+        .scope(request_id.clone(), async move {
+            let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+
+            tracing::debug!(
+                request_id = %request_id,
+                "Listing model info (V2)"
+            );
+
+            let allowed_models = key_config
+                .as_ref()
+                .map(|config| config.allowed_models.clone())
+                .unwrap_or_default();
+
+            let provider_service = state.app_state.get_provider_service();
+            let providers = provider_service.get_all_providers();
+
+            let mut data = Vec::new();
+            for provider in providers {
+                let mut model_keys: Vec<String> = provider.model_mapping.keys().cloned().collect();
+                model_keys.sort();
+                for model_name in model_keys {
+                    if !model_allowed_for_info(&model_name, &allowed_models) {
+                        continue;
+                    }
+                    let mapped_model = provider
+                        .model_mapping
+                        .get(&model_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    data.push(ModelInfoEntry {
+                        model_name: model_name.clone(),
+                        litellm_params: LiteLlmParams {
+                            model: mapped_model,
+                            api_base: provider.api_base.clone(),
+                            custom_llm_provider: provider.provider_type.clone(),
+                        },
+                        model_info: ModelInfoDetails {
+                            provider_name: provider.name.clone(),
+                            provider_type: provider.provider_type.clone(),
+                            weight: provider.weight,
+                            is_pattern: crate::api::models::is_pattern(&model_name),
+                        },
+                    });
+                }
+            }
+
+            Ok(Json(ModelInfoList { data }))
+        })
+        .await
+}
+
+/// Helper function to check if a model is allowed for model info endpoint.
+fn model_allowed_for_info(model_name: &str, allowed_models: &[String]) -> bool {
+    if allowed_models.is_empty() {
+        return true;
+    }
+    if crate::api::auth::model_matches_allowed_list(model_name, allowed_models) {
+        return true;
+    }
+    if !crate::api::models::is_pattern(model_name) {
+        return false;
+    }
+    if let Some(regex) = crate::api::models::compile_pattern(model_name) {
+        for allowed in allowed_models {
+            if crate::api::models::is_pattern(allowed) {
+                continue;
+            }
+            if regex.is_match(allowed) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Handle legacy completions endpoint (V2).
+///
+/// This endpoint is compatible with the OpenAI Completions API (legacy).
+pub async fn completions_v2(
+    State(state): State<Arc<ProxyState>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Result<Response> {
+    let request_id = generate_request_id();
+    let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+    let api_key_name = key_config
+        .as_ref()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "anonymous".to_string());
+
+    REQUEST_ID
+        .scope(request_id.clone(), async move {
+            if !payload.is_object() {
+                return Err(AppError::BadRequest(
+                    "Request body must be a JSON object".to_string(),
+                ));
+            }
+
+            // Extract model from payload if available
+            let original_model = payload.get("model").and_then(|m| m.as_str());
+
+            // Strip provider suffix if configured
+            let effective_model = original_model.map(|m| {
+                strip_provider_suffix(m, state.app_state.config.provider_suffix.as_deref())
+            });
+            let model_label = effective_model.as_deref().unwrap_or("unknown").to_string();
+
+            // Get fresh provider service from DynamicConfig
+            let provider_service = state.app_state.get_provider_service();
+
+            let provider = match provider_service.get_next_provider(effective_model.as_deref()) {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::error!(
+                        request_id = %request_id,
+                        error = %err,
+                        "Provider selection failed"
+                    );
+                    return Err(AppError::BadRequest(err));
+                }
+            };
+
+            let url = format!("{}/completions", provider.api_base);
+
+            // Execute request within provider context scope
+            PROVIDER_CONTEXT
+                .scope(provider.name.clone(), async move {
+                    tracing::debug!(
+                        request_id = %request_id,
+                        provider = %provider.name,
+                        "Processing completions request (V2)"
+                    );
+
+                    let response = match state
+                        .app_state
+                        .http_client
+                        .post(&url)
+                        .header("Authorization", format!("Bearer {}", provider.api_key))
+                        .header("Content-Type", "application/json")
+                        .json(&payload)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            tracing::error!(
+                                request_id = %request_id,
+                                provider = %provider.name,
+                                url = %url,
+                                model = %model_label,
+                                error = %e,
+                                "HTTP request failed to provider"
+                            );
+                            let status = if e.is_timeout() {
+                                StatusCode::GATEWAY_TIMEOUT
+                            } else {
+                                StatusCode::BAD_GATEWAY
+                            };
+                            let mut resp = Json(json!({
+                                "error": {
+                                    "message": format!("Upstream request failed: {}", e),
+                                    "type": "error"
+                                }
+                            }))
+                            .into_response();
+                            *resp.status_mut() = status;
+                            resp.extensions_mut().insert(ModelName(model_label.clone()));
+                            resp.extensions_mut()
+                                .insert(ProviderName(provider.name.clone()));
+                            resp.extensions_mut()
+                                .insert(ApiKeyName(api_key_name.clone()));
+                            return Ok(resp);
+                        }
+                    };
+
+                    let status = response.status();
+
+                    // Check if backend API returned an error status code
+                    if status.is_client_error() || status.is_server_error() {
+                        let error_body = match response.bytes().await {
+                            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                                Ok(body) => body,
+                                Err(_) => {
+                                    let text = String::from_utf8_lossy(&bytes).to_string();
+                                    json!({
+                                        "error": {
+                                            "message": text,
+                                            "type": "error",
+                                            "code": status.as_u16()
+                                        }
+                                    })
+                                }
+                            },
+                            Err(_) => json!({
+                                "error": {
+                                    "message": format!("HTTP {}", status),
+                                    "type": "error",
+                                    "code": status.as_u16()
+                                }
+                            }),
+                        };
+
+                        tracing::error!(
+                            request_id = %request_id,
+                            provider = %provider.name,
+                            status = %status,
+                            "Backend API returned error status"
+                        );
+
+                        let mut resp = Json(error_body).into_response();
+                        *resp.status_mut() = StatusCode::from_u16(status.as_u16())
+                            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                        resp.extensions_mut().insert(ModelName(model_label.clone()));
+                        resp.extensions_mut()
+                            .insert(ProviderName(provider.name.clone()));
+                        resp.extensions_mut()
+                            .insert(ApiKeyName(api_key_name.clone()));
+                        return Ok(resp);
+                    }
+
+                    let response_data: Value = match response.json().await {
+                        Ok(data) => data,
+                        Err(e) => {
+                            tracing::error!(
+                                request_id = %request_id,
+                                provider = %provider.name,
+                                error = %e,
+                                "Failed to parse response JSON"
+                            );
+                            let mut resp = Json(json!({
+                                "error": {
+                                    "message": "Failed to parse upstream response",
+                                    "type": "error"
+                                }
+                            }))
+                            .into_response();
+                            *resp.status_mut() = StatusCode::BAD_GATEWAY;
+                            resp.extensions_mut().insert(ModelName(model_label.clone()));
+                            resp.extensions_mut()
+                                .insert(ProviderName(provider.name.clone()));
+                            resp.extensions_mut()
+                                .insert(ApiKeyName(api_key_name.clone()));
+                            return Ok(resp);
+                        }
+                    };
+
+                    let mut resp = Json(response_data).into_response();
+                    resp.extensions_mut().insert(ModelName(model_label));
+                    resp.extensions_mut().insert(ProviderName(provider.name));
+                    resp.extensions_mut().insert(ApiKeyName(api_key_name));
+                    Ok(resp)
+                })
+                .await
+        })
+        .await
+}
+
+/// Claude token counting endpoint (V2).
+///
+/// Provides accurate token count for the given messages using tiktoken.
+pub async fn count_tokens_v2(
+    State(state): State<Arc<ProxyState>>,
+    headers: HeaderMap,
+    Json(claude_request): Json<ClaudeTokenCountRequest>,
+) -> Result<Json<ClaudeTokenCountResponse>> {
+    let request_id = generate_request_id();
+    let _key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+
+    REQUEST_ID
+        .scope(request_id.clone(), async move {
+            let model = &claude_request.model;
+            let messages_value = build_claude_messages_for_token_count(
+                &claude_request.system,
+                &claude_request.messages,
+            );
+            let tools_value = build_openai_tools_for_token_count(&claude_request.tools);
+            let tool_choice = claude_request.tool_choice.as_ref();
+            let total_tokens = calculate_message_tokens_with_tools(
+                &messages_value,
+                model,
+                tools_value.as_deref(),
+                tool_choice,
+            )
+            .map_err(AppError::BadRequest)?;
+
+            let estimated_tokens = std::cmp::max(1, total_tokens) as i32;
+
+            Ok(Json(ClaudeTokenCountResponse {
+                input_tokens: estimated_tokens,
+            }))
+        })
+        .await
+}
+
+// ============================================================================
+// Token Counting Helpers (for V2)
+// ============================================================================
+
+fn build_claude_messages_for_token_count(
+    system: &Option<crate::api::claude_models::ClaudeSystemPrompt>,
+    messages: &[crate::api::claude_models::ClaudeMessage],
+) -> Vec<Value> {
+    use crate::api::claude_models::{ClaudeMessageContent, ClaudeSystemPrompt};
+
+    let mut combined = Vec::new();
+
+    if let Some(system_prompt) = system {
+        let system_content = match system_prompt {
+            ClaudeSystemPrompt::Text(text) => Value::String(text.clone()),
+            ClaudeSystemPrompt::Blocks(blocks) => {
+                let items = blocks
+                    .iter()
+                    .map(|block| json!({"type": "text", "text": block.text}))
+                    .collect::<Vec<_>>();
+                Value::Array(items)
+            }
+        };
+        combined.push(json!({"role": "system", "content": system_content}));
+    }
+
+    for message in messages {
+        let content_value = match &message.content {
+            ClaudeMessageContent::Text(text) => Value::String(text.clone()),
+            ClaudeMessageContent::Blocks(blocks) => {
+                let items = blocks
+                    .iter()
+                    .map(convert_claude_block_for_token_count)
+                    .collect::<Vec<_>>();
+                Value::Array(items)
+            }
+        };
+        combined.push(json!({"role": message.role, "content": content_value}));
+    }
+
+    combined
+}
+
+fn convert_claude_block_for_token_count(
+    block: &crate::api::claude_models::ClaudeContentBlock,
+) -> Value {
+    use crate::api::claude_models::ClaudeContentBlock;
+
+    match block {
+        ClaudeContentBlock::Text(text_block) => {
+            json!({"type": "text", "text": text_block.text})
+        }
+        ClaudeContentBlock::Image(image_block) => {
+            let data_uri = format!(
+                "data:{};base64,{}",
+                image_block.source.media_type, image_block.source.data
+            );
+            json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": data_uri,
+                    "detail": "auto"
+                }
+            })
+        }
+        ClaudeContentBlock::ToolUse(tool_use) => json!({
+            "type": "tool_use",
+            "id": tool_use.id,
+            "name": tool_use.name,
+            "input": tool_use.input
+        }),
+        ClaudeContentBlock::ToolResult(tool_result) => json!({
+            "type": "tool_result",
+            "tool_use_id": tool_result.tool_use_id,
+            "content": tool_result.content,
+            "is_error": tool_result.is_error
+        }),
+        ClaudeContentBlock::Thinking(thinking) => json!({
+            "type": "thinking",
+            "thinking": thinking.thinking,
+            "signature": thinking.signature
+        }),
+    }
+}
+
+fn build_openai_tools_for_token_count(
+    tools: &Option<Vec<crate::api::claude_models::ClaudeTool>>,
+) -> Option<Vec<Value>> {
+    tools.as_ref().map(|tool_list| {
+        tool_list
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.input_schema
+                    }
+                })
+            })
+            .collect::<Vec<_>>()
+    })
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1072,13 +1575,6 @@ pub async fn responses_v2(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_strip_provider_suffix() {
-        assert_eq!(strip_provider_suffix("Proxy/gpt-4", Some("Proxy")), "gpt-4");
-        assert_eq!(strip_provider_suffix("gpt-4", Some("Proxy")), "gpt-4");
-        assert_eq!(strip_provider_suffix("Proxy/gpt-4", None), "Proxy/gpt-4");
-    }
 
     #[test]
     fn test_extract_model_from_request() {

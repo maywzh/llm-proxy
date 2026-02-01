@@ -33,5 +33,8 @@ pub use models::{
     ApiErrorDetail, ApiErrorResponse, ChatCompletionRequest, ChatCompletionResponse, ModelList,
     Provider,
 };
-pub use proxy::{chat_completions_v2, handle_proxy_request, messages_v2, responses_v2, ProxyState};
+pub use proxy::{
+    chat_completions_v2, completions_v2, count_tokens_v2, handle_proxy_request, list_model_info_v2,
+    list_models_v2, messages_v2, responses_v2, ProxyState,
+};
 pub use streaming::{create_sse_stream, rewrite_model_in_response};

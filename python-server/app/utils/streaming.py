@@ -24,6 +24,8 @@ from app.core.logging import (
     get_logger,
     get_api_key_name,
 )
+from app.core.token_counter import OutboundTokenCounter
+from app.core.tokenizer import count_tokens as tokenizer_count_tokens
 from app.utils.gemini3 import log_gemini_response_signatures, normalize_gemini3_response
 
 if TYPE_CHECKING:
@@ -69,8 +71,13 @@ def _get_count_function(model: Optional[str]) -> TokenCounterFunction:
 
 
 def count_tokens(text: str, model: str) -> int:
-    count_function = _get_count_function(model)
-    return count_function(text)
+    """
+    Count tokens for the given text.
+
+    This function uses the new unified tokenizer module which supports
+    both tiktoken (OpenAI) and HuggingFace (Claude) tokenizers.
+    """
+    return tokenizer_count_tokens(text, model)
 
 
 def calculate_tools_tokens(tools: list, model: str) -> int:
@@ -144,7 +151,10 @@ def get_image_dimensions(data: str) -> tuple[int, int]:
 
 
 def resize_image_high_res(width: int, height: int) -> tuple[int, int]:
-    if width <= MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES and height <= MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES:
+    if (
+        width <= MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES
+        and height <= MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES
+    ):
         return width, height
 
     longer_side = max(width, height)
@@ -542,7 +552,7 @@ async def rewrite_sse_chunk_with_usage(
         event_lines = []
         event_has_data = False
 
-        for line in event.split('\n'):
+        for line in event.split("\n"):
             line = line.strip()
             if not line:
                 continue
@@ -560,7 +570,7 @@ async def rewrite_sse_chunk_with_usage(
             json_str = line[6:].strip()
 
             # Skip empty or incomplete JSON
-            if not json_str or not json_str.endswith('}'):
+            if not json_str or not json_str.endswith("}"):
                 event_lines.append(line)
                 continue
 
@@ -581,14 +591,16 @@ async def rewrite_sse_chunk_with_usage(
                             break
 
                 # Inject fallback usage into finish_reason chunk if provider didn't provide it
-                if (has_finish_reason and
-                    not state["usage_found"] and
-                    not state["usage_chunk_sent"] and
-                    (state["input_tokens"] > 0 or state["output_tokens"] > 0)):
+                if (
+                    has_finish_reason
+                    and not state["usage_found"]
+                    and not state["usage_chunk_sent"]
+                    and (state["input_tokens"] > 0 or state["output_tokens"] > 0)
+                ):
                     json_obj["usage"] = {
                         "prompt_tokens": state["input_tokens"],
                         "completion_tokens": state["output_tokens"],
-                        "total_tokens": state["input_tokens"] + state["output_tokens"]
+                        "total_tokens": state["input_tokens"] + state["output_tokens"],
                     }
                     state["usage_chunk_sent"] = True
                     chunk_modified = True
@@ -652,10 +664,10 @@ async def stream_response(
 
     langfuse_service = get_langfuse_service()
 
-    # Calculate input tokens for fallback
+    # Calculate input tokens for fallback using OutboundTokenCounter
+    model_for_counting = original_model or "gpt-3.5-turbo"
     input_tokens = 0
     if request_data:
-        model_for_counting = original_model or "gpt-3.5-turbo"
         messages = request_data.get("messages", [])
         tools = request_data.get("tools")
         tool_choice = request_data.get("tool_choice")
@@ -670,10 +682,14 @@ async def stream_response(
             )
             logger.debug(f"Calculated input tokens: {input_tokens}")
 
-    # Track output tokens and usage status
-    output_tokens = 0
+    # Create OutboundTokenCounter for unified token tracking
+    token_counter = OutboundTokenCounter(
+        model=model_for_counting,
+        input_tokens=input_tokens,
+    )
+
+    # Track usage status for SSE rewriting
     usage_found = False
-    model_for_counting = original_model or "gpt-3.5-turbo"
     usage_chunk_sent = False
 
     # Performance tracking
@@ -681,8 +697,7 @@ async def stream_response(
     provider_first_token_time: Optional[float] = None
     token_count = 0
 
-    # Track accumulated output for Langfuse
-    accumulated_output: list[str] = []
+    # Track finish_reason for Langfuse
     finish_reason: Optional[str] = None
 
     try:
@@ -744,10 +759,9 @@ async def stream_response(
                                 if "usage" in json_obj and json_obj["usage"]:
                                     usage = json_obj["usage"]
 
-                                    # Capture provider usage (will be used at stream end)
+                                    # Update token counter with provider usage
                                     usage_found = True
-                                    input_tokens = usage.get("prompt_tokens", input_tokens)
-                                    output_tokens = usage.get("completion_tokens", output_tokens)
+                                    token_counter.update_provider_usage(usage)
 
                                     # Capture usage for Langfuse
                                     if generation_data:
@@ -790,22 +804,21 @@ async def stream_response(
                                     token_count += count_tokens(
                                         content, model_for_counting
                                     )
-                                    accumulated_output.append(content)
+                                    # Accumulate content in token counter
+                                    token_counter.accumulate_content(content)
                                 # Capture finish_reason for Langfuse
                                 if choice.get("finish_reason"):
                                     finish_reason = choice.get("finish_reason")
             except Exception as e:
                 logger.debug(f"Failed to count tokens for TPS: {e}")
 
-            if finish_reason and not usage_found and accumulated_output:
-                output_tokens = count_tokens(
-                    "".join(accumulated_output), model_for_counting
-                )
+            # Get current usage from token counter for SSE rewriting
+            current_usage = token_counter.finalize()
 
             # Create state dict for usage injection
             rewrite_state = {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
+                "input_tokens": current_usage["prompt_tokens"],
+                "output_tokens": current_usage["completion_tokens"],
                 "usage_found": usage_found,
                 "usage_chunk_sent": usage_chunk_sent,
             }
@@ -818,25 +831,21 @@ async def stream_response(
                 gemini_model=gemini_model,
             )
 
-            # Update output_tokens from state (may be modified during rewrite)
-            output_tokens = rewrite_state["output_tokens"]
+            # Update usage_chunk_sent from state
             usage_chunk_sent = rewrite_state["usage_chunk_sent"]
 
             yield rewritten_chunk
 
-        # Record token usage metrics at stream end (from exit point)
-        # Use provider usage if available, otherwise use calculated fallback
-        if not usage_found and request_data:
-            # Fallback: calculate output tokens from accumulated content
-            if output_tokens == 0 and accumulated_output:
-                output_tokens = count_tokens(
-                    "".join(accumulated_output), model_for_counting
-                )
-            # Capture fallback usage for Langfuse
-            if generation_data:
-                generation_data.prompt_tokens = input_tokens
-                generation_data.completion_tokens = output_tokens
-                generation_data.total_tokens = input_tokens + output_tokens
+        # Finalize token counter and get final usage
+        final_usage = token_counter.finalize()
+        input_tokens = final_usage["prompt_tokens"]
+        output_tokens = final_usage["completion_tokens"]
+
+        # Capture fallback usage for Langfuse if provider didn't provide it
+        if not usage_found and generation_data:
+            generation_data.prompt_tokens = input_tokens
+            generation_data.completion_tokens = output_tokens
+            generation_data.total_tokens = input_tokens + output_tokens
 
         # Record all stream metrics using unified function
         stats = StreamStats(
@@ -853,7 +862,7 @@ async def stream_response(
 
         # Finalize Langfuse generation data
         if generation_data:
-            generation_data.output_content = "".join(accumulated_output)
+            generation_data.output_content = token_counter.output_content
             generation_data.finish_reason = finish_reason
             generation_data.end_time = datetime.now(timezone.utc)
             langfuse_service.trace_generation(generation_data)
@@ -879,7 +888,7 @@ async def stream_response(
             generation_data.error_message = (
                 f"Provider {provider_name} closed connection unexpectedly"
             )
-            generation_data.output_content = "".join(accumulated_output)
+            generation_data.output_content = token_counter.output_content
             generation_data.end_time = datetime.now(timezone.utc)
             langfuse_service.trace_generation(generation_data)
 
@@ -906,7 +915,7 @@ async def stream_response(
         if generation_data:
             generation_data.is_error = True
             generation_data.error_message = error_detail
-            generation_data.output_content = "".join(accumulated_output)
+            generation_data.output_content = token_counter.output_content
             generation_data.end_time = datetime.now(timezone.utc)
             langfuse_service.trace_generation(generation_data)
 

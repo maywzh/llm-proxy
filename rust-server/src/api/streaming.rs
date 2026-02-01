@@ -2,6 +2,15 @@
 //!
 //! This module handles streaming responses from LLM providers, including
 //! model name rewriting and token usage tracking.
+//!
+//! Token counting is unified using `OutboundTokenCounter`:
+//! - Input tokens are pre-calculated at inbound (passed to this module)
+//! - Output tokens are accumulated during streaming
+//! - Final usage is calculated at outbound (finalize) with provider usage priority
+//!
+//! Tokenizer selection:
+//! - tiktoken for OpenAI models (default)
+//! - HuggingFace tokenizers for Claude/Cohere/Llama models (when available)
 
 use crate::api::gemini3::normalize_response_payload;
 use crate::api::models::Usage;
@@ -11,6 +20,9 @@ use crate::core::langfuse::{get_langfuse_service, GenerationData};
 use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
+use crate::core::tokenizer::{count_tokens_hf, get_hf_tokenizer, select_tokenizer, TokenizerType};
+use crate::core::OutboundTokenCounter;
+use crate::transformer::unified::UnifiedUsage;
 use axum::body::Body;
 use axum::response::Response as AxumResponse;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -56,8 +68,7 @@ fn get_cached_bpe(model: &str) -> Option<Arc<tiktoken_rs::CoreBPE>> {
     let bpe = if normalized_lower.contains("gpt-4o") {
         tiktoken_rs::o200k_base()
     } else {
-        tiktoken_rs::get_bpe_from_model(normalized.as_ref())
-            .or_else(|_| tiktoken_rs::cl100k_base())
+        tiktoken_rs::get_bpe_from_model(normalized.as_ref()).or_else(|_| tiktoken_rs::cl100k_base())
     }
     .ok()?;
 
@@ -90,12 +101,12 @@ fn env_u32(key: &str, default: u32) -> u32 {
 /// Each stream has its own state, processed sequentially
 struct StreamState {
     stream: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
-    output_tokens: usize,
+    /// Outbound token counter for unified usage calculation
+    token_counter: OutboundTokenCounter,
     usage_found: bool,
-    usage_chunk_sent: bool,  // Track if fallback usage chunk has been sent
+    usage_chunk_sent: bool, // Track if fallback usage chunk has been sent
     start_time: Instant,
     provider_first_token_time: Option<Instant>,
-    input_tokens: usize,
     original_model: String,
     gemini_model: Option<String>,
     provider_name: String,
@@ -107,7 +118,7 @@ struct StreamState {
     first_chunk_received: bool,
     /// Langfuse generation data (None if Langfuse disabled or not sampled)
     generation_data: Option<GenerationData>,
-    /// Accumulated output content for Langfuse
+    /// Accumulated output content for Langfuse (kept for backward compatibility)
     accumulated_output: Vec<String>,
     /// Finish reason from the stream
     finish_reason: Option<String>,
@@ -119,8 +130,6 @@ struct StreamState {
     accumulated_sse_data: Vec<String>,
     /// Request ID for JSONL logging
     request_id: String,
-    /// Provider usage (stored for recording at exit)
-    provider_usage: Option<Usage>,
 }
 
 impl StreamState {
@@ -135,14 +144,16 @@ impl StreamState {
         ttft_timeout_secs: Option<u64>,
         generation_data: Option<GenerationData>,
     ) -> Self {
+        // Create OutboundTokenCounter with pre-calculated input tokens
+        let token_counter = OutboundTokenCounter::new(&original_model, input_tokens as i32);
+
         Self {
             stream: Box::pin(stream),
-            output_tokens: 0,
+            token_counter,
             usage_found: false,
             usage_chunk_sent: false,
             start_time: Instant::now(),
             provider_first_token_time: None,
-            input_tokens,
             original_model,
             gemini_model,
             provider_name,
@@ -157,7 +168,6 @@ impl StreamState {
             stream_start_logged: false,
             accumulated_sse_data: Vec::new(),
             request_id: String::new(),
-            provider_usage: None,
         }
     }
 }
@@ -206,20 +216,16 @@ fn calculate_message_tokens_internal(
     use_default_image_token_count: bool,
     default_token_count: Option<usize>,
 ) -> TokenCountResult<usize> {
-    let message_tokens =
-        count_messages(messages, model, use_default_image_token_count, default_token_count)?;
-    let includes_system_message = messages.iter().any(|message| {
-        message
-            .get("role")
-            .and_then(|role| role.as_str())
-            == Some("system")
-    });
-    let extra_tokens = count_extra(
+    let message_tokens = count_messages(
+        messages,
         model,
-        tools,
-        tool_choice,
-        includes_system_message,
-    );
+        use_default_image_token_count,
+        default_token_count,
+    )?;
+    let includes_system_message = messages
+        .iter()
+        .any(|message| message.get("role").and_then(|role| role.as_str()) == Some("system"));
+    let extra_tokens = count_extra(model, tools, tool_choice, includes_system_message);
     Ok(message_tokens + extra_tokens)
 }
 
@@ -451,8 +457,30 @@ fn fallback_or_err(default_token_count: Option<usize>, err: String) -> TokenCoun
     }
 }
 
-/// Count tokens in text using cached encoder
+/// Count tokens in text using the appropriate tokenizer for the model
+///
+/// This function selects the appropriate tokenizer based on the model name:
+/// - HuggingFace tokenizers for Llama, Cohere, Mistral models
+/// - tiktoken for OpenAI and other models (default)
 pub fn count_tokens(text: &str, model: &str) -> usize {
+    let selection = select_tokenizer(model);
+
+    match selection.tokenizer_type {
+        TokenizerType::HuggingFace => {
+            if let Some(repo) = &selection.hf_repo {
+                if let Some(tokenizer) = get_hf_tokenizer(repo) {
+                    return count_tokens_hf(text, &tokenizer);
+                }
+            }
+            // Fallback to tiktoken if HuggingFace tokenizer fails
+            count_tokens_tiktoken(text, model)
+        }
+        TokenizerType::Tiktoken => count_tokens_tiktoken(text, model),
+    }
+}
+
+/// Count tokens using tiktoken (BPE encoder)
+fn count_tokens_tiktoken(text: &str, model: &str) -> usize {
     if let Some(bpe) = get_cached_bpe(model) {
         bpe.encode_with_special_tokens(text).len()
     } else {
@@ -491,8 +519,12 @@ fn calculate_image_tokens_with_default(
         "high" => {
             let (width, height) = get_image_dimensions(image_url)?;
             let (resized_width, resized_height) = resize_image_high_res(width, height);
-            let tiles_needed =
-                calculate_tiles_needed(resized_width, resized_height, MAX_TILE_WIDTH, MAX_TILE_HEIGHT);
+            let tiles_needed = calculate_tiles_needed(
+                resized_width,
+                resized_height,
+                MAX_TILE_WIDTH,
+                MAX_TILE_HEIGHT,
+            );
             let tile_tokens = (base_tokens * 2) * tiles_needed;
             Ok((base_tokens + tile_tokens) as usize)
         }
@@ -506,10 +538,7 @@ fn count_image_tokens_value(
 ) -> TokenCountResult<usize> {
     match image_url {
         Value::Object(obj) => {
-            let detail = obj
-                .get("detail")
-                .and_then(|d| d.as_str())
-                .unwrap_or("auto");
+            let detail = obj.get("detail").and_then(|d| d.as_str()).unwrap_or("auto");
             if !matches!(detail, "low" | "high" | "auto") {
                 return Err(format!("Invalid detail value: {}", detail));
             }
@@ -538,8 +567,10 @@ fn get_image_dimensions(data: &str) -> TokenCountResult<(u32, u32)> {
     match get_image_type(&img_data) {
         Some("png") => {
             if img_data.len() >= 24 {
-                let width = u32::from_be_bytes([img_data[16], img_data[17], img_data[18], img_data[19]]);
-                let height = u32::from_be_bytes([img_data[20], img_data[21], img_data[22], img_data[23]]);
+                let width =
+                    u32::from_be_bytes([img_data[16], img_data[17], img_data[18], img_data[19]]);
+                let height =
+                    u32::from_be_bytes([img_data[20], img_data[21], img_data[22], img_data[23]]);
                 return Ok((width, height));
             }
         }
@@ -558,15 +589,22 @@ fn get_image_dimensions(data: &str) -> TokenCountResult<(u32, u32)> {
         Some("webp") => {
             if img_data.len() >= 30 {
                 if &img_data[12..16] == b"VP8X" {
-                    let width = u32::from_le_bytes([img_data[24], img_data[25], img_data[26], 0]) + 1;
-                    let height = u32::from_le_bytes([img_data[27], img_data[28], img_data[29], 0]) + 1;
+                    let width =
+                        u32::from_le_bytes([img_data[24], img_data[25], img_data[26], 0]) + 1;
+                    let height =
+                        u32::from_le_bytes([img_data[27], img_data[28], img_data[29], 0]) + 1;
                     return Ok((width, height));
                 } else if &img_data[12..16] == b"VP8 " {
                     let width = u16::from_le_bytes([img_data[26], img_data[27]]) & 0x3FFF;
                     let height = u16::from_le_bytes([img_data[28], img_data[29]]) & 0x3FFF;
                     return Ok((width as u32, height as u32));
                 } else if &img_data[12..16] == b"VP8L" {
-                    let bits = u32::from_le_bytes([img_data[21], img_data[22], img_data[23], img_data[24]]);
+                    let bits = u32::from_le_bytes([
+                        img_data[21],
+                        img_data[22],
+                        img_data[23],
+                        img_data[24],
+                    ]);
                     let width = (bits & 0x3FFF) + 1;
                     let height = ((bits >> 14) & 0x3FFF) + 1;
                     return Ok((width, height));
@@ -595,7 +633,8 @@ fn fetch_image_bytes(data: &str) -> TokenCountResult<Vec<u8>> {
 }
 
 fn get_image_type(image_data: &[u8]) -> Option<&'static str> {
-    if image_data.len() >= 8 && image_data[..8] == [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] {
+    if image_data.len() >= 8 && image_data[..8] == [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+    {
         return Some("png");
     }
     if image_data.len() >= 6 && &image_data[..4] == b"GIF8" && image_data[5] == b'a' {
@@ -655,8 +694,14 @@ fn parse_jpeg_dimensions(image_data: &[u8]) -> Option<(u32, u32)> {
 }
 
 fn resize_image_high_res(width: u32, height: u32) -> (u32, u32) {
-    let max_short_side = env_u32("MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES", MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES);
-    let max_long_side = env_u32("MAX_LONG_SIDE_FOR_IMAGE_HIGH_RES", MAX_LONG_SIDE_FOR_IMAGE_HIGH_RES);
+    let max_short_side = env_u32(
+        "MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES",
+        MAX_SHORT_SIDE_FOR_IMAGE_HIGH_RES,
+    );
+    let max_long_side = env_u32(
+        "MAX_LONG_SIDE_FOR_IMAGE_HIGH_RES",
+        MAX_LONG_SIDE_FOR_IMAGE_HIGH_RES,
+    );
 
     if width <= max_short_side && height <= max_short_side {
         return (width, height);
@@ -727,7 +772,9 @@ fn format_function_definitions(tools: &[Value]) -> String {
             .and_then(|n| n.as_str())
             .unwrap_or("unknown");
         let parameters = function.get("parameters").and_then(|p| p.as_object());
-        let properties = parameters.and_then(|p| p.get("properties")).and_then(|p| p.as_object());
+        let properties = parameters
+            .and_then(|p| p.get("properties"))
+            .and_then(|p| p.as_object());
 
         if let Some(properties) = properties {
             if !properties.is_empty() {
@@ -748,7 +795,10 @@ fn format_function_definitions(tools: &[Value]) -> String {
     lines.join("\n")
 }
 
-fn format_object_parameters(parameters: Option<&serde_json::Map<String, Value>>, indent: usize) -> String {
+fn format_object_parameters(
+    parameters: Option<&serde_json::Map<String, Value>>,
+    indent: usize,
+) -> String {
     let Some(params) = parameters else {
         return String::new();
     };
@@ -762,11 +812,7 @@ fn format_object_parameters(parameters: Option<&serde_json::Map<String, Value>>,
     let required_params = params
         .get("required")
         .and_then(|r| r.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .collect::<Vec<_>>()
-        })
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
         .unwrap_or_default();
 
     let mut lines = Vec::new();
@@ -774,7 +820,11 @@ fn format_object_parameters(parameters: Option<&serde_json::Map<String, Value>>,
         if let Some(description) = props.get("description").and_then(|d| d.as_str()) {
             lines.push(format!("// {}", description));
         }
-        let optional = if required_params.contains(&key.as_str()) { "" } else { "?" };
+        let optional = if required_params.contains(&key.as_str()) {
+            ""
+        } else {
+            "?"
+        };
         let prop_type = format_type(props, indent);
         lines.push(format!("{}{}: {},", key, optional, prop_type));
     }
@@ -822,7 +872,6 @@ fn format_type(props: &Value, indent: usize) -> String {
         _ => "any".to_string(),
     }
 }
-
 
 /// Create an SSE stream from a provider response with token counting and optional TTFT timeout.
 ///
@@ -1081,14 +1130,19 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                 }
 
                 // Check for usage first - only accept if prompt_tokens > 0
-                // Store provider usage for recording at exit (not immediately)
+                // Update provider usage in OutboundTokenCounter
                 if !state.usage_found {
                     if let Some(usage_value) = json_obj.get("usage") {
                         if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
                             // Only accept valid usage (prompt_tokens > 0), otherwise keep fallback
                             if usage.prompt_tokens > 0 {
-                                // Store provider usage for recording at exit
-                                state.provider_usage = Some(usage.clone());
+                                // Update provider usage in OutboundTokenCounter
+                                let unified_usage = UnifiedUsage {
+                                    input_tokens: usage.prompt_tokens as i32,
+                                    output_tokens: usage.completion_tokens as i32,
+                                    ..Default::default()
+                                };
+                                state.token_counter.update_provider_usage(&unified_usage);
                                 state.usage_found = true;
 
                                 // Capture usage for Langfuse
@@ -1129,9 +1183,14 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                         }
                     }
 
-                    // Accumulate output content for fallback usage and Langfuse
-                    for content in contents {
-                        if !state.usage_found || state.generation_data.is_some() {
+                    // Accumulate output content using OutboundTokenCounter
+                    for content in &contents {
+                        state.token_counter.accumulate_content(content);
+                    }
+
+                    // Also keep accumulated_output for Langfuse (backward compatibility)
+                    if state.generation_data.is_some() {
+                        for content in contents {
                             state.accumulated_output.push(content);
                         }
                     }
@@ -1139,15 +1198,13 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
 
                 // Inject fallback usage into finish_reason chunk if provider didn't provide it
                 if has_finish_reason && !state.usage_found {
-                    if state.output_tokens == 0 && !state.accumulated_output.is_empty() {
-                        let output_text = state.accumulated_output.join("");
-                        state.output_tokens = count_tokens(&output_text, &state.original_model);
-                    }
-                    if state.input_tokens > 0 || state.output_tokens > 0 {
+                    // Use OutboundTokenCounter to get final usage
+                    let final_usage = state.token_counter.finalize();
+                    if final_usage.input_tokens > 0 || final_usage.output_tokens > 0 {
                         json_obj["usage"] = json!({
-                            "prompt_tokens": state.input_tokens,
-                            "completion_tokens": state.output_tokens,
-                            "total_tokens": state.input_tokens + state.output_tokens
+                            "prompt_tokens": final_usage.input_tokens,
+                            "completion_tokens": final_usage.output_tokens,
+                            "total_tokens": final_usage.input_tokens + final_usage.output_tokens
                         });
                         chunk_modified = true;
                         state.usage_chunk_sent = true;
@@ -1187,22 +1244,22 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
         }
     }
 
-// Now add [DONE] if it was detected
-if has_done {
-    rewritten_lines.push("data: [DONE]".to_string());
-    chunk_modified = true;
-}
-
-// Return rewritten chunk with proper SSE formatting (\n\n between events)
-if chunk_modified {
-    let mut result = rewritten_lines.join("\n\n");
-    if !result.is_empty() {
-        result.push_str("\n\n");
+    // Now add [DONE] if it was detected
+    if has_done {
+        rewritten_lines.push("data: [DONE]".to_string());
+        chunk_modified = true;
     }
-    result.into_bytes()
-} else {
-    bytes.to_vec()
-}
+
+    // Return rewritten chunk with proper SSE formatting (\n\n between events)
+    if chunk_modified {
+        let mut result = rewritten_lines.join("\n\n");
+        if !result.is_empty() {
+            result.push_str("\n\n");
+        }
+        result.into_bytes()
+    } else {
+        bytes.to_vec()
+    }
 }
 
 /// Finalize stream and record metrics
@@ -1215,22 +1272,10 @@ fn finalize_stream(state: &mut StreamState) {
         "[Stream End] Streaming completed"
     );
 
-    if !state.usage_found && state.output_tokens == 0 && !state.accumulated_output.is_empty() {
-        let output_text = state.accumulated_output.join("");
-        state.output_tokens = count_tokens(&output_text, &state.original_model);
-    }
-
-    // Determine final output tokens (prefer provider usage if available)
-    let final_input_tokens = if let Some(ref usage) = state.provider_usage {
-        usage.prompt_tokens as usize
-    } else {
-        state.input_tokens
-    };
-    let final_output_tokens = if let Some(ref usage) = state.provider_usage {
-        usage.completion_tokens as usize
-    } else {
-        state.output_tokens
-    };
+    // Get final usage from OutboundTokenCounter (handles provider usage priority)
+    let final_usage = state.token_counter.finalize();
+    let final_input_tokens = final_usage.input_tokens as usize;
+    let final_output_tokens = final_usage.output_tokens as usize;
 
     // Record all stream metrics using unified function
     let stats = StreamStats {
@@ -1249,16 +1294,22 @@ fn finalize_stream(state: &mut StreamState) {
     if let Some(ref gen_data) = state.generation_data {
         let mut final_gen_data = gen_data.clone();
 
-        // Set output content from accumulated output
-        final_gen_data.output_content = Some(state.accumulated_output.join(""));
+        // Set output content from accumulated output (or from token_counter)
+        let output_content = if !state.accumulated_output.is_empty() {
+            state.accumulated_output.join("")
+        } else {
+            state.token_counter.output_content().to_string()
+        };
+        final_gen_data.output_content = Some(output_content);
         final_gen_data.finish_reason = state.finish_reason.clone();
         final_gen_data.end_time = Some(Utc::now());
 
-        // Set token usage (from provider or fallback)
+        // Set token usage from OutboundTokenCounter
         if !state.usage_found {
-            final_gen_data.prompt_tokens = state.input_tokens as u32;
-            final_gen_data.completion_tokens = state.output_tokens as u32;
-            final_gen_data.total_tokens = (state.input_tokens + state.output_tokens) as u32;
+            final_gen_data.prompt_tokens = final_usage.input_tokens as u32;
+            final_gen_data.completion_tokens = final_usage.output_tokens as u32;
+            final_gen_data.total_tokens =
+                (final_usage.input_tokens + final_usage.output_tokens) as u32;
         }
 
         // Send to Langfuse (non-blocking)
@@ -1335,6 +1386,29 @@ fn extract_stream_text(chunk_obj: &Value) -> Vec<String> {
                 // Extract reasoning_content field (for OpenAI-compatible APIs like Grok)
                 if let Some(reasoning) = delta.get("reasoning_content").and_then(|r| r.as_str()) {
                     contents.push(reasoning.to_string());
+                }
+                // Extract tool_calls arguments for token counting
+                // When LLM returns tool_calls instead of text content, we need to count
+                // the arguments JSON as output tokens
+                if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
+                    for tool_call in tool_calls {
+                        if let Some(function) = tool_call.get("function") {
+                            // Extract function arguments (partial JSON string in streaming)
+                            if let Some(arguments) =
+                                function.get("arguments").and_then(|a| a.as_str())
+                            {
+                                if !arguments.is_empty() {
+                                    contents.push(arguments.to_string());
+                                }
+                            }
+                            // Also count function name if present (first chunk of tool_call)
+                            if let Some(name) = function.get("name").and_then(|n| n.as_str()) {
+                                if !name.is_empty() {
+                                    contents.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1543,7 +1617,6 @@ mod tests {
         assert!(tokens > 85);
     }
 
-
     #[test]
     fn test_stream_state_creation() {
         use futures::stream;
@@ -1560,8 +1633,9 @@ mod tests {
             None,     // generation_data (Langfuse disabled)
         );
 
-        assert_eq!(state.input_tokens, 100);
-        assert_eq!(state.output_tokens, 0);
+        // Verify token_counter is initialized with input_tokens
+        assert_eq!(state.token_counter.input_tokens(), 100);
+        assert!(state.token_counter.output_content().is_empty());
         assert!(!state.usage_found);
         assert!(state.provider_first_token_time.is_none());
         assert_eq!(state.api_key_name, "test-key");
@@ -1602,5 +1676,160 @@ mod tests {
         let gen = state.generation_data.as_ref().unwrap();
         assert_eq!(gen.trace_id, "test-trace-id");
         assert_eq!(gen.request_id, "test-request-id");
+    }
+
+    #[test]
+    fn test_extract_stream_text_with_tool_calls() {
+        // Test that tool_calls arguments are extracted for token counting
+        let chunk = serde_json::json!({
+            "id": "chatcmpl-123",
+            "object": "chat.completion.chunk",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"location\": \"San Francisco\"}"
+                        }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        });
+
+        let contents = extract_stream_text(&chunk);
+
+        // Should extract both function name and arguments
+        assert_eq!(contents.len(), 2);
+        assert!(contents.contains(&"get_weather".to_string()));
+        assert!(contents.contains(&"{\"location\": \"San Francisco\"}".to_string()));
+    }
+
+    #[test]
+    fn test_extract_stream_text_with_tool_calls_partial_arguments() {
+        // Test streaming tool_calls where arguments come in chunks
+        let chunk = serde_json::json!({
+            "id": "chatcmpl-123",
+            "object": "chat.completion.chunk",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {
+                            "arguments": "{\"city\":"
+                        }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        });
+
+        let contents = extract_stream_text(&chunk);
+
+        // Should extract partial arguments
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0], "{\"city\":");
+    }
+
+    #[test]
+    fn test_extract_stream_text_with_tool_calls_empty_arguments() {
+        // Test that empty arguments are not extracted
+        let chunk = serde_json::json!({
+            "id": "chatcmpl-123",
+            "object": "chat.completion.chunk",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {
+                            "arguments": ""
+                        }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        });
+
+        let contents = extract_stream_text(&chunk);
+
+        // Should not extract empty arguments
+        assert!(contents.is_empty());
+    }
+
+    #[test]
+    fn test_extract_stream_text_mixed_content_and_tool_calls() {
+        // Test chunk with both content and tool_calls (unusual but possible)
+        let chunk = serde_json::json!({
+            "id": "chatcmpl-123",
+            "object": "chat.completion.chunk",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "content": "Let me check the weather",
+                    "tool_calls": [{
+                        "index": 0,
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{}"
+                        }
+                    }]
+                },
+                "finish_reason": null
+            }]
+        });
+
+        let contents = extract_stream_text(&chunk);
+
+        // Should extract both content and tool_calls
+        assert_eq!(contents.len(), 3);
+        assert!(contents.contains(&"Let me check the weather".to_string()));
+        assert!(contents.contains(&"get_weather".to_string()));
+        assert!(contents.contains(&"{}".to_string()));
+    }
+
+    #[test]
+    fn test_extract_stream_text_multiple_tool_calls() {
+        // Test multiple tool_calls in a single chunk
+        let chunk = serde_json::json!({
+            "id": "chatcmpl-123",
+            "object": "chat.completion.chunk",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": "{\"city\":\"NYC\"}"
+                            }
+                        },
+                        {
+                            "index": 1,
+                            "function": {
+                                "name": "get_time",
+                                "arguments": "{\"timezone\":\"EST\"}"
+                            }
+                        }
+                    ]
+                },
+                "finish_reason": null
+            }]
+        });
+
+        let contents = extract_stream_text(&chunk);
+
+        // Should extract all tool_calls
+        assert_eq!(contents.len(), 4);
+        assert!(contents.contains(&"get_weather".to_string()));
+        assert!(contents.contains(&"{\"city\":\"NYC\"}".to_string()));
+        assert!(contents.contains(&"get_time".to_string()));
+        assert!(contents.contains(&"{\"timezone\":\"EST\"}".to_string()));
     }
 }

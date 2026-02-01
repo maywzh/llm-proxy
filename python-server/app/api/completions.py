@@ -44,6 +44,7 @@ from app.core.logging import (
     clear_provider_context,
     get_api_key_name,
 )
+from app.core.utils import strip_provider_suffix
 from app.utils.client import extract_client
 from app.models.provider import Provider
 
@@ -67,30 +68,6 @@ class RequestContext:
     effective_model: Optional[str]
     request_data: dict
     is_streaming: bool
-
-
-def _strip_provider_suffix(model: str) -> str:
-    """Strip the global provider suffix from model name if present.
-
-    If PROVIDER_SUFFIX is set (e.g., "Proxy"), then model names like
-    "Proxy/gpt-4" will be converted to "gpt-4". Model names without
-    the prefix (e.g., "gpt-4") are returned unchanged.
-
-    Args:
-        model: The model name, possibly with provider suffix prefix
-
-    Returns:
-        The model name with provider suffix stripped if it was present
-    """
-    env_config = get_env_config()
-    provider_suffix = env_config.provider_suffix
-
-    if provider_suffix and "/" in model:
-        prefix, base_model = model.split("/", 1)
-        if prefix == provider_suffix:
-            return base_model
-
-    return model
 
 
 def _attach_response_metadata(response, model_name: str, provider_name: str):
@@ -236,7 +213,7 @@ async def _parse_request_body(
 
     # Strip provider suffix if present (e.g., "Proxy/gpt-4" -> "gpt-4")
     effective_model = (
-        _strip_provider_suffix(original_model) if original_model else original_model
+        strip_provider_suffix(original_model) if original_model else original_model
     )
 
     # Capture input data for Langfuse
@@ -574,7 +551,11 @@ async def _handle_non_streaming_request(
             request_id=request_id,
             provider=provider.name,
             status_code=response.status_code,
-            error_msg=error_body.get("error", {}).get("message") if isinstance(error_body.get("error"), dict) else error_body.get("error"),
+            error_msg=(
+                error_body.get("error", {}).get("message")
+                if isinstance(error_body.get("error"), dict)
+                else error_body.get("error")
+            ),
             body=error_body,
         )
 

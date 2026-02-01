@@ -205,7 +205,10 @@ fn extract_api_key_from_headers(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Find credential config by API key
-fn find_credential_by_key(api_key: &str, credentials: &[CredentialConfig]) -> Option<CredentialConfig> {
+fn find_credential_by_key(
+    api_key: &str,
+    credentials: &[CredentialConfig],
+) -> Option<CredentialConfig> {
     let key_hash = hash_key(api_key);
     credentials
         .iter()
@@ -243,7 +246,10 @@ pub async fn model_permission_middleware<S: HasCredentials>(
 
     // Parse JSON to extract model
     let model = match serde_json::from_slice::<Value>(&bytes) {
-        Ok(json) => json.get("model").and_then(|m| m.as_str()).map(|s| s.to_string()),
+        Ok(json) => json
+            .get("model")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string()),
         Err(_) => {
             // Invalid JSON, let handler deal with it
             let request = Request::from_parts(parts, Body::from(bytes));
@@ -393,19 +399,50 @@ impl MetricsMiddleware {
                 .observe(duration);
         }
 
+        // Check if this is a streaming response (SSE)
+        let is_streaming = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.contains("text/event-stream"))
+            .unwrap_or(false);
+
         // Log request - show model, provider, and key for LLM endpoints
-        if endpoint == "/v1/chat/completions" || endpoint == "/v1/messages" {
-            tracing::info!(
-                "{} {} - status={} client={} key={} model={} provider={} duration={:.3}s",
-                method,
-                endpoint,
-                status_code,
-                client,
-                api_key_name,
-                model,
-                provider,
-                duration
-            );
+        let is_llm_endpoint = endpoint == "/v1/chat/completions"
+            || endpoint == "/v1/messages"
+            || endpoint == "/v1/completions"
+            || endpoint == "/v2/chat/completions"
+            || endpoint == "/v2/messages"
+            || endpoint == "/v2/completions"
+            || endpoint == "/v2/responses";
+        if is_llm_endpoint {
+            // For streaming responses, duration is actually TTFB (time to first byte)
+            // since next.run() returns when headers are ready, not when body is complete
+            if is_streaming {
+                tracing::info!(
+                    "{} {} - status={} client={} key={} model={} provider={} ttfb={:.3}s",
+                    method,
+                    endpoint,
+                    status_code,
+                    client,
+                    api_key_name,
+                    model,
+                    provider,
+                    duration
+                );
+            } else {
+                tracing::info!(
+                    "{} {} - status={} client={} key={} model={} provider={} duration={:.3}s",
+                    method,
+                    endpoint,
+                    status_code,
+                    client,
+                    api_key_name,
+                    model,
+                    provider,
+                    duration
+                );
+            }
         } else {
             tracing::info!(
                 "{} {} - status={} duration={:.3}s",
@@ -509,7 +546,10 @@ mod tests {
             .route(endpoint, get(move || slow_handler(in_handler_clone)))
             .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
 
-        let request = Request::builder().uri(endpoint).body(Body::empty()).unwrap();
+        let request = Request::builder()
+            .uri(endpoint)
+            .body(Body::empty())
+            .unwrap();
 
         let handle = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
 
@@ -559,14 +599,7 @@ mod tests {
 
         let metric = metrics
             .request_duration
-            .with_label_values(&[
-                "GET",
-                "/test",
-                "gpt-4",
-                "openai",
-                "test-key",
-                "unknown",
-            ]);
+            .with_label_values(&["GET", "/test", "gpt-4", "openai", "test-key", "unknown"]);
 
         assert!(metric.get_sample_count() > 0);
     }
@@ -633,7 +666,12 @@ mod tests {
     #[test]
     fn test_extract_client_claude_code() {
         let mut headers = HeaderMap::new();
-        headers.insert("user-agent", "claude-cli/2.1.25 (external, claude-vscode)".parse().unwrap());
+        headers.insert(
+            "user-agent",
+            "claude-cli/2.1.25 (external, claude-vscode)"
+                .parse()
+                .unwrap(),
+        );
         assert_eq!(extract_client(&headers), "claude-code");
     }
 
@@ -647,14 +685,24 @@ mod tests {
     #[test]
     fn test_extract_client_codex_cli() {
         let mut headers = HeaderMap::new();
-        headers.insert("user-agent", "codex_cli_rs/0.89.0 (Mac OS 26.2.0; arm64)".parse().unwrap());
+        headers.insert(
+            "user-agent",
+            "codex_cli_rs/0.89.0 (Mac OS 26.2.0; arm64)"
+                .parse()
+                .unwrap(),
+        );
         assert_eq!(extract_client(&headers), "codex-cli");
     }
 
     #[test]
     fn test_extract_client_ai_sdk_openai() {
         let mut headers = HeaderMap::new();
-        headers.insert("user-agent", "ai-sdk/openai-compatible/1.0.31 ai-sdk/provider-ut".parse().unwrap());
+        headers.insert(
+            "user-agent",
+            "ai-sdk/openai-compatible/1.0.31 ai-sdk/provider-ut"
+                .parse()
+                .unwrap(),
+        );
         assert_eq!(extract_client(&headers), "ai-sdk-openai");
     }
 
@@ -682,7 +730,12 @@ mod tests {
     #[test]
     fn test_extract_client_browser() {
         let mut headers = HeaderMap::new();
-        headers.insert("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)".parse().unwrap());
+        headers.insert(
+            "user-agent",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+                .parse()
+                .unwrap(),
+        );
         assert_eq!(extract_client(&headers), "browser");
     }
 
@@ -696,7 +749,10 @@ mod tests {
     #[test]
     fn test_extract_client_apifox() {
         let mut headers = HeaderMap::new();
-        headers.insert("user-agent", "Apifox/1.0.0 (https://apifox.com)".parse().unwrap());
+        headers.insert(
+            "user-agent",
+            "Apifox/1.0.0 (https://apifox.com)".parse().unwrap(),
+        );
         assert_eq!(extract_client(&headers), "apifox");
     }
 }
