@@ -24,7 +24,7 @@ use crate::core::middleware::{
 };
 use crate::core::utils::{get_key_name, strip_provider_suffix};
 use crate::core::{AppError, RateLimiter, Result};
-use crate::services::ProviderService;
+use crate::services::{trigger_cooldown_if_needed, ProviderService};
 use crate::with_request_context;
 use axum::{
     extract::State,
@@ -631,8 +631,11 @@ async fn handle_backend_error(
         .unwrap_or(&format!("HTTP {}", status))
         .to_string();
     generation_data.is_error = true;
-    generation_data.error_message = Some(error_message);
+    generation_data.error_message = Some(error_message.clone());
     generation_data.end_time = Some(Utc::now());
+
+    // Trigger cooldown for 429 and 5xx errors from provider
+    trigger_cooldown_if_needed(provider_name, status.as_u16(), Some(error_message));
 
     if trace_id.is_some() {
         let langfuse = get_langfuse_service();

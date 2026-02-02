@@ -5,6 +5,7 @@ from typing import Optional
 
 from app.models.provider import Provider, _is_pattern
 from app.core.config import get_config
+from app.services.cooldown_service import get_cooldown_service
 
 
 class ProviderService:
@@ -57,27 +58,44 @@ class ProviderService:
             Selected provider
 
         Raises:
-            ValueError: If no provider supports the requested model
+            ValueError: If no provider supports the requested model or all are in cooldown
         """
         if not self._initialized:
             self.initialize()
 
         # If no model specified, use all providers with original weights
         if model is None:
-            return random.choices(self._providers, weights=self._weights, k=1)[0]
+            available_providers = self._providers
+            available_weights = self._weights
+        else:
+            # Filter providers that have the requested model (supports wildcard patterns)
+            available_providers = []
+            available_weights = []
 
-        # Filter providers that have the requested model (supports wildcard patterns)
-        available_providers = []
-        available_weights = []
-
-        for provider, weight in zip(self._providers, self._weights):
-            if provider.supports_model(model):
-                available_providers.append(provider)
-                available_weights.append(weight)
+            for provider, weight in zip(self._providers, self._weights):
+                if provider.supports_model(model):
+                    available_providers.append(provider)
+                    available_weights.append(weight)
 
         # If no provider has the model, raise error
         if not available_providers:
             raise ValueError(f"No provider supports model: {model}")
+
+        # Filter out providers in cooldown
+        cooldown_svc = get_cooldown_service()
+        available_providers, available_weights = cooldown_svc.filter_available_providers(
+            available_providers, available_weights
+        )
+
+        # Check if all providers are in cooldown
+        if not available_providers:
+            all_cooldowns = cooldown_svc.get_all_cooldowns()
+            cooldown_info = ", ".join(
+                f"{k}({v.remaining_seconds}s)" for k, v in all_cooldowns.items()
+            )
+            raise ValueError(
+                f"All providers for model '{model}' are in cooldown: {cooldown_info}"
+            )
 
         return random.choices(available_providers, weights=available_weights, k=1)[0]
 

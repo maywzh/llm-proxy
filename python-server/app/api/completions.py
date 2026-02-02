@@ -48,6 +48,7 @@ from app.core.logging import (
 from app.core.utils import strip_provider_suffix
 from app.utils.client import extract_client
 from app.models.provider import Provider
+from app.services.cooldown_service import trigger_cooldown_if_needed
 
 router = APIRouter()
 logger = get_logger()
@@ -380,6 +381,13 @@ async def _handle_streaming_request(
             if trace_id:
                 langfuse_service.trace_generation(generation_data)
 
+            # Trigger cooldown if needed (for 429, 5xx errors)
+            trigger_cooldown_if_needed(
+                provider_key=provider.name,
+                status_code=response.status_code,
+                error_message=generation_data.error_message,
+            )
+
             error_response = JSONResponse(
                 content=error_body, status_code=response.status_code
             )
@@ -586,6 +594,13 @@ async def _handle_non_streaming_request(
         generation_data.end_time = datetime.now(timezone.utc)
         if trace_id:
             langfuse_service.trace_generation(generation_data)
+
+        # Trigger cooldown if needed (for 429, 5xx errors)
+        trigger_cooldown_if_needed(
+            provider_key=provider.name,
+            status_code=response.status_code,
+            error_message=generation_data.error_message,
+        )
 
         # Faithfully return the backend's status code and error body
         # Use Response instead of JSONResponse to avoid double serialization

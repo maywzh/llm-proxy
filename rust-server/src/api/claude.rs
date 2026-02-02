@@ -29,6 +29,7 @@ use crate::core::{AppError, Result};
 use crate::services::claude_converter::{
     claude_to_openai_request, convert_openai_streaming_to_claude, openai_to_claude_response,
 };
+use crate::services::trigger_cooldown_if_needed;
 use crate::with_request_context;
 use axum::{
     body::Body,
@@ -486,6 +487,10 @@ pub async fn create_message(
                     generation_data.is_error = true;
                     generation_data.error_message = Some(error_message.clone());
                     generation_data.end_time = Some(Utc::now());
+
+                    // Trigger cooldown for 429 and 5xx errors from provider
+                    trigger_cooldown_if_needed(&provider.name, status.as_u16(), Some(error_message.clone()));
+
                     if trace_id.is_some() {
                         if let Ok(service) = langfuse.read() {
                             service.trace_generation(generation_data);

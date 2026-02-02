@@ -18,6 +18,7 @@ use crate::core::database::{
     create_key_preview, CreateCredential, CreateProvider, CredentialEntity, DynamicConfig,
     ProviderEntity, UpdateCredential, UpdateProvider,
 };
+use crate::services::cooldown_service::{get_cooldown_service, CooldownEntry};
 
 /// OpenAPI documentation for Admin API (admin endpoints only)
 #[derive(OpenApi)]
@@ -1134,7 +1135,198 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
         // Config routes
         .route("/config/version", get(get_config_version))
         .route("/config/reload", post(reload_config))
+        // Cooldown routes
+        .route("/cooldowns", get(list_cooldowns).delete(clear_all_cooldowns))
+        .route("/cooldowns/config", get(get_cooldown_config))
+        .route(
+            "/cooldowns/:provider_key",
+            get(get_provider_cooldown).delete(remove_provider_cooldown),
+        )
         // Health check routes
         .nest("/health", health_router())
         .with_state(state)
+}
+
+// ============================================================================
+// Cooldown API Types
+// ============================================================================
+
+/// Response for a single cooldown entry
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(example = json!({
+    "provider_name": "openai-1",
+    "status_code": 429,
+    "exception_type": "rate_limit",
+    "remaining_secs": 45,
+    "cooldown_duration_secs": 60,
+    "error_message": "Rate limit exceeded"
+}))]
+pub struct CooldownResponse {
+    pub provider_name: String,
+    pub status_code: u16,
+    pub exception_type: String,
+    pub remaining_secs: u64,
+    pub cooldown_duration_secs: u64,
+    pub error_message: Option<String>,
+}
+
+impl From<CooldownEntry> for CooldownResponse {
+    fn from(entry: CooldownEntry) -> Self {
+        let remaining = entry.remaining_secs();
+        let duration = entry.cooldown_duration.as_secs();
+        Self {
+            provider_name: entry.provider_name,
+            status_code: entry.status_code,
+            exception_type: entry.exception_type,
+            remaining_secs: remaining,
+            cooldown_duration_secs: duration,
+            error_message: entry.error_message,
+        }
+    }
+}
+
+/// Response containing list of cooldowns
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(example = json!({
+    "enabled": true,
+    "count": 2,
+    "cooldowns": [{
+        "provider_name": "openai-1",
+        "status_code": 429,
+        "exception_type": "rate_limit",
+        "remaining_secs": 45,
+        "cooldown_duration_secs": 60,
+        "error_message": "Rate limit exceeded"
+    }]
+}))]
+pub struct CooldownListResponse {
+    pub enabled: bool,
+    pub count: usize,
+    pub cooldowns: Vec<CooldownResponse>,
+}
+
+/// Response for cooldown configuration
+#[derive(Debug, Serialize, ToSchema)]
+#[schema(example = json!({
+    "enabled": true,
+    "default_cooldown_secs": 30,
+    "max_cooldown_secs": 300,
+    "cooldown_status_codes": [429, 500, 501, 502, 503, 504],
+    "cooldown_durations": {"429": 60, "500": 30, "502": 30, "503": 60, "504": 30}
+}))]
+pub struct CooldownConfigResponse {
+    pub enabled: bool,
+    pub default_cooldown_secs: u64,
+    pub max_cooldown_secs: u64,
+    pub cooldown_status_codes: Vec<u16>,
+    pub cooldown_durations: std::collections::HashMap<String, u64>,
+}
+
+// ============================================================================
+// Cooldown Handlers
+// ============================================================================
+
+/// List all cooldowns
+///
+/// Returns a list of all providers currently in cooldown state.
+pub async fn list_cooldowns(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+) -> Result<Json<CooldownListResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let service = get_cooldown_service();
+    let cooldowns = service.get_all_cooldowns();
+
+    Ok(Json(CooldownListResponse {
+        enabled: service.is_enabled(),
+        count: cooldowns.len(),
+        cooldowns: cooldowns.into_iter().map(|e| e.into()).collect(),
+    }))
+}
+
+/// Get cooldown for a specific provider
+///
+/// Returns the cooldown status for a specific provider by key.
+pub async fn get_provider_cooldown(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(provider_key): Path<String>,
+) -> Result<Json<CooldownResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let service = get_cooldown_service();
+    let entry = service
+        .get_cooldown(&provider_key)
+        .ok_or_else(|| AdminError::NotFound(format!("Provider '{}' is not in cooldown", provider_key)))?;
+
+    Ok(Json(entry.into()))
+}
+
+/// Remove cooldown for a specific provider
+///
+/// Manually removes a provider from cooldown state.
+pub async fn remove_provider_cooldown(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(provider_key): Path<String>,
+) -> Result<StatusCode, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let service = get_cooldown_service();
+    let removed = service.remove_cooldown(&provider_key);
+
+    if !removed {
+        return Err(AdminError::NotFound(format!(
+            "Provider '{}' is not in cooldown",
+            provider_key
+        )));
+    }
+
+    tracing::info!(provider_key = %provider_key, "Provider cooldown manually removed");
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Clear all cooldowns
+///
+/// Removes all providers from cooldown state.
+pub async fn clear_all_cooldowns(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let service = get_cooldown_service();
+    let count = service.active_count();
+    service.clear_all();
+
+    tracing::info!(count = %count, "All provider cooldowns cleared");
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Get cooldown configuration
+///
+/// Returns the current cooldown configuration settings.
+pub async fn get_cooldown_config(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+) -> Result<Json<CooldownConfigResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let service = get_cooldown_service();
+    let config = service.config();
+
+    Ok(Json(CooldownConfigResponse {
+        enabled: config.enabled,
+        default_cooldown_secs: config.default_cooldown_secs,
+        max_cooldown_secs: config.max_cooldown_secs,
+        cooldown_status_codes: config.cooldown_status_codes.clone(),
+        cooldown_durations: config
+            .cooldown_durations
+            .iter()
+            .map(|(k, v)| (k.to_string(), *v))
+            .collect(),
+    }))
 }

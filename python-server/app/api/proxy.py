@@ -55,6 +55,7 @@ from app.core.logging import (
     get_api_key_name,
 )
 from app.models.provider import Provider
+from app.services.cooldown_service import trigger_cooldown_if_needed
 from app.transformer import (
     Protocol,
     ProtocolDetector,
@@ -690,6 +691,13 @@ async def _handle_streaming_request(
             if trace_id:
                 langfuse_service.trace_generation(generation_data)
 
+            # Trigger cooldown if needed (for 429, 5xx errors)
+            trigger_cooldown_if_needed(
+                provider_key=provider.name,
+                status_code=response.status_code,
+                error_message=generation_data.error_message,
+            )
+
             # Log provider error response to JSONL
             log_provider_response(
                 request_id=ctx.request_id,
@@ -841,6 +849,13 @@ async def _handle_non_streaming_request(
         generation_data.end_time = datetime.now(timezone.utc)
         if trace_id:
             langfuse_service.trace_generation(generation_data)
+
+        # Trigger cooldown if needed (for 429, 5xx errors)
+        trigger_cooldown_if_needed(
+            provider_key=provider.name,
+            status_code=response.status_code,
+            error_message=generation_data.error_message,
+        )
 
         # Log provider error response to JSONL
         log_provider_response(

@@ -4,6 +4,7 @@
 //! core business logic, such as provider selection and management.
 
 pub mod claude_converter;
+pub mod cooldown_service;
 pub mod health_check_service;
 pub mod provider_service;
 pub mod response_api_converter;
@@ -11,6 +12,10 @@ pub mod response_api_converter;
 // Re-export commonly used types
 pub use claude_converter::{
     claude_to_openai_request, convert_openai_streaming_to_claude, openai_to_claude_response,
+};
+pub use cooldown_service::{
+    get_cooldown_service, trigger_cooldown_if_needed, CooldownConfig, CooldownEntry,
+    CooldownService,
 };
 pub use health_check_service::{check_providers_health, HealthCheckService};
 pub use provider_service::ProviderService;

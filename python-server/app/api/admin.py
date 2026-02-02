@@ -27,6 +27,10 @@ from app.core.database import (
     hash_key,
     create_key_preview,
 )
+from app.services.cooldown_service import (
+    get_cooldown_service,
+    CooldownEntry,
+)
 
 
 router = APIRouter(prefix="/admin/v1", tags=["admin"])
@@ -919,4 +923,275 @@ async def api_reload_config(
         timestamp=versioned.timestamp.isoformat(),
         providers_count=len(versioned.providers),
         credentials_count=len(versioned.credentials),
+    )
+
+
+# =============================================================================
+# Cooldown Management API
+# =============================================================================
+
+
+class CooldownEntryResponse(BaseModel):
+    """Cooldown entry response model"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "provider_key": "openai-primary",
+                "exception_type": "rate_limit",
+                "status_code": 429,
+                "cooldown_time": 60,
+                "remaining_seconds": 45,
+                "error_message": "Rate limit exceeded",
+                "started_at": "2024-01-01T00:00:00Z",
+                "expires_at": "2024-01-01T00:01:00Z",
+            }
+        }
+    )
+
+    provider_key: str = Field(..., description="Provider key identifier")
+    exception_type: str = Field(
+        ..., description="Type of exception (rate_limit, auth_error, etc.)"
+    )
+    status_code: int = Field(..., description="HTTP status code that triggered cooldown")
+    cooldown_time: int = Field(..., description="Total cooldown duration in seconds")
+    remaining_seconds: int = Field(..., description="Remaining cooldown seconds")
+    error_message: Optional[str] = Field(None, description="Error message")
+    started_at: str = Field(..., description="Cooldown start time in ISO format")
+    expires_at: str = Field(..., description="Cooldown expiration time in ISO format")
+
+
+class CooldownListResponse(BaseModel):
+    """Cooldown list response"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "cooldowns": [
+                    {
+                        "provider_key": "openai-primary",
+                        "exception_type": "rate_limit",
+                        "status_code": 429,
+                        "cooldown_time": 60,
+                        "remaining_seconds": 45,
+                        "error_message": "Rate limit exceeded",
+                        "started_at": "2024-01-01T00:00:00Z",
+                        "expires_at": "2024-01-01T00:01:00Z",
+                    }
+                ],
+                "total_count": 1,
+                "config_enabled": True,
+            }
+        }
+    )
+
+    cooldowns: list[CooldownEntryResponse] = Field(
+        ..., description="List of active cooldowns"
+    )
+    total_count: int = Field(..., description="Total number of active cooldowns")
+    config_enabled: bool = Field(..., description="Whether cooldown feature is enabled")
+
+
+class CooldownConfigResponse(BaseModel):
+    """Cooldown configuration response"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "enabled": True,
+                "default_cooldown_secs": 60,
+                "max_cooldown_secs": 600,
+                "cooldown_status_codes": [429, 500, 502, 503, 504],
+                "cooldown_durations": {"429": 60, "500": 30, "503": 60},
+            }
+        }
+    )
+
+    enabled: bool = Field(..., description="Whether cooldown feature is enabled")
+    default_cooldown_secs: int = Field(
+        ..., description="Default cooldown duration in seconds"
+    )
+    max_cooldown_secs: int = Field(..., description="Maximum cooldown duration in seconds")
+    cooldown_status_codes: list[int] = Field(
+        ..., description="Status codes that trigger cooldown"
+    )
+    cooldown_durations: dict[str, int] = Field(
+        ..., description="Status code specific cooldown durations"
+    )
+
+
+class CooldownClearResponse(BaseModel):
+    """Cooldown clear response"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {"cleared_count": 3, "message": "Cleared 3 cooldown entries"}
+        }
+    )
+
+    cleared_count: int = Field(..., description="Number of cooldowns cleared")
+    message: str = Field(..., description="Status message")
+
+
+def _cooldown_entry_to_response(entry: CooldownEntry) -> CooldownEntryResponse:
+    """Convert CooldownEntry to response model."""
+    return CooldownEntryResponse(
+        provider_key=entry.provider_key,
+        exception_type=entry.exception_type,
+        status_code=entry.status_code,
+        cooldown_time=entry.cooldown_time,
+        remaining_seconds=entry.remaining_seconds,
+        error_message=entry.error_message,
+        started_at=entry.started_at_iso,
+        expires_at=entry.expires_at_iso,
+    )
+
+
+@router.get(
+    "/cooldowns",
+    response_model=CooldownListResponse,
+    summary="List all active cooldowns",
+    description="Get a list of all providers currently in cooldown",
+    tags=["cooldown"],
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+    },
+)
+async def api_list_cooldowns(
+    _: None = Depends(verify_admin_key),
+) -> CooldownListResponse:
+    """List all providers currently in cooldown"""
+    cooldown_svc = get_cooldown_service()
+    cooldowns = cooldown_svc.get_all_cooldowns()
+
+    entries = [_cooldown_entry_to_response(entry) for entry in cooldowns.values()]
+
+    return CooldownListResponse(
+        cooldowns=entries,
+        total_count=len(entries),
+        config_enabled=cooldown_svc.config.enabled,
+    )
+
+
+@router.get(
+    "/cooldowns/config",
+    response_model=CooldownConfigResponse,
+    summary="Get cooldown configuration",
+    description="Get current cooldown configuration settings",
+    tags=["cooldown"],
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+    },
+)
+async def api_get_cooldown_config(
+    _: None = Depends(verify_admin_key),
+) -> CooldownConfigResponse:
+    """Get current cooldown configuration"""
+    cooldown_svc = get_cooldown_service()
+    config = cooldown_svc.config
+
+    return CooldownConfigResponse(
+        enabled=config.enabled,
+        default_cooldown_secs=config.default_cooldown_secs,
+        max_cooldown_secs=config.max_cooldown_secs,
+        cooldown_status_codes=sorted(config.cooldown_status_codes),
+        cooldown_durations={str(k): v for k, v in config.cooldown_durations.items()},
+    )
+
+
+@router.get(
+    "/cooldowns/{provider_key}",
+    response_model=CooldownEntryResponse,
+    summary="Get cooldown status for a provider",
+    description="Get cooldown status for a specific provider",
+    tags=["cooldown"],
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Provider is not in cooldown",
+        },
+    },
+)
+async def api_get_cooldown(
+    provider_key: str,
+    _: None = Depends(verify_admin_key),
+) -> CooldownEntryResponse:
+    """Get cooldown status for a specific provider"""
+    cooldown_svc = get_cooldown_service()
+    entry = cooldown_svc.get_cooldown(provider_key)
+
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Provider '{provider_key}' is not in cooldown",
+        )
+
+    return _cooldown_entry_to_response(entry)
+
+
+@router.delete(
+    "/cooldowns/{provider_key}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a provider from cooldown",
+    description="Manually remove a provider from cooldown",
+    tags=["cooldown"],
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Not found - Provider is not in cooldown",
+        },
+    },
+)
+async def api_remove_cooldown(
+    provider_key: str,
+    _: None = Depends(verify_admin_key),
+) -> None:
+    """Manually remove a provider from cooldown"""
+    cooldown_svc = get_cooldown_service()
+    removed = cooldown_svc.remove_cooldown(provider_key)
+
+    if not removed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Provider '{provider_key}' is not in cooldown",
+        )
+
+
+@router.delete(
+    "/cooldowns",
+    response_model=CooldownClearResponse,
+    summary="Clear all cooldowns",
+    description="Clear all active cooldowns (emergency operation)",
+    tags=["cooldown"],
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Unauthorized - Invalid or missing admin key",
+        },
+    },
+)
+async def api_clear_all_cooldowns(
+    _: None = Depends(verify_admin_key),
+) -> CooldownClearResponse:
+    """Clear all active cooldowns (emergency operation)"""
+    cooldown_svc = get_cooldown_service()
+    count = cooldown_svc.clear_all_cooldowns()
+
+    return CooldownClearResponse(
+        cleared_count=count,
+        message=f"Cleared {count} cooldown entries",
     )

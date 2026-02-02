@@ -14,6 +14,7 @@ use llm_proxy_rust::{
     services::ProviderService,
 };
 use serde_json::json;
+use serial_test::serial;
 use std::sync::Arc;
 use tower::ServiceExt;
 use wiremock::{
@@ -21,8 +22,15 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+/// Clear cooldown state before each test
+fn clear_cooldown_state() {
+    use llm_proxy_rust::services::get_cooldown_service;
+    get_cooldown_service().clear_all();
+}
+
 /// Create a test app with mocked provider
 async fn create_test_app_with_mock(mock_server: &MockServer) -> Router {
+    clear_cooldown_state();
     create_test_app_with_timeout(mock_server, 300).await
 }
 
@@ -32,6 +40,7 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
     use llm_proxy_rust::core::RateLimiter;
     use std::collections::HashMap;
 
+    clear_cooldown_state();
     init_metrics();
 
     let mut model_mapping = HashMap::new();
@@ -92,6 +101,8 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
 }
 
 #[tokio::test]
+#[serial]
+#[serial]
 async fn test_successful_chat_completion() {
     let mock_server = MockServer::start().await;
 
@@ -156,6 +167,8 @@ async fn test_successful_chat_completion() {
 }
 
 #[tokio::test]
+#[serial]
+#[serial]
 async fn test_provider_error_response() {
     let mock_server = MockServer::start().await;
 
@@ -207,6 +220,8 @@ async fn test_provider_error_response() {
 }
 
 #[tokio::test]
+#[serial]
+#[serial]
 async fn test_provider_401_error() {
     let mock_server = MockServer::start().await;
 
@@ -257,6 +272,8 @@ async fn test_provider_401_error() {
 }
 
 #[tokio::test]
+#[serial]
+#[serial]
 async fn test_provider_error_with_string_error() {
     let mock_server = MockServer::start().await;
 
@@ -310,6 +327,8 @@ async fn test_provider_error_with_string_error() {
 }
 
 #[tokio::test]
+#[serial]
+#[serial]
 async fn test_provider_timeout() {
     let mock_server = MockServer::start().await;
 
@@ -356,6 +375,8 @@ async fn test_provider_timeout() {
 }
 
 #[tokio::test]
+#[serial]
+#[serial]
 async fn test_model_mapping() {
     let mock_server = MockServer::start().await;
 
@@ -411,6 +432,7 @@ async fn test_model_mapping() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_token_usage_tracking() {
     let mock_server = MockServer::start().await;
 
@@ -470,6 +492,7 @@ async fn test_token_usage_tracking() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_multiple_requests_to_mock() {
     let mock_server = MockServer::start().await;
 
@@ -517,6 +540,7 @@ async fn test_multiple_requests_to_mock() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_invalid_json_response() {
     let mock_server = MockServer::start().await;
 

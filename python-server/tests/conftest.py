@@ -169,11 +169,17 @@ def clear_config_cache():
 
     ps_module._provider_service = None
 
+    # Clear cooldown service
+    from app.services import cooldown_service as cs_module
+
+    cs_module._cooldown_service = None
+
     yield
 
     config_module._cached_config = None
     clear_cache()
     ps_module._provider_service = None
+    cs_module._cooldown_service = None
 
 
 @pytest.fixture

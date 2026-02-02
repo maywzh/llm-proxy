@@ -39,6 +39,7 @@ use crate::core::middleware::{
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::utils::{get_key_name, strip_provider_suffix};
 use crate::core::{AppError, Result};
+use crate::services::trigger_cooldown_if_needed;
 use crate::transformer::{
     provider_type_to_protocol, CrossProtocolStreamState, Protocol, ProtocolDetector,
     TransformContext, TransformPipeline, TransformerRegistry,
@@ -678,6 +679,9 @@ async fn handle_error_response(
         error_message = %error_message,
         "Backend API returned error"
     );
+
+    // Trigger cooldown for 429 and 5xx errors from provider
+    trigger_cooldown_if_needed(provider_name, status.as_u16(), Some(error_message.clone()));
 
     Ok(build_protocol_error_response(
         client_protocol,

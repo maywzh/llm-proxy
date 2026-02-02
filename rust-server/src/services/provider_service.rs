@@ -5,6 +5,7 @@
 
 use crate::api::models::{is_pattern, Provider};
 use crate::core::config::AppConfig;
+use crate::services::cooldown_service::get_cooldown_service;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
 use std::collections::HashSet;
@@ -87,6 +88,7 @@ impl ProviderService {
     ///
     /// This method is thread-safe and can be called concurrently.
     /// Returns a clone of the provider to avoid holding locks.
+    /// Providers in cooldown are automatically filtered out.
     ///
     /// # Arguments
     ///
@@ -98,27 +100,52 @@ impl ProviderService {
     ///
     /// # Errors
     ///
-    /// Returns error if model is specified but no provider supports it
+    /// Returns error if model is specified but no provider supports it,
+    /// or if all providers are in cooldown.
     pub fn get_next_provider(&self, model: Option<&str>) -> Result<Provider, String> {
         let mut rng = thread_rng();
+        let cooldown_service = get_cooldown_service();
 
-        let Some(model_name) = model else {
-            let index = self.weighted_index.sample(&mut rng);
-            return Ok(self.providers[index].clone());
-        };
-
+        // Build list of available providers (not in cooldown)
         let mut available_providers = Vec::new();
         let mut available_weights = Vec::new();
+        let mut cooled_down_count = 0;
 
         for (provider, &weight) in self.providers.iter().zip(self.weights.iter()) {
-            if provider.supports_model(model_name) {
-                available_providers.push(provider.clone());
-                available_weights.push(weight);
+            // Check model support if model is specified
+            let model_supported = model.map_or(true, |m| provider.supports_model(m));
+            if !model_supported {
+                continue;
             }
+
+            // Check cooldown status
+            if cooldown_service.is_in_cooldown(&provider.name) {
+                cooled_down_count += 1;
+                continue;
+            }
+
+            available_providers.push(provider.clone());
+            available_weights.push(weight);
         }
 
+        // Handle no available providers
         if available_providers.is_empty() {
-            return Err(format!("No provider supports model: {}", model_name));
+            if cooled_down_count > 0 {
+                return Err(format!(
+                    "All {} provider(s) are in cooldown{}",
+                    cooled_down_count,
+                    model.map_or(String::new(), |m| format!(" for model: {}", m))
+                ));
+            }
+            return Err(format!(
+                "No provider supports model: {}",
+                model.unwrap_or("(any)")
+            ));
+        }
+
+        // Select from available providers
+        if available_providers.len() == 1 {
+            return Ok(available_providers.remove(0));
         }
 
         let weighted_index = WeightedIndex::new(&available_weights)

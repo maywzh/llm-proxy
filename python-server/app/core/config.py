@@ -40,6 +40,16 @@ class EnvConfig:
         # Token limits for max_tokens clamping
         self.min_tokens_limit: int = int(os.environ.get("MIN_TOKENS_LIMIT", "100"))
         self.max_tokens_limit: int = int(os.environ.get("MAX_TOKENS_LIMIT", "4096"))
+        # Cooldown configuration
+        self.cooldown_enabled: bool = _str_to_bool(
+            os.environ.get("COOLDOWN_ENABLED", "true")
+        )
+        self.cooldown_default_secs: int = int(
+            os.environ.get("COOLDOWN_DEFAULT_SECS", "60")
+        )
+        self.cooldown_max_secs: int = int(
+            os.environ.get("COOLDOWN_MAX_SECS", "600")
+        )
 
     @classmethod
     def from_env(cls) -> "EnvConfig":

@@ -19,6 +19,7 @@ use llm_proxy_rust::{
     services::ProviderService,
 };
 use serde_json::json;
+use serial_test::serial;
 use std::sync::Arc;
 use tower::ServiceExt;
 use wiremock::{
@@ -30,8 +31,15 @@ use wiremock::{
 // Test Helpers
 // ============================================================================
 
+/// Clear cooldown state before each test
+fn clear_cooldown_state() {
+    use llm_proxy_rust::services::get_cooldown_service;
+    get_cooldown_service().clear_all();
+}
+
 /// Create a test app with v2 proxy routes
 async fn create_v2_test_app(mock_server: &MockServer) -> Router {
+    clear_cooldown_state();
     create_v2_test_app_with_timeout(mock_server, 300).await
 }
 
@@ -41,6 +49,7 @@ async fn create_v2_test_app_with_timeout(mock_server: &MockServer, timeout_secs:
     use llm_proxy_rust::core::RateLimiter;
     use std::collections::HashMap;
 
+    clear_cooldown_state();
     init_metrics();
 
     let mut model_mapping = HashMap::new();
@@ -126,6 +135,7 @@ fn openai_response() -> serde_json::Value {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v2_openai_chat_completion_passthrough() {
     let mock_server = MockServer::start().await;
 
@@ -172,6 +182,7 @@ async fn test_v2_openai_chat_completion_passthrough() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v2_openai_with_system_message() {
     let mock_server = MockServer::start().await;
 
@@ -208,6 +219,7 @@ async fn test_v2_openai_with_system_message() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v2_anthropic_to_openai_conversion() {
     let mock_server = MockServer::start().await;
 
@@ -253,6 +265,7 @@ async fn test_v2_anthropic_to_openai_conversion() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v2_anthropic_with_system_prompt() {
     let mock_server = MockServer::start().await;
 
@@ -287,6 +300,7 @@ async fn test_v2_anthropic_with_system_prompt() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v2_anthropic_with_content_blocks() {
     let mock_server = MockServer::start().await;
 
@@ -329,6 +343,7 @@ async fn test_v2_anthropic_with_content_blocks() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v2_response_api_format() {
     let mock_server = MockServer::start().await;
 
@@ -359,6 +374,7 @@ async fn test_v2_response_api_format() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v2_response_api_with_instructions() {
     let mock_server = MockServer::start().await;
 
@@ -394,6 +410,7 @@ async fn test_v2_response_api_with_instructions() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v2_provider_error_response() {
     let mock_server = MockServer::start().await;
 
@@ -439,6 +456,7 @@ async fn test_v2_provider_error_response() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v2_provider_401_error() {
     let mock_server = MockServer::start().await;
 
@@ -473,6 +491,7 @@ async fn test_v2_provider_401_error() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v2_provider_timeout() {
     let mock_server = MockServer::start().await;
 
@@ -507,6 +526,7 @@ async fn test_v2_provider_timeout() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v2_invalid_model() {
     let mock_server = MockServer::start().await;
 
@@ -536,6 +556,7 @@ async fn test_v2_invalid_model() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v2_streaming_request_passthrough() {
     let mock_server = MockServer::start().await;
 
@@ -587,6 +608,7 @@ async fn test_v2_streaming_request_passthrough() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v2_model_mapping() {
     let mock_server = MockServer::start().await;
 
@@ -642,6 +664,7 @@ async fn test_v2_model_mapping() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v2_protocol_detection_openai() {
     let mock_server = MockServer::start().await;
 
@@ -672,6 +695,7 @@ async fn test_v2_protocol_detection_openai() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_v2_protocol_detection_anthropic() {
     let mock_server = MockServer::start().await;
 
@@ -707,6 +731,7 @@ async fn test_v2_protocol_detection_anthropic() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_v2_concurrent_requests() {
     let mock_server = MockServer::start().await;
 
@@ -753,6 +778,7 @@ async fn test_v2_concurrent_requests() {
 // ============================================================================
 
 #[tokio::test]
+#[serial]
 async fn test_stream_state_drop_releases_resources() {
     use llm_proxy_rust::transformer::CrossProtocolStreamState;
     use std::sync::Arc;
@@ -781,6 +807,7 @@ async fn test_stream_state_drop_releases_resources() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_concurrent_streams_no_resource_leak() {
     use llm_proxy_rust::transformer::CrossProtocolStreamState;
 
@@ -812,6 +839,7 @@ async fn test_concurrent_streams_no_resource_leak() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stream_drop_on_error_mid_stream() {
     use llm_proxy_rust::transformer::CrossProtocolStreamState;
     use std::sync::Arc;
@@ -846,6 +874,7 @@ async fn test_stream_drop_on_error_mid_stream() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_streaming_response_lifecycle() {
     use llm_proxy_rust::transformer::CrossProtocolStreamState;
     use std::sync::Arc;
@@ -875,6 +904,7 @@ async fn test_streaming_response_lifecycle() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_stream_context_cleanup_on_client_disconnect() {
     use llm_proxy_rust::transformer::CrossProtocolStreamState;
     use std::sync::Arc;
