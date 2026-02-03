@@ -1,35 +1,32 @@
 # Gitleaks ignore file - for test fixtures and false positives
 # Format: one fingerprint per line
 
-# Rust test fixtures - test_rate_limiting.rs
-f62b59f7bb8556851f94505dd62dc21b511a2b54:rust-server/tests/test_rate_limiting.rs:generic-api-key:269
-f62b59f7bb8556851f94505dd62dc21b511a2b54:rust-server/tests/test_rate_limiting.rs:generic-api-key:288
+# STREAMING_USAGE_FIX.md - placeholder API keys for documentation (sk-your-api-key-here)
+4bd8741dafa8d3fc8f7f46ddf4dc2a7ae94851e7:STREAMING_USAGE_FIX.md:curl-auth-header:15
+4bd8741dafa8d3fc8f7f46ddf4dc2a7ae94851e7:STREAMING_USAGE_FIX.md:curl-auth-header:25
+4bd8741dafa8d3fc8f7f46ddf4dc2a7ae94851e7:STREAMING_USAGE_FIX.md:curl-auth-header:350
+4bd8741dafa8d3fc8f7f46ddf4dc2a7ae94851e7:STREAMING_USAGE_FIX.md:curl-auth-header:368
+f6ea104c0590d7da179a584951ca8b0b550a7398:STREAMING_USAGE_FIX.md:curl-auth-header:15
+f6ea104c0590d7da179a584951ca8b0b550a7398:STREAMING_USAGE_FIX.md:curl-auth-header:25
+f6ea104c0590d7da179a584951ca8b0b550a7398:STREAMING_USAGE_FIX.md:curl-auth-header:350
+f6ea104c0590d7da179a584951ca8b0b550a7398:STREAMING_USAGE_FIX.md:curl-auth-header:368
+
+# Rust test fixtures - test_rate_limiting.rs (unlimited-key-1, unlimited-key-2)
+a178158d1483a38acb2defdaf6351e75929f6b38:rust-server/tests/test_rate_limiting.rs:generic-api-key:269
+a178158d1483a38acb2defdaf6351e75929f6b38:rust-server/tests/test_rate_limiting.rs:generic-api-key:288
+b40d395b13d7dbd55b0b1b9d5d44740d2b5db84a:rust-server/tests/test_rate_limiting.rs:generic-api-key:246
+b40d395b13d7dbd55b0b1b9d5d44740d2b5db84a:rust-server/tests/test_rate_limiting.rs:generic-api-key:263
 5cf27c9ff58461d75c51c221756d72de8be6ccd0:rust-server/tests/test_rate_limiting.rs:generic-api-key:269
 5cf27c9ff58461d75c51c221756d72de8be6ccd0:rust-server/tests/test_rate_limiting.rs:generic-api-key:288
-599b0d4def362387e69ff01dbe1a08e4cac1fe59:rust-server/tests/test_rate_limiting.rs:generic-api-key:246
-599b0d4def362387e69ff01dbe1a08e4cac1fe59:rust-server/tests/test_rate_limiting.rs:generic-api-key:263
 c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:rust-server/tests/test_rate_limiting.rs:generic-api-key:246
 c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:rust-server/tests/test_rate_limiting.rs:generic-api-key:263
 
-# Python test fixtures - test_rate_limiting.py
-f8b50285f1c1432f9e9a7aeceb48e05d709d886e:python-server/tests/test_rate_limiting.py:generic-api-key:287
-f8b50285f1c1432f9e9a7aeceb48e05d709d886e:python-server/tests/test_rate_limiting.py:generic-api-key:295
+# Python test fixtures - test_rate_limiting.py (rate_limit=None)
+e055513e4bbfc726461fb6377373ed11aee52aa4:python-server/tests/test_rate_limiting.py:generic-api-key:287
+e055513e4bbfc726461fb6377373ed11aee52aa4:python-server/tests/test_rate_limiting.py:generic-api-key:295
 adc248a45758f41b88736d2e0331d3ec1e5b99ee:python-server/tests/test_rate_limiting.py:generic-api-key:287
 adc248a45758f41b88736d2e0331d3ec1e5b99ee:python-server/tests/test_rate_limiting.py:generic-api-key:295
 
 # Test script - verify_auth.sh (InvalidFormat is a test case for auth validation)
-599b0d4def362387e69ff01dbe1a08e4cac1fe59:scripts/verify_auth.sh:curl-auth-header:143
+b40d395b13d7dbd55b0b1b9d5d44740d2b5db84a:scripts/verify_auth.sh:curl-auth-header:143
 c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:scripts/verify_auth.sh:curl-auth-header:143
-
-# Python server README - curl examples with placeholder auth headers
-c28031f8cd21988acec11c9cd41277a39035a1c0:python-server/README.md:curl-auth-header:181
-c28031f8cd21988acec11c9cd41277a39035a1c0:python-server/README_CN.md:curl-auth-header:169
-c28031f8cd21988acec11c9cd41277a39035a1c0:python-server/README_CN.md:curl-auth-header:181
-
-# STREAMING_USAGE_FIX.md - example API keys for documentation
-d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:generic-api-key:27
-d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:generic-api-key:370
-d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:curl-auth-header:15
-d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:curl-auth-header:25
-d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:curl-auth-header:350
-d8fdd6f3d8903df2abdc4cd50e4c38fc5d05f10e:STREAMING_USAGE_FIX.md:curl-auth-header:368
