@@ -2,54 +2,189 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
 
-# Run gitleaks to detect secrets
-echo "🔍 Running gitleaks..."
-if ! gitleaks detect --source "$repo_root" --verbose --no-banner; then
-  echo "❌ Gitleaks detected potential secrets. Commit blocked."
-  echo "   Review findings above and add false positives to .gitleaksignore"
-  exit 1
-fi
-echo "✅ No secrets detected"
-
+# Collect staged files
 staged_files=()
 while IFS= read -r -d '' file; do
   staged_files+=("$file")
 done < <(git diff --cached --name-only --diff-filter=ACM -z)
 
+# Early exit if no staged files
+if [[ ${#staged_files[@]} -eq 0 ]]; then
+  echo "✅ No staged files to check"
+  exit 0
+fi
+
+# Categorize files by project
+rust_files=()
+python_files=()
 react_repo_files=()
 react_abs_files=()
 svelte_repo_files=()
 svelte_abs_files=()
 
 for file in "${staged_files[@]}"; do
-  if [[ "$file" == web/react-admin/src/* ]]; then
-    case "$file" in
-      *.js|*.jsx|*.ts|*.tsx|*.css|*.json|*.md)
-        react_repo_files+=("$file")
-        react_abs_files+=("$repo_root/$file")
-        ;;
-    esac
-  fi
-
-  if [[ "$file" == web/svelte-admin/src/* ]]; then
-    case "$file" in
-      *.js|*.ts|*.svelte|*.css|*.json|*.md)
-        svelte_repo_files+=("$file")
-        svelte_abs_files+=("$repo_root/$file")
-        ;;
-    esac
-  fi
+  case "$file" in
+    rust-server/*.rs)
+      rust_files+=("$file")
+      ;;
+    python-server/*.py)
+      python_files+=("$file")
+      ;;
+    web/react-admin/src/*)
+      case "$file" in
+        *.js|*.jsx|*.ts|*.tsx|*.css|*.json|*.md)
+          react_repo_files+=("$file")
+          react_abs_files+=("$repo_root/$file")
+          ;;
+      esac
+      ;;
+    web/svelte-admin/src/*)
+      case "$file" in
+        *.js|*.ts|*.svelte|*.css|*.json|*.md)
+          svelte_repo_files+=("$file")
+          svelte_abs_files+=("$repo_root/$file")
+          ;;
+      esac
+      ;;
+  esac
 done
 
-if ((${#react_abs_files[@]})); then
-  pnpm -C web/react-admin exec prettier --write "${react_abs_files[@]}"
-  git add -- "${react_repo_files[@]}"
-  pnpm -C web/react-admin exec eslint "${react_abs_files[@]}"
+# Track if any lint failed
+lint_failed=0
+
+# =============================================================================
+# Gitleaks - Secret scanning (always run)
+# =============================================================================
+echo "🔍 Running gitleaks..."
+if ! gitleaks detect --source "$repo_root" --no-banner 2>/dev/null; then
+  echo "❌ Gitleaks detected potential secrets. Commit blocked."
+  echo "   Run 'gitleaks detect --verbose' for details"
+  echo "   Add false positives to .gitleaksignore"
+  exit 1
+fi
+echo "✅ No secrets detected"
+
+# =============================================================================
+# Rust - cargo fmt + clippy
+# =============================================================================
+if [[ ${#rust_files[@]} -gt 0 ]]; then
+  echo ""
+  echo "🦀 Checking Rust files..."
+
+  # Format check
+  echo "   Running cargo fmt..."
+  if ! cargo fmt --manifest-path rust-server/Cargo.toml -- --check 2>/dev/null; then
+    echo "   ⚠️  Formatting issues found, auto-fixing..."
+    cargo fmt --manifest-path rust-server/Cargo.toml
+    # Re-add formatted files
+    for file in "${rust_files[@]}"; do
+      git add "$file"
+    done
+    echo "   ✅ Formatted and re-staged"
+  fi
+
+  # Clippy lint
+  echo "   Running clippy..."
+  if ! cargo clippy --manifest-path rust-server/Cargo.toml --all-targets --all-features -- -D warnings 2>&1 | head -50; then
+    echo "   ❌ Clippy found issues"
+    lint_failed=1
+  else
+    echo "   ✅ Clippy passed"
+  fi
 fi
 
-if ((${#svelte_abs_files[@]})); then
-  pnpm -C web/svelte-admin exec prettier --write "${svelte_abs_files[@]}"
-  git add -- "${svelte_repo_files[@]}"
-  pnpm -C web/svelte-admin exec eslint "${svelte_abs_files[@]}"
+# =============================================================================
+# Python - ruff format + lint
+# =============================================================================
+if [[ ${#python_files[@]} -gt 0 ]]; then
+  echo ""
+  echo "🐍 Checking Python files..."
+
+  # Format check
+  echo "   Running ruff format..."
+  if ! ruff format --check python-server 2>/dev/null; then
+    echo "   ⚠️  Formatting issues found, auto-fixing..."
+    ruff format python-server
+    # Re-add formatted files
+    for file in "${python_files[@]}"; do
+      git add "$file"
+    done
+    echo "   ✅ Formatted and re-staged"
+  fi
+
+  # Lint check
+  echo "   Running ruff check..."
+  if ! ruff check python-server --fix 2>&1 | head -50; then
+    # Re-add if ruff fixed anything
+    for file in "${python_files[@]}"; do
+      git add "$file"
+    done
+  fi
+
+  # Final lint check (no fix, just report)
+  if ! ruff check python-server 2>/dev/null; then
+    echo "   ❌ Ruff found unfixable issues"
+    lint_failed=1
+  else
+    echo "   ✅ Ruff passed"
+  fi
 fi
+
+# =============================================================================
+# React Admin - prettier + eslint
+# =============================================================================
+if [[ ${#react_abs_files[@]} -gt 0 ]]; then
+  echo ""
+  echo "⚛️  Checking React files..."
+
+  # Prettier format
+  echo "   Running prettier..."
+  pnpm -C web/react-admin exec prettier --write "${react_abs_files[@]}" 2>/dev/null
+  git add -- "${react_repo_files[@]}"
+  echo "   ✅ Prettier formatted"
+
+  # ESLint
+  echo "   Running eslint..."
+  if ! pnpm -C web/react-admin exec eslint "${react_abs_files[@]}" 2>&1 | head -30; then
+    echo "   ❌ ESLint found issues"
+    lint_failed=1
+  else
+    echo "   ✅ ESLint passed"
+  fi
+fi
+
+# =============================================================================
+# Svelte Admin - prettier + eslint
+# =============================================================================
+if [[ ${#svelte_abs_files[@]} -gt 0 ]]; then
+  echo ""
+  echo "🔶 Checking Svelte files..."
+
+  # Prettier format
+  echo "   Running prettier..."
+  pnpm -C web/svelte-admin exec prettier --write "${svelte_abs_files[@]}" 2>/dev/null
+  git add -- "${svelte_repo_files[@]}"
+  echo "   ✅ Prettier formatted"
+
+  # ESLint
+  echo "   Running eslint..."
+  if ! pnpm -C web/svelte-admin exec eslint "${svelte_abs_files[@]}" 2>&1 | head -30; then
+    echo "   ❌ ESLint found issues"
+    lint_failed=1
+  else
+    echo "   ✅ ESLint passed"
+  fi
+fi
+
+# =============================================================================
+# Final result
+# =============================================================================
+echo ""
+if [[ $lint_failed -eq 1 ]]; then
+  echo "❌ Pre-commit checks failed. Please fix the issues above."
+  exit 1
+fi
+
+echo "✅ All pre-commit checks passed"
