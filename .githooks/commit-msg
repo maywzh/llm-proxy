@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Conventional Commits format validation
+# https://www.conventionalcommits.org/
+
+commit_msg_file="$1"
+commit_msg=$(cat "$commit_msg_file")
+
+# Skip merge commits
+if [[ "$commit_msg" =~ ^Merge ]]; then
+  exit 0
+fi
+
+# Conventional Commits pattern
+# type(scope)?: subject
+#
+# Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert
+pattern="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?(!)?: .{1,}"
+
+if ! [[ "$commit_msg" =~ $pattern ]]; then
+  echo "❌ Invalid commit message format!"
+  echo ""
+  echo "Expected format: <type>(<scope>): <subject>"
+  echo ""
+  echo "Types:"
+  echo "  feat:     A new feature"
+  echo "  fix:      A bug fix"
+  echo "  docs:     Documentation only changes"
+  echo "  style:    Code style changes (formatting, semicolons, etc)"
+  echo "  refactor: Code change that neither fixes a bug nor adds a feature"
+  echo "  perf:     Performance improvement"
+  echo "  test:     Adding or updating tests"
+  echo "  build:    Build system or external dependency changes"
+  echo "  ci:       CI configuration changes"
+  echo "  chore:    Other changes that don't modify src or test files"
+  echo "  revert:   Reverts a previous commit"
+  echo ""
+  echo "Examples:"
+  echo "  feat: add user authentication"
+  echo "  fix(api): handle null response"
+  echo "  docs: update README"
+  echo "  feat!: breaking change in API"
+  echo ""
+  echo "Your message: $commit_msg"
+  exit 1
+fi
+
+# Check subject length (should be <= 72 chars for first line)
+first_line=$(echo "$commit_msg" | head -n 1)
+if [[ ${#first_line} -gt 72 ]]; then
+  echo "⚠️  Warning: First line exceeds 72 characters (${#first_line} chars)"
+  echo "   Consider shortening for better git log readability"
+fi
+
+# Check for lowercase start of subject
+subject=$(echo "$first_line" | sed -E 's/^[^:]+: //')
+if [[ "$subject" =~ ^[A-Z] ]]; then
+  echo "⚠️  Warning: Subject should start with lowercase"
+  echo "   Your subject: $subject"
+fi
+
+# Check for period at end
+if [[ "$first_line" =~ \.$ ]]; then
+  echo "⚠️  Warning: Subject should not end with a period"
+fi
+
+echo "✅ Commit message format valid"
