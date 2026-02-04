@@ -6,6 +6,7 @@
   import '../app.css';
   import { auth, actions, configVersion, errors } from '$lib/stores';
   import { theme } from '$lib/theme';
+  import Toast from '$lib/components/Toast.svelte';
   import {
     Plug,
     Key,
@@ -31,6 +32,9 @@
   let isReloading = $state(false);
   let showThemeMenu = $state(false);
   let isSidebarCollapsed = $state(false);
+  let tooltip = $state<string | null>(null);
+  let tooltipTimer: ReturnType<typeof setTimeout> | null = null;
+  let touchStartX = 0;
 
   $effect(() => {
     if (showThemeMenu && browser) {
@@ -107,6 +111,34 @@
     isSidebarCollapsed = !isSidebarCollapsed;
   }
 
+  function handleNavMouseEnter(label: string) {
+    if (isSidebarCollapsed) {
+      tooltipTimer = setTimeout(() => {
+        tooltip = label;
+      }, 200);
+    }
+  }
+
+  function handleNavMouseLeave() {
+    if (tooltipTimer) {
+      clearTimeout(tooltipTimer);
+      tooltipTimer = null;
+    }
+    tooltip = null;
+  }
+
+  function handleTouchStart(e: TouchEvent) {
+    touchStartX = e.touches[0].clientX;
+  }
+
+  function handleTouchEnd(e: TouchEvent) {
+    const touchEndX = e.changedTouches[0].clientX;
+    const diff = touchStartX - touchEndX;
+    if (diff > 50) {
+      isMobileMenuOpen = false;
+    }
+  }
+
   const navItems = [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/providers', label: 'Providers', icon: Plug },
@@ -117,9 +149,13 @@
 </script>
 
 <div class="min-h-screen bg-gray-50 dark:bg-gray-900">
+  <!-- Skip to content link for accessibility -->
+  <a href="#main-content" class="skip-link"> Skip to main content </a>
+
   {#if $auth.isAuthenticated}
+    <!-- Sidebar - Desktop -->
     <aside
-      class={`hidden lg:fixed lg:inset-y-0 lg:flex lg:flex-col transition-all duration-200 relative ${
+      class={`hidden lg:fixed lg:inset-y-0 lg:flex lg:flex-col transition-all duration-200 ${
         isSidebarCollapsed ? 'lg:w-16' : 'lg:w-64'
       }`}
     >
@@ -150,29 +186,38 @@
             {@const isActive = $page.url.pathname === item.href}
             <a
               href={item.href}
-              class={`sidebar-nav-item ${isActive ? 'active' : ''} ${
+              class={`sidebar-nav-item relative ${isActive ? 'active' : ''} ${
                 isSidebarCollapsed ? 'justify-center px-0 space-x-0' : ''
               }`}
-              title={isSidebarCollapsed ? item.label : undefined}
               aria-label={item.label}
+              onmouseenter={() => handleNavMouseEnter(item.label)}
+              onmouseleave={handleNavMouseLeave}
             >
+              {#if isActive}
+                <span
+                  class="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-white rounded-r-full animate-fade-in"
+                ></span>
+              {/if}
               <Icon class="w-5 h-5" />
               {#if !isSidebarCollapsed}
                 <span>{item.label}</span>
+              {/if}
+              {#if isSidebarCollapsed && tooltip === item.label}
+                <div
+                  class="absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-sm rounded whitespace-nowrap z-50 animate-fade-in"
+                >
+                  {item.label}
+                </div>
               {/if}
             </a>
           {/each}
         </nav>
 
-        <div
-          class={`shrink-0 border-t border-gray-800 ${
-            isSidebarCollapsed ? 'p-2' : 'p-4'
-          }`}
-        >
+        <div class="shrink-0 border-t border-gray-800 p-4 space-y-2">
           <button
             onclick={handleLogout}
-            class={`flex items-center w-full px-4 py-3 text-gray-300 dark:text-gray-400 hover:bg-gray-800 dark:hover:bg-gray-700 hover:text-white transition-colors duration-200 rounded-lg ${
-              isSidebarCollapsed ? 'justify-center px-0 space-x-0' : 'space-x-3'
+            class={`flex items-center w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg ${
+              isSidebarCollapsed ? 'justify-center' : 'space-x-3'
             }`}
             title={isSidebarCollapsed ? 'Logout' : undefined}
             aria-label="Logout"
@@ -182,34 +227,41 @@
               <span>Logout</span>
             {/if}
           </button>
+          <button
+            type="button"
+            onclick={toggleSidebarCollapsed}
+            class="flex items-center justify-center w-full py-2 text-gray-400 hover:text-white transition-colors rounded-lg"
+            title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={isSidebarCollapsed
+              ? 'Expand sidebar'
+              : 'Collapse sidebar'}
+          >
+            {#if isSidebarCollapsed}
+              <ChevronRight class="w-5 h-5" />
+            {:else}
+              <ChevronLeft class="w-5 h-5" />
+              <span class="ml-2 text-sm">Collapse</span>
+            {/if}
+          </button>
         </div>
       </div>
-      <button
-        onclick={toggleSidebarCollapsed}
-        class="absolute top-23 left-full -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-lg flex items-center justify-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-md text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 z-50"
-        title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-      >
-        {#if isSidebarCollapsed}
-          <ChevronRight class="w-4 h-4" />
-        {:else}
-          <ChevronLeft class="w-4 h-4" />
-        {/if}
-      </button>
     </aside>
 
+    <!-- Mobile menu -->
     {#if isMobileMenuOpen}
       <div class="lg:hidden">
         <div
-          class="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-70 z-40"
+          class="fixed inset-0 bg-black/50 dark:bg-black/70 z-40 animate-fade-in"
           onclick={() => (isMobileMenuOpen = false)}
-          onkeydown={e => e.key === 'Escape' && (isMobileMenuOpen = false)}
+          onkeydown={(e) => e.key === 'Escape' && (isMobileMenuOpen = false)}
           role="button"
           tabindex="0"
           aria-label="Close menu"
         ></div>
         <aside
-          class="fixed inset-y-0 left-0 flex flex-col w-64 bg-gray-900 z-50"
+          class="fixed inset-y-0 left-0 flex flex-col w-64 bg-gray-900 z-50 animate-slide-up"
+          ontouchstart={handleTouchStart}
+          ontouchend={handleTouchEnd}
         >
           <div
             class="flex items-center justify-between px-4 py-5 border-b border-gray-800"
@@ -241,8 +293,13 @@
               <a
                 href={item.href}
                 onclick={() => (isMobileMenuOpen = false)}
-                class="sidebar-nav-item {isActive ? 'active' : ''}"
+                class="sidebar-nav-item relative {isActive ? 'active' : ''}"
               >
+                {#if isActive}
+                  <span
+                    class="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-white rounded-r-full"
+                  ></span>
+                {/if}
                 <Icon class="w-5 h-5" />
                 <span>{item.label}</span>
               </a>
@@ -254,7 +311,7 @@
                 handleLogout();
                 isMobileMenuOpen = false;
               }}
-              class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 dark:text-gray-400 hover:bg-gray-800 dark:hover:bg-gray-700 hover:text-white transition-colors duration-200 rounded-lg"
+              class="flex items-center space-x-3 w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg"
             >
               <LogOut class="w-5 h-5" />
               <span>Logout</span>
@@ -285,7 +342,7 @@
               <h1
                 class="text-xl font-semibold text-gray-900 dark:text-gray-100"
               >
-                {navItems.find(item => item.href === $page.url.pathname)
+                {navItems.find((item) => item.href === $page.url.pathname)
                   ?.label || 'Admin'}
               </h1>
             </div>
@@ -314,9 +371,9 @@
 
                 {#if showThemeMenu}
                   <div
-                    class="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
-                    onclick={e => e.stopPropagation()}
-                    onkeydown={e => e.stopPropagation()}
+                    class="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 animate-fade-in"
+                    onclick={(e) => e.stopPropagation()}
+                    onkeydown={(e) => e.stopPropagation()}
                     role="menu"
                     tabindex="-1"
                   >
@@ -404,7 +461,7 @@
         </div>
       {/if}
 
-      <main class="flex-1 py-6 px-4 sm:px-6 lg:px-8">
+      <main id="main-content" class="flex-1 py-6 px-4 sm:px-6 lg:px-8" tabindex="-1">
         {@render children()}
       </main>
     </div>
@@ -412,3 +469,6 @@
     {@render children()}
   {/if}
 </div>
+
+<!-- Toast container -->
+<Toast />

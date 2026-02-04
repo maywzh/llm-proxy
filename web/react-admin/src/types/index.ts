@@ -163,6 +163,7 @@ export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string | ChatContentPart[];
   thinking?: string;
+  timestamp?: number;
 }
 
 export interface ChatRequestMessage {

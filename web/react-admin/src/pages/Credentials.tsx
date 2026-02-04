@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { useDebounce } from '../hooks/useDebounce';
 import { generateApiKey } from '../api/client';
+import { TableSkeleton } from '../components/Skeleton';
 import {
   Plus,
   Pencil,
@@ -11,6 +13,7 @@ import {
   Check,
   Shuffle,
   RefreshCw,
+  Inbox,
 } from 'lucide-react';
 import type { Credential, CredentialFormData } from '../types';
 
@@ -20,7 +23,9 @@ const Credentials: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const debouncedSearch = useDebounce(searchTerm, 300);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [isModalClosing, setIsModalClosing] = useState(false);
   const [editingCredential, setEditingCredential] = useState<Credential | null>(
     null
   );
@@ -77,6 +82,14 @@ const Credentials: React.FC = () => {
     setAllowedModelsText('');
     setEditingCredential(null);
     setShowCreateForm(false);
+  };
+
+  const handleCloseModal = () => {
+    setIsModalClosing(true);
+    setTimeout(() => {
+      resetForm();
+      setIsModalClosing(false);
+    }, 200);
   };
 
   const handleCreate = () => {
@@ -200,11 +213,11 @@ const Credentials: React.FC = () => {
     }
   };
 
-  // Filtered credentials based on search
+  // Filtered credentials based on debounced search
   const filteredCredentials = credentials.filter(
     credential =>
-      credential.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      credential.key_preview.toLowerCase().includes(searchTerm.toLowerCase())
+      credential.name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+      credential.key_preview.toLowerCase().includes(debouncedSearch.toLowerCase())
   );
 
   return (
@@ -263,13 +276,16 @@ const Credentials: React.FC = () => {
 
       {/* Create/Edit Form Modal */}
       {showCreateForm && (
-        <div className="modal-overlay" onClick={resetForm}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-overlay" onClick={handleCloseModal}>
+          <div
+            className={`modal ${isModalClosing ? 'animate-modal-exit' : 'animate-modal-enter'}`}
+            onClick={e => e.stopPropagation()}
+          >
             <div className="modal-header">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 {editingCredential ? 'Edit Credential' : 'Add Credential'}
               </h3>
-              <button onClick={resetForm} className="btn-icon">
+              <button onClick={handleCloseModal} className="btn-icon">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -391,7 +407,7 @@ const Credentials: React.FC = () => {
             <div className="modal-footer">
               <button
                 type="button"
-                onClick={resetForm}
+                onClick={handleCloseModal}
                 className="btn btn-secondary"
               >
                 Cancel
@@ -427,107 +443,204 @@ const Credentials: React.FC = () => {
         </div>
 
         <div className="card-body p-0">
-          {filteredCredentials.length === 0 ? (
+          {/* Skeleton loading state */}
+          {loading && credentials.length === 0 ? (
+            <TableSkeleton rows={5} columns={6} />
+          ) : filteredCredentials.length === 0 && !loading ? (
+            /* Empty state */
             <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-              {searchTerm
-                ? 'No credentials match your search.'
-                : 'No credentials configured yet.'}
+              <Inbox className="w-12 h-12 mx-auto mb-4 opacity-50" />
+              <p>
+                {debouncedSearch
+                  ? 'No credentials match your search.'
+                  : 'No credentials configured yet.'}
+              </p>
             </div>
           ) : (
-            <div className="table-container">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Key Preview</th>
-                    <th>Models</th>
-                    <th>Rate Limit</th>
-                    <th>Status</th>
-                    <th className="text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredCredentials.map(credential => (
-                    <tr key={credential.id}>
-                      <td>
+            <>
+              {/* Desktop Table View */}
+              <div className="hidden md:block table-container">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Key Preview</th>
+                      <th>Models</th>
+                      <th>Rate Limit</th>
+                      <th>Status</th>
+                      <th className="text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredCredentials.map(credential => (
+                      <tr key={credential.id}>
+                        <td>
+                          <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                            {credential.name}
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            ID: {credential.id}
+                          </div>
+                        </td>
+                        <td>
+                          <code className="text-sm bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded font-mono">
+                            {credential.key_preview}
+                          </code>
+                        </td>
+                        <td>
+                          <div className="text-sm text-gray-500 dark:text-gray-400">
+                            {credential.allowed_models.length === 0
+                              ? 'All models'
+                              : `${credential.allowed_models.length} models`}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="text-sm text-gray-500 dark:text-gray-400">
+                            {credential.rate_limit
+                              ? `${credential.rate_limit}/s`
+                              : 'No limit'}
+                          </div>
+                        </td>
+                        <td>
+                          <button
+                            onClick={() => handleToggleStatus(credential)}
+                            className={`badge transition-colors ${
+                              credential.is_enabled
+                                ? 'badge-success hover:opacity-80'
+                                : 'badge-danger hover:opacity-80'
+                            }`}
+                          >
+                            {credential.is_enabled ? (
+                              <>
+                                <Check className="w-3 h-3 mr-1" />
+                                Enabled
+                              </>
+                            ) : (
+                              <>
+                                <X className="w-3 h-3 mr-1" />
+                                Disabled
+                              </>
+                            )}
+                          </button>
+                        </td>
+                        <td>
+                          <div className="flex justify-end space-x-2">
+                            <button
+                              onClick={() => handleEdit(credential)}
+                              className="btn-icon text-primary-600 hover:text-primary-900"
+                              title="Edit credential"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => setRotateConfirm(credential)}
+                              className="btn-icon text-yellow-600 hover:text-yellow-900"
+                              title="Rotate key"
+                            >
+                              <RefreshCw className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => setDeleteConfirm(credential)}
+                              className="btn-icon text-red-600 hover:text-red-900"
+                              title="Delete credential"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mobile Card View */}
+              <div className="md:hidden divide-y divide-gray-200 dark:divide-gray-700">
+                {filteredCredentials.map(credential => (
+                  <div key={credential.id} className="p-4 space-y-3">
+                    <div className="flex justify-between items-start">
+                      <div>
                         <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
                           {credential.name}
                         </div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">
                           ID: {credential.id}
                         </div>
-                      </td>
-                      <td>
-                        <code className="text-sm bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded font-mono">
+                      </div>
+                      <button
+                        onClick={() => handleToggleStatus(credential)}
+                        className={`badge transition-colors ${
+                          credential.is_enabled
+                            ? 'badge-success hover:opacity-80'
+                            : 'badge-danger hover:opacity-80'
+                        }`}
+                      >
+                        {credential.is_enabled ? (
+                          <>
+                            <Check className="w-3 h-3 mr-1" />
+                            Enabled
+                          </>
+                        ) : (
+                          <>
+                            <X className="w-3 h-3 mr-1" />
+                            Disabled
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">Key:</span>
+                        <code className="bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded font-mono text-xs">
                           {credential.key_preview}
                         </code>
-                      </td>
-                      <td>
-                        <div className="text-sm text-gray-500 dark:text-gray-400">
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">Models:</span>
+                        <span className="text-gray-900 dark:text-gray-100">
                           {credential.allowed_models.length === 0
                             ? 'All models'
                             : `${credential.allowed_models.length} models`}
-                        </div>
-                      </td>
-                      <td>
-                        <div className="text-sm text-gray-500 dark:text-gray-400">
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">Rate Limit:</span>
+                        <span className="text-gray-900 dark:text-gray-100">
                           {credential.rate_limit
                             ? `${credential.rate_limit}/s`
                             : 'No limit'}
-                        </div>
-                      </td>
-                      <td>
-                        <button
-                          onClick={() => handleToggleStatus(credential)}
-                          className={`badge transition-colors ${
-                            credential.is_enabled
-                              ? 'badge-success hover:opacity-80'
-                              : 'badge-danger hover:opacity-80'
-                          }`}
-                        >
-                          {credential.is_enabled ? (
-                            <>
-                              <Check className="w-3 h-3 mr-1" />
-                              Enabled
-                            </>
-                          ) : (
-                            <>
-                              <X className="w-3 h-3 mr-1" />
-                              Disabled
-                            </>
-                          )}
-                        </button>
-                      </td>
-                      <td>
-                        <div className="flex justify-end space-x-2">
-                          <button
-                            onClick={() => handleEdit(credential)}
-                            className="btn-icon text-primary-600 hover:text-primary-900"
-                            title="Edit credential"
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => setRotateConfirm(credential)}
-                            className="btn-icon text-yellow-600 hover:text-yellow-900"
-                            title="Rotate key"
-                          >
-                            <RefreshCw className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => setDeleteConfirm(credential)}
-                            className="btn-icon text-red-600 hover:text-red-900"
-                            title="Delete credential"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end space-x-2 pt-2">
+                      <button
+                        onClick={() => handleEdit(credential)}
+                        className="btn-icon text-primary-600 hover:text-primary-900"
+                        title="Edit credential"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setRotateConfirm(credential)}
+                        className="btn-icon text-yellow-600 hover:text-yellow-900"
+                        title="Rotate key"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setDeleteConfirm(credential)}
+                        className="btn-icon text-red-600 hover:text-red-900"
+                        title="Delete credential"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -535,7 +648,7 @@ const Credentials: React.FC = () => {
       {/* Delete Confirmation Modal */}
       {deleteConfirm && (
         <div className="modal-overlay" onClick={() => setDeleteConfirm(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
+          <div className="modal animate-modal-enter" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Delete Credential
@@ -577,7 +690,7 @@ const Credentials: React.FC = () => {
       {/* Rotate Confirmation Modal */}
       {rotateConfirm && (
         <div className="modal-overlay" onClick={() => setRotateConfirm(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
+          <div className="modal animate-modal-enter" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Rotate API Key
@@ -619,7 +732,7 @@ const Credentials: React.FC = () => {
       {/* New Key Display Modal */}
       {newRotatedKey && (
         <div className="modal-overlay" onClick={() => setNewRotatedKey(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
+          <div className="modal animate-modal-enter" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 New API Key Generated

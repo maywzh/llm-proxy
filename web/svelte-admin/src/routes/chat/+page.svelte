@@ -9,7 +9,8 @@
   import { renderMarkdownToHtml } from '$lib/markdown';
   import ChatComposer from '$lib/components/ChatComposer.svelte';
   import ChatMessageActions from '$lib/components/ChatMessageActions.svelte';
-  import { Trash2, Zap, X } from 'lucide-svelte';
+  import TypingIndicator from '$lib/components/TypingIndicator.svelte';
+  import { Trash2, Zap, X, User, Bot, SquarePen } from 'lucide-svelte';
   import type {
     ChatMessage,
     ChatRequest,
@@ -457,9 +458,21 @@
 
 <div class="mx-auto">
   <div
-    class="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-[calc(100vh-180px)] flex flex-col"
+    class="relative bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-[calc(100vh-120px)] flex flex-col shadow-sm"
   >
-    <div class="flex-1 overflow-y-auto px-4 pt-4 pb-3">
+    {#if messages.length > 0}
+      <button
+        type="button"
+        onclick={handleClear}
+        disabled={isLoading || isStreaming}
+        class="absolute top-3 left-3 z-10 p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        title="New chat"
+        aria-label="New chat"
+      >
+        <SquarePen class="w-5 h-5" />
+      </button>
+    {/if}
+    <div class="flex-1 overflow-y-auto px-4 py-4">
       <div class="mx-auto w-full max-w-3xl h-full">
         {#if messages.length === 0}
           <div
@@ -470,22 +483,34 @@
             <p class="text-sm">Select a model and type your message below</p>
           </div>
         {:else}
-          <div class="space-y-4">
+          <div class="space-y-6">
             {#each messages as msg, msgIndex (msg)}
               <div
-                class="flex {msg.role === 'user'
-                  ? 'justify-end'
-                  : 'justify-start'}"
+                class="flex gap-3 {msg.role === 'user'
+                  ? 'flex-row-reverse'
+                  : 'flex-row'}"
               >
-                <div class="group max-w-[80%]">
+                <div
+                  class="shrink-0 w-8 h-8 rounded-full flex items-center justify-center {msg.role ===
+                  'user'
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'}"
+                >
+                  {#if msg.role === 'user'}
+                    <User class="w-4 h-4" />
+                  {:else}
+                    <Bot class="w-4 h-4" />
+                  {/if}
+                </div>
+                <div class="group relative max-w-[85%]">
                   <div
-                    class="rounded-lg px-4 py-3 {msg.role === 'user'
+                    class="rounded-2xl px-4 py-3 {msg.role === 'user'
                       ? 'bg-primary-600 text-white'
                       : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'}"
                   >
                     {#if msg.role === 'assistant' && msg.thinking?.trim()}
                       <details
-                        class="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10"
+                        class="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10 {isStreaming && msgIndex === messages.length - 1 ? 'thinking-border' : ''}"
                         open={isStreaming && msgIndex === messages.length - 1}
                       >
                         <summary
@@ -508,12 +533,7 @@
                           {@html renderMarkdownToHtml(msg.content)}
                         </div>
                       {:else if msg.role === 'assistant' && isWaitingFirstToken}
-                        <span
-                          class="inline-block animate-pulse"
-                          aria-label="typing"
-                        >
-                          ▍
-                        </span>
+                        <TypingIndicator />
                       {/if}
                     {:else}
                       <div class="space-y-2">
@@ -739,11 +759,7 @@
       onRemoveImage={() => (imageDataUrl = null)}
       onImageChange={handleImageChange}
       onPickImage={handlePickImage}
-      attachImageDisabled={!isVisionModel($chatSettings.selectedModel) ||
-        isLoading}
-      attachImageTitle={isVisionModel($chatSettings.selectedModel)
-        ? 'Attach image'
-        : 'Image input is disabled for this model'}
+      showImageButton={isVisionModel($chatSettings.selectedModel)}
       selectedModel={$chatSettings.selectedModel}
       onSelectModel={value => updateChatSettings({ selectedModel: value })}
       modelOptions={getAllModels()}
