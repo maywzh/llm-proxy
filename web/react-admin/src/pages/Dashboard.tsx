@@ -6,6 +6,7 @@ import {
   Maximize2,
   X,
 } from 'lucide-react';
+import { DashboardSkeleton } from '../components/Skeleton';
 
 const Dashboard: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
@@ -50,27 +51,72 @@ const Dashboard: React.FC = () => {
           <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
         </div>
 
-        <div className="card p-8 text-center">
-          <LayoutDashboard className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300 mb-2">
-            Grafana Dashboard Not Configured
-          </h2>
-          <p className="text-gray-500 dark:text-gray-400 mb-4">
-            Please set the{' '}
-            <code className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
-              VITE_PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL
-            </code>{' '}
-            environment variable.
-          </p>
-          <a
-            href="https://grafana.com/docs/grafana/latest/dashboards/dashboard-public/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-primary-600 hover:text-primary-700 inline-flex items-center"
-          >
-            Learn how to create a Public Dashboard
-            <ExternalLink className="w-4 h-4 ml-1" />
-          </a>
+        <div className="card p-8">
+          <div className="text-center mb-6">
+            <LayoutDashboard className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-300 mb-2">
+              Grafana Dashboard Not Configured
+            </h2>
+            <p className="text-gray-500 dark:text-gray-400">
+              Follow the steps below to configure your Grafana public dashboard.
+            </p>
+          </div>
+
+          <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-6 mb-6">
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4 uppercase tracking-wide">
+              Setup Guide
+            </h3>
+            <ol className="space-y-3 text-gray-600 dark:text-gray-400">
+              <li className="flex items-start">
+                <span className="flex-shrink-0 w-6 h-6 bg-primary-100 dark:bg-primary-900 text-primary-600 dark:text-primary-400 rounded-full flex items-center justify-center text-sm font-medium mr-3">
+                  1
+                </span>
+                <span>Create or open a dashboard in Grafana</span>
+              </li>
+              <li className="flex items-start">
+                <span className="flex-shrink-0 w-6 h-6 bg-primary-100 dark:bg-primary-900 text-primary-600 dark:text-primary-400 rounded-full flex items-center justify-center text-sm font-medium mr-3">
+                  2
+                </span>
+                <span>Click the share button and select "Public Dashboard"</span>
+              </li>
+              <li className="flex items-start">
+                <span className="flex-shrink-0 w-6 h-6 bg-primary-100 dark:bg-primary-900 text-primary-600 dark:text-primary-400 rounded-full flex items-center justify-center text-sm font-medium mr-3">
+                  3
+                </span>
+                <span>Enable public access and copy the generated URL</span>
+              </li>
+              <li className="flex items-start">
+                <span className="flex-shrink-0 w-6 h-6 bg-primary-100 dark:bg-primary-900 text-primary-600 dark:text-primary-400 rounded-full flex items-center justify-center text-sm font-medium mr-3">
+                  4
+                </span>
+                <span>
+                  Set the{' '}
+                  <code className="bg-gray-200 dark:bg-gray-700 px-2 py-0.5 rounded text-sm">
+                    VITE_PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL
+                  </code>{' '}
+                  environment variable
+                </span>
+              </li>
+              <li className="flex items-start">
+                <span className="flex-shrink-0 w-6 h-6 bg-primary-100 dark:bg-primary-900 text-primary-600 dark:text-primary-400 rounded-full flex items-center justify-center text-sm font-medium mr-3">
+                  5
+                </span>
+                <span>Restart the application to apply the changes</span>
+              </li>
+            </ol>
+          </div>
+
+          <div className="text-center">
+            <a
+              href="https://grafana.com/docs/grafana/latest/dashboards/dashboard-public/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary-600 hover:text-primary-700 inline-flex items-center"
+            >
+              Learn more about Public Dashboards
+              <ExternalLink className="w-4 h-4 ml-1" />
+            </a>
+          </div>
         </div>
       </div>
     );
@@ -78,7 +124,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <div
-      className={`space-y-4 ${isFullscreen ? 'fixed inset-0 z-50 bg-white dark:bg-gray-900 p-4' : ''}`}
+      className={`space-y-4 transition-all duration-300 ${isFullscreen ? 'fixed inset-0 z-50 bg-white dark:bg-gray-900 p-4 animate-fade-in' : ''}`}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-3">
@@ -123,12 +169,9 @@ const Dashboard: React.FC = () => {
 
       <div className="card p-0 overflow-hidden relative">
         {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-gray-50 dark:bg-gray-800 z-10">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"></div>
-              <p className="mt-4 text-gray-600 dark:text-gray-400">
-                Loading dashboard...
-              </p>
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-50 dark:bg-gray-800 z-10 animate-fade-in">
+            <div className="w-full max-w-3xl px-8">
+              <DashboardSkeleton />
             </div>
           </div>
         )}

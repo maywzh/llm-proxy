@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { useDebounce } from '../hooks/useDebounce';
 import { generateApiKey } from '../api/client';
 import JsonEditor from '../components/JsonEditor';
+import { TableSkeleton } from '../components/Skeleton';
 import {
   Plus,
   Pencil,
@@ -11,6 +13,7 @@ import {
   X,
   Check,
   Shuffle,
+  Inbox,
 } from 'lucide-react';
 import type { Provider, ProviderFormData, ProviderUpdate } from '../types';
 
@@ -23,6 +26,7 @@ const Providers: React.FC = () => {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Provider | null>(null);
+  const [isModalClosing, setIsModalClosing] = useState(false);
   const [modelMappingError, setModelMappingError] = useState<string | null>(
     null
   );
@@ -34,6 +38,8 @@ const Providers: React.FC = () => {
     model_mapping: {},
     is_enabled: true,
   });
+
+  const debouncedSearch = useDebounce(searchTerm, 300);
 
   const loadProviders = useCallback(async () => {
     if (!apiClient) return;
@@ -70,6 +76,14 @@ const Providers: React.FC = () => {
     setModelMappingError(null);
     setEditingProvider(null);
     setShowCreateForm(false);
+    setIsModalClosing(false);
+  };
+
+  const handleCloseModal = () => {
+    setIsModalClosing(true);
+    setTimeout(() => {
+      resetForm();
+    }, 150);
   };
 
   const handleCreate = () => {
@@ -174,9 +188,9 @@ const Providers: React.FC = () => {
   // Filtered providers based on search
   const filteredProviders = providers.filter(
     provider =>
-      provider.provider_key.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      provider.provider_type.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      provider.api_base.toLowerCase().includes(searchTerm.toLowerCase())
+      provider.provider_key.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+      provider.provider_type.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+      provider.api_base.toLowerCase().includes(debouncedSearch.toLowerCase())
   );
 
   return (
@@ -235,13 +249,16 @@ const Providers: React.FC = () => {
 
       {/* Create/Edit Form Modal */}
       {showCreateForm && (
-        <div className="modal-overlay" onClick={resetForm}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-overlay" onClick={handleCloseModal}>
+          <div
+            className={`modal ${isModalClosing ? 'animate-modal-exit' : 'animate-modal-enter'}`}
+            onClick={e => e.stopPropagation()}
+          >
             <div className="modal-header">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 {editingProvider ? 'Edit Provider' : 'Add Provider'}
               </h3>
-              <button onClick={resetForm} className="btn-icon">
+              <button onClick={handleCloseModal} className="btn-icon">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -384,7 +401,7 @@ const Providers: React.FC = () => {
             <div className="modal-footer">
               <button
                 type="button"
-                onClick={resetForm}
+                onClick={handleCloseModal}
                 className="btn btn-secondary"
               >
                 Cancel
@@ -416,11 +433,19 @@ const Providers: React.FC = () => {
         </div>
 
         <div className="card-body p-0">
-          {filteredProviders.length === 0 ? (
+          {loading && providers.length === 0 ? (
+            <TableSkeleton rows={5} columns={6} />
+          ) : filteredProviders.length === 0 ? (
             <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-              {searchTerm
-                ? 'No providers match your search.'
-                : 'No providers configured yet.'}
+              <Inbox className="w-16 h-16 mx-auto mb-4 text-gray-300 dark:text-gray-600" />
+              <p className="text-lg font-medium mb-1">
+                {searchTerm ? 'No results found' : 'No providers yet'}
+              </p>
+              <p className="text-sm">
+                {searchTerm
+                  ? 'Try adjusting your search terms'
+                  : 'Click "Add Provider" to get started'}
+              </p>
             </div>
           ) : (
             <div className="table-container">
