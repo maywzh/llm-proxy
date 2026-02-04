@@ -2,7 +2,9 @@
   import { onMount } from 'svelte';
   import { providers, loading, errors, actions } from '$lib/stores';
   import { generateApiKey } from '$lib/api';
+  import { debounce } from '$lib/debounce';
   import JsonEditor from '$lib/components/JsonEditor.svelte';
+  import TableSkeleton from '$lib/components/TableSkeleton.svelte';
   import type { Provider, ProviderFormData } from '$lib/types';
   import {
     Plus,
@@ -13,10 +15,13 @@
     X,
     Check,
     Shuffle,
+    Inbox,
   } from 'lucide-svelte';
 
   let searchTerm = $state('');
+  let debouncedSearch = $state('');
   let showCreateForm = $state(false);
+  let isModalClosing = $state(false);
   let editingProvider: Provider | null = $state(null);
   let deleteConfirm: Provider | null = $state(null);
   let formData: ProviderFormData = $state({
@@ -29,24 +34,35 @@
   });
   let modelMappingError = $state<string | null>(null);
 
+  // Debounce search input
+  const updateDebouncedSearch = debounce((value: string) => {
+    debouncedSearch = value;
+  }, 300);
+
+  $effect(() => {
+    updateDebouncedSearch(searchTerm);
+  });
+
   // Load providers on mount
   onMount(() => {
     actions.loadProviders();
   });
 
-  // Filtered providers based on search
+  // Filtered providers based on debounced search
   const filteredProviders = $derived(
     $providers.filter(
-      provider =>
+      (provider) =>
         provider &&
         provider.provider_key &&
         (provider.provider_key
           .toLowerCase()
-          .includes(searchTerm.toLowerCase()) ||
+          .includes(debouncedSearch.toLowerCase()) ||
           provider.provider_type
             .toLowerCase()
-            .includes(searchTerm.toLowerCase()) ||
-          provider.api_base.toLowerCase().includes(searchTerm.toLowerCase()))
+            .includes(debouncedSearch.toLowerCase()) ||
+          provider.api_base
+            .toLowerCase()
+            .includes(debouncedSearch.toLowerCase()))
     )
   );
 
@@ -62,6 +78,14 @@
     modelMappingError = null;
     editingProvider = null;
     showCreateForm = false;
+    isModalClosing = false;
+  }
+
+  function handleCloseModal() {
+    isModalClosing = true;
+    setTimeout(() => {
+      resetForm();
+    }, 150);
   }
 
   function handleCreate() {
@@ -191,17 +215,17 @@
   <!-- Create/Edit Form Modal -->
   {#if showCreateForm}
     <div
-      class="modal-overlay"
-      onclick={resetForm}
-      onkeydown={e => e.key === 'Escape' && resetForm()}
+      class="modal-overlay {isModalClosing ? 'animate-fade-out' : 'animate-fade-in'}"
+      onclick={handleCloseModal}
+      onkeydown={(e) => e.key === 'Escape' && handleCloseModal()}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
-        class="modal"
-        onclick={e => e.stopPropagation()}
-        onkeydown={e => e.stopPropagation()}
+        class="modal {isModalClosing ? 'animate-modal-exit' : 'animate-modal-enter'}"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"
@@ -210,13 +234,13 @@
           <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
             {editingProvider ? 'Edit Provider' : 'Add Provider'}
           </h3>
-          <button onclick={resetForm} class="btn-icon">
+          <button onclick={handleCloseModal} class="btn-icon">
             <X class="w-5 h-5" />
           </button>
         </div>
 
         <form
-          onsubmit={e => {
+          onsubmit={(e) => {
             e.preventDefault();
             handleSubmit();
           }}
@@ -296,8 +320,8 @@
               id="model_mapping"
               label="Model Mapping (optional)"
               value={formData.model_mapping}
-              onChange={next => (formData.model_mapping = next)}
-              onErrorChange={err => (modelMappingError = err)}
+              onChange={(next) => (formData.model_mapping = next)}
+              onErrorChange={(err) => (modelMappingError = err)}
               rows={6}
               placeholder={`{\n  "gpt-4": "gpt-4-turbo",\n  "gpt-3.5-turbo": "gpt-3.5-turbo-16k"\n}`}
               helperText={'JSON object in format: {"source_model":"target_model"}'}
@@ -321,7 +345,11 @@
         </form>
 
         <div class="modal-footer">
-          <button type="button" onclick={resetForm} class="btn btn-secondary">
+          <button
+            type="button"
+            onclick={handleCloseModal}
+            class="btn btn-secondary"
+          >
             Cancel
           </button>
           <button
@@ -344,7 +372,7 @@
   <div class="card">
     <div class="card-header flex justify-between items-center">
       <h2 class="card-title">Providers ({filteredProviders.length})</h2>
-      {#if $loading.providers}
+      {#if $loading.providers && $providers.length > 0}
         <div class="flex items-center text-gray-500 dark:text-gray-400">
           <Loader2 class="w-5 h-5 animate-spin mr-2" />
           <span class="text-sm">Loading...</span>
@@ -353,11 +381,32 @@
     </div>
 
     <div class="card-body p-0">
-      {#if filteredProviders.length === 0}
-        <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-          {searchTerm
-            ? 'No providers match your search.'
-            : 'No providers configured yet.'}
+      {#if $loading.providers && $providers.length === 0}
+        <!-- Skeleton loading state -->
+        <TableSkeleton rows={5} columns={6} />
+      {:else if filteredProviders.length === 0}
+        <!-- Empty state -->
+        <div class="text-center py-12">
+          <Inbox
+            class="w-12 h-12 text-gray-400 dark:text-gray-500 mx-auto mb-4"
+          />
+          <h3 class="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">
+            {debouncedSearch ? 'No providers found' : 'No providers yet'}
+          </h3>
+          <p class="text-gray-500 dark:text-gray-400 mb-4">
+            {debouncedSearch
+              ? 'Try adjusting your search criteria.'
+              : 'Get started by adding your first provider.'}
+          </p>
+          {#if !debouncedSearch}
+            <button
+              onclick={handleCreate}
+              class="btn btn-primary inline-flex items-center space-x-2"
+            >
+              <Plus class="w-5 h-5" />
+              <span>Add Provider</span>
+            </button>
+          {/if}
         </div>
       {:else}
         <div class="table-container">
@@ -374,7 +423,7 @@
             </thead>
             <tbody>
               {#each filteredProviders as provider (provider.id)}
-                <tr>
+                <tr class="animate-fade-in">
                   <td>
                     <div
                       class="text-sm font-medium text-gray-900 dark:text-gray-100"
@@ -449,17 +498,17 @@
   <!-- Delete Confirmation Modal -->
   {#if deleteConfirm}
     <div
-      class="modal-overlay"
+      class="modal-overlay animate-fade-in"
       onclick={() => (deleteConfirm = null)}
-      onkeydown={e => e.key === 'Escape' && (deleteConfirm = null)}
+      onkeydown={(e) => e.key === 'Escape' && (deleteConfirm = null)}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
-        class="modal"
-        onclick={e => e.stopPropagation()}
-        onkeydown={e => e.stopPropagation()}
+        class="modal animate-modal-enter"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"

@@ -185,12 +185,53 @@ run_container() {
     fi
 }
 
+# Function to update k8s image
+update_k8s_image() {
+    local new_image="$1"
+    local k8s_dir="$(cd "$(dirname "$0")" && cd ../../k8s/dev && pwd)"
+
+    if [ ! -d "$k8s_dir" ]; then
+        echo "Warning: k8s directory not found at $k8s_dir"
+        return
+    fi
+
+    # Determine which k8s file to update based on image name
+    local k8s_file=""
+    if [[ "$IMAGE_NAME" == "llm-proxy-admin-ui-svelte" ]]; then
+        k8s_file="$k8s_dir/web-admin.yaml"
+    elif [[ "$IMAGE_NAME" == "llm-proxy-admin-ui" ]]; then
+        k8s_file="$k8s_dir/web-admin-react.yaml"
+    else
+        echo "Warning: Unknown image name, skipping k8s update"
+        return
+    fi
+
+    if [ ! -f "$k8s_file" ]; then
+        echo "Warning: k8s file not found at $k8s_file"
+        return
+    fi
+
+    echo "Updating k8s image in $k8s_file..."
+
+    # Use sed to update the image field
+    # Match the image field and replace with new image
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        sed -i '' "s|image: nyuwa-user-docker-local\.arf\.tesla\.cn/nyuwa-ns-voc/$IMAGE_NAME:[^ ]*|image: $new_image|g" "$k8s_file"
+    else
+        # Linux
+        sed -i "s|image: nyuwa-user-docker-local\.arf\.tesla\.cn/nyuwa-ns-voc/$IMAGE_NAME:[^ ]*|image: $new_image|g" "$k8s_file"
+    fi
+
+    echo "✓ Updated k8s image to: $new_image"
+}
+
 # Function to upload image
 upload_image() {
     # Create a tag based on current date and time (month, day, hour, minute)
     NEW_TAG=$(date +"%m%d%H%M")
     echo "Using tag: $NEW_TAG"
-    
+
     # Tag the built images with the Tesla registry path
     echo "Tagging image..."
     docker tag $IMAGE_NAME:latest "nyuwa-user-docker-local.arf.tesla.cn/nyuwa-ns-voc/$IMAGE_NAME:$NEW_TAG"
@@ -201,6 +242,9 @@ upload_image() {
 
     echo "Complete! Image pushed with tag: $NEW_TAG"
     echo "Image name: nyuwa-user-docker-local.arf.tesla.cn/nyuwa-ns-voc/$IMAGE_NAME:$NEW_TAG"
+
+    # Update k8s image configuration
+    update_k8s_image "nyuwa-user-docker-local.arf.tesla.cn/nyuwa-ns-voc/$IMAGE_NAME:$NEW_TAG"
 }
 
 # Main logic

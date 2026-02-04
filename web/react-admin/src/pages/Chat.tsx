@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { API_BASE_URL } from '../contexts/auth-context';
-import { Trash2, Zap, X } from 'lucide-react';
+import { Trash2, Zap, X, User, Bot, SquarePen } from 'lucide-react';
 import type {
   ChatMessage,
   ChatRequest,
@@ -14,6 +14,14 @@ import { renderMarkdownToHtml } from '../utils/markdown';
 import { ChatMessageActions } from '../components/ChatMessageActions';
 import { ChatComposer } from '../components/ChatComposer';
 import { useChatSettings } from '../stores/chat-settings';
+
+const TypingIndicator = () => (
+  <div className="typing-indicator text-gray-400">
+    <span />
+    <span />
+    <span />
+  </div>
+);
 
 const VISION_MODEL_ALLOWLIST = (
   import.meta.env.VITE_CHAT_VISION_MODEL_ALLOWLIST as string | undefined
@@ -239,6 +247,7 @@ const Chat: React.FC = () => {
       role: 'assistant',
       content: '',
       thinking: '',
+      timestamp: Date.now(),
     };
     setMessages([...conversationMessages, assistantMessage]);
 
@@ -388,7 +397,7 @@ const Chat: React.FC = () => {
       content = contentText;
     }
 
-    const userMessage: ChatMessage = { role: 'user', content };
+    const userMessage: ChatMessage = { role: 'user', content, timestamp: Date.now() };
 
     const newMessages = [...messages, userMessage];
     setInput('');
@@ -464,9 +473,7 @@ const Chat: React.FC = () => {
       index === messages.length - 1
     ) {
       return (
-        <span className="inline-block animate-pulse" aria-label="typing">
-          ▍
-        </span>
+        <TypingIndicator />
       );
     }
 
@@ -514,20 +521,22 @@ const Chat: React.FC = () => {
     if (!thinking) return null;
     const open = isStreaming && index === messages.length - 1;
     return (
-      <details
-        open={open}
-        className="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10"
-      >
-        <summary className="cursor-pointer select-none px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
-          Thinking
-        </summary>
-        <div
-          className="px-3 pb-3 markdown break-words text-sm text-gray-700 dark:text-gray-200"
-          dangerouslySetInnerHTML={{
-            __html: renderMarkdownToHtml(thinking),
-          }}
-        />
-      </details>
+      <div className={isStreaming && index === messages.length - 1 ? 'thinking-border' : ''}>
+        <details
+          open={open}
+          className="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10"
+        >
+          <summary className="cursor-pointer select-none px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+            Thinking
+          </summary>
+          <div
+            className="px-3 pb-3 markdown break-words text-sm text-gray-700 dark:text-gray-200"
+            dangerouslySetInnerHTML={{
+              __html: renderMarkdownToHtml(thinking),
+            }}
+          />
+        </details>
+      </div>
     );
   };
 
@@ -540,10 +549,23 @@ const Chat: React.FC = () => {
   };
 
   return (
-    <div className="w-full">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-[calc(100vh-180px)] flex flex-col">
+    <div className="w-full h-[calc(100vh-120px)]">
+      <div className="relative bg-white dark:bg-gray-800 rounded-2xl overflow-hidden h-full flex flex-col shadow-sm">
+        {/* New Chat Button */}
+        {messages.length > 0 && (
+          <button
+            type="button"
+            onClick={handleClear}
+            disabled={isLoading || isStreaming}
+            className="absolute top-3 left-3 z-10 p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="New chat"
+            aria-label="New chat"
+          >
+            <SquarePen className="w-5 h-5" />
+          </button>
+        )}
         {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto px-4 pt-4 pb-3">
+        <div className="flex-1 overflow-y-auto px-4 py-4">
           <div className="mx-auto w-full max-w-3xl h-full">
             {messages.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-gray-500 dark:text-gray-400">
@@ -554,15 +576,28 @@ const Chat: React.FC = () => {
                 </p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-6">
                 {messages.map((msg, index) => (
                   <div
                     key={index}
-                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}
                   >
-                    <div className="group max-w-[80%]">
+                    <div
+                      className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                        msg.role === 'user'
+                          ? 'bg-primary-600 text-white'
+                          : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'
+                      }`}
+                    >
+                      {msg.role === 'user' ? (
+                        <User className="w-4 h-4" />
+                      ) : (
+                        <Bot className="w-4 h-4" />
+                      )}
+                    </div>
+                    <div className="group relative max-w-[85%]">
                       <div
-                        className={`rounded-lg px-4 py-3 ${
+                        className={`rounded-2xl px-4 py-3 ${
                           msg.role === 'user'
                             ? 'bg-primary-600 text-white'
                             : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
@@ -571,6 +606,15 @@ const Chat: React.FC = () => {
                         {renderThinkingContent(msg, index)}
                         {renderMessageContent(msg, index)}
                       </div>
+                      {msg.timestamp && (
+                        <div
+                          className={`absolute -bottom-5 text-xs text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity ${
+                            msg.role === 'user' ? 'right-0' : 'left-0'
+                          }`}
+                        >
+                          {new Date(msg.timestamp).toLocaleTimeString()}
+                        </div>
+                      )}
                       {msg.role === 'assistant' &&
                       (!isStreaming || index !== messages.length - 1) ? (
                         <ChatMessageActions
@@ -773,12 +817,7 @@ const Chat: React.FC = () => {
           imageInputRef={imageInputRef}
           onImageChange={handleImageChange}
           onPickImage={handlePickImage}
-          attachImageDisabled={!isVisionModel(selectedModel) || isLoading}
-          attachImageTitle={
-            isVisionModel(selectedModel)
-              ? 'Attach image'
-              : 'Image input is disabled for this model'
-          }
+          showImageButton={isVisionModel(selectedModel)}
           selectedModel={selectedModel}
           onSelectModel={setSelectedModel}
           modelOptions={getAllModels()}

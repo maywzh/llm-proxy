@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { credentials, loading, errors, actions } from '$lib/stores';
   import { generateApiKey } from '$lib/api';
+  import { debounce } from '$lib/debounce';
+  import TableSkeleton from '$lib/components/TableSkeleton.svelte';
   import type { Credential, CredentialFormData } from '$lib/types';
   import {
     Plus,
@@ -13,10 +15,13 @@
     Check,
     Shuffle,
     RefreshCw,
+    Inbox,
   } from 'lucide-svelte';
 
   let searchTerm = $state('');
+  let debouncedSearch = $state('');
   let showCreateForm = $state(false);
+  let isModalClosing = $state(false);
   let editingCredential: Credential | null = $state(null);
   let deleteConfirm: Credential | null = $state(null);
   let rotateConfirm: Credential | null = $state(null);
@@ -30,19 +35,28 @@
   });
   let allowedModelsText = $state('');
 
+  // Debounce search input
+  const updateDebouncedSearch = debounce((value: string) => {
+    debouncedSearch = value;
+  }, 300);
+
+  $effect(() => {
+    updateDebouncedSearch(searchTerm);
+  });
+
   onMount(() => {
     actions.loadCredentials();
   });
 
   const filteredCredentials = $derived(
     $credentials.filter(
-      credential =>
+      (credential) =>
         credential &&
         credential.name &&
-        (credential.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (credential.name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
           credential.key_preview
             ?.toLowerCase()
-            .includes(searchTerm.toLowerCase()))
+            .includes(debouncedSearch.toLowerCase()))
     )
   );
 
@@ -57,6 +71,14 @@
     allowedModelsText = '';
     editingCredential = null;
     showCreateForm = false;
+    isModalClosing = false;
+  }
+
+  function handleCloseModal() {
+    isModalClosing = true;
+    setTimeout(() => {
+      resetForm();
+    }, 150);
   }
 
   function handleCreate() {
@@ -82,8 +104,8 @@
     // Update allowed models from text
     formData.allowed_models = allowedModelsText
       .split('\n')
-      .map(s => s.trim())
-      .filter(s => s.length > 0);
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
 
     if (editingCredential) {
       const updateData = {
@@ -187,17 +209,17 @@
   <!-- Create/Edit Form Modal -->
   {#if showCreateForm}
     <div
-      class="modal-overlay"
-      onclick={resetForm}
-      onkeydown={e => e.key === 'Escape' && resetForm()}
+      class="modal-overlay {isModalClosing ? 'animate-fade-out' : 'animate-fade-in'}"
+      onclick={handleCloseModal}
+      onkeydown={(e) => e.key === 'Escape' && handleCloseModal()}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
-        class="modal"
-        onclick={e => e.stopPropagation()}
-        onkeydown={e => e.stopPropagation()}
+        class="modal {isModalClosing ? 'animate-modal-exit' : 'animate-modal-enter'}"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"
@@ -206,13 +228,13 @@
           <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
             {editingCredential ? 'Edit Credential' : 'Add Credential'}
           </h3>
-          <button onclick={resetForm} class="btn-icon">
+          <button onclick={handleCloseModal} class="btn-icon">
             <X class="w-5 h-5" />
           </button>
         </div>
 
         <form
-          onsubmit={e => {
+          onsubmit={(e) => {
             e.preventDefault();
             handleSubmit();
           }}
@@ -302,7 +324,11 @@
         </form>
 
         <div class="modal-footer">
-          <button type="button" onclick={resetForm} class="btn btn-secondary">
+          <button
+            type="button"
+            onclick={handleCloseModal}
+            class="btn btn-secondary"
+          >
             Cancel
           </button>
           <button
@@ -329,7 +355,7 @@
       <h2 class="card-title">
         Credentials ({filteredCredentials.length})
       </h2>
-      {#if $loading.credentials}
+      {#if $loading.credentials && $credentials.length > 0}
         <div class="flex items-center text-gray-500 dark:text-gray-400">
           <Loader2 class="w-5 h-5 animate-spin mr-2" />
           <span class="text-sm">Loading...</span>
@@ -338,11 +364,32 @@
     </div>
 
     <div class="card-body p-0">
-      {#if filteredCredentials.length === 0}
-        <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-          {searchTerm
-            ? 'No credentials match your search.'
-            : 'No credentials configured yet.'}
+      {#if $loading.credentials && $credentials.length === 0}
+        <!-- Skeleton loading state -->
+        <TableSkeleton rows={5} columns={6} />
+      {:else if filteredCredentials.length === 0}
+        <!-- Empty state -->
+        <div class="text-center py-12">
+          <Inbox
+            class="w-12 h-12 text-gray-400 dark:text-gray-500 mx-auto mb-4"
+          />
+          <h3 class="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">
+            {debouncedSearch ? 'No credentials found' : 'No credentials yet'}
+          </h3>
+          <p class="text-gray-500 dark:text-gray-400 mb-4">
+            {debouncedSearch
+              ? 'Try adjusting your search criteria.'
+              : 'Get started by adding your first credential.'}
+          </p>
+          {#if !debouncedSearch}
+            <button
+              onclick={handleCreate}
+              class="btn btn-primary inline-flex items-center space-x-2"
+            >
+              <Plus class="w-5 h-5" />
+              <span>Add Credential</span>
+            </button>
+          {/if}
         </div>
       {:else}
         <div class="table-container">
@@ -359,7 +406,7 @@
             </thead>
             <tbody>
               {#each filteredCredentials as credential (credential.id)}
-                <tr>
+                <tr class="animate-fade-in">
                   <td>
                     <div
                       class="text-sm font-medium text-gray-900 dark:text-gray-100"
@@ -444,17 +491,17 @@
   <!-- Delete Confirmation Modal -->
   {#if deleteConfirm}
     <div
-      class="modal-overlay"
+      class="modal-overlay animate-fade-in"
       onclick={() => (deleteConfirm = null)}
-      onkeydown={e => e.key === 'Escape' && (deleteConfirm = null)}
+      onkeydown={(e) => e.key === 'Escape' && (deleteConfirm = null)}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
-        class="modal"
-        onclick={e => e.stopPropagation()}
-        onkeydown={e => e.stopPropagation()}
+        class="modal animate-modal-enter"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"
@@ -498,17 +545,17 @@
   <!-- Rotate Confirmation Modal -->
   {#if rotateConfirm}
     <div
-      class="modal-overlay"
+      class="modal-overlay animate-fade-in"
       onclick={() => (rotateConfirm = null)}
-      onkeydown={e => e.key === 'Escape' && (rotateConfirm = null)}
+      onkeydown={(e) => e.key === 'Escape' && (rotateConfirm = null)}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
-        class="modal"
-        onclick={e => e.stopPropagation()}
-        onkeydown={e => e.stopPropagation()}
+        class="modal animate-modal-enter"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"
@@ -553,17 +600,17 @@
   <!-- New Key Display Modal -->
   {#if newRotatedKey}
     <div
-      class="modal-overlay"
+      class="modal-overlay animate-fade-in"
       onclick={() => (newRotatedKey = null)}
-      onkeydown={e => e.key === 'Escape' && (newRotatedKey = null)}
+      onkeydown={(e) => e.key === 'Escape' && (newRotatedKey = null)}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
-        class="modal"
-        onclick={e => e.stopPropagation()}
-        onkeydown={e => e.stopPropagation()}
+        class="modal animate-modal-enter"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useTheme } from '../hooks/useTheme';
@@ -36,7 +36,10 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showThemeMenu, setShowThemeMenu] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [tooltip, setTooltip] = useState<string | null>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
+  const tooltipTimerRef = useRef<number | null>(null);
+  const touchStartXRef = useRef<number>(0);
 
   const navItems = [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -104,6 +107,37 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     });
   };
 
+  const handleNavMouseEnter = useCallback(
+    (label: string) => {
+      if (isSidebarCollapsed) {
+        tooltipTimerRef.current = window.setTimeout(() => {
+          setTooltip(label);
+        }, 200);
+      }
+    },
+    [isSidebarCollapsed]
+  );
+
+  const handleNavMouseLeave = useCallback(() => {
+    if (tooltipTimerRef.current) {
+      clearTimeout(tooltipTimerRef.current);
+      tooltipTimerRef.current = null;
+    }
+    setTooltip(null);
+  }, []);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartXRef.current = e.touches[0].clientX;
+  }, []);
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    const touchEndX = e.changedTouches[0].clientX;
+    const diff = touchStartXRef.current - touchEndX;
+    if (diff > 50) {
+      setIsMobileMenuOpen(false);
+    }
+  }, []);
+
   const getThemeIcon = () => {
     if (theme === 'light') return <Sun className="w-4 h-4" />;
     if (theme === 'dark') return <Moon className="w-4 h-4" />;
@@ -117,15 +151,17 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const collapsedNavItemClass = isSidebarCollapsed
     ? 'justify-center px-0 space-x-0'
     : '';
-  const sidebarLogoutClass = isSidebarCollapsed
-    ? 'justify-center px-0 space-x-0'
-    : 'space-x-3';
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      {/* Skip to content link for accessibility */}
+      <a href="#main-content" className="skip-link">
+        Skip to main content
+      </a>
+
       {/* Sidebar - Desktop */}
       <aside
-        className={`hidden lg:fixed lg:inset-y-0 lg:flex lg:flex-col transition-all duration-200 relative ${desktopSidebarWidthClass}`}
+        className={`hidden lg:fixed lg:inset-y-0 lg:flex lg:flex-col transition-all duration-200 ${desktopSidebarWidthClass}`}
       >
         <div className="flex flex-col grow bg-gray-900 overflow-y-auto">
           <div className="flex items-center shrink-0 px-4 py-5 border-b border-gray-800">
@@ -154,53 +190,71 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <Link
                   key={item.href}
                   to={item.href}
-                  className={`sidebar-nav-item ${isActive ? 'active' : ''} ${collapsedNavItemClass}`}
-                  title={isSidebarCollapsed ? item.label : undefined}
+                  className={`sidebar-nav-item relative ${isActive ? 'active' : ''} ${collapsedNavItemClass}`}
                   aria-label={item.label}
+                  onMouseEnter={() => handleNavMouseEnter(item.label)}
+                  onMouseLeave={handleNavMouseLeave}
                 >
+                  {isActive && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-white rounded-r-full animate-fade-in" />
+                  )}
                   <Icon className="w-5 h-5" />
                   {!isSidebarCollapsed && <span>{item.label}</span>}
+                  {isSidebarCollapsed && tooltip === item.label && (
+                    <div className="absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-sm rounded whitespace-nowrap z-50 animate-fade-in">
+                      {item.label}
+                    </div>
+                  )}
                 </Link>
               );
             })}
           </nav>
 
-          <div className="shrink-0 border-t border-gray-800 p-4">
+          <div className="shrink-0 border-t border-gray-800 p-4 space-y-2">
             <button
               onClick={handleLogout}
-              className={`flex items-center w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg ${sidebarLogoutClass}`}
+              className={`flex items-center w-full px-4 py-3 text-gray-300 hover:bg-gray-800 hover:text-white transition-colors duration-200 rounded-lg ${
+                isSidebarCollapsed ? 'justify-center' : 'space-x-3'
+              }`}
               title={isSidebarCollapsed ? 'Logout' : undefined}
               aria-label="Logout"
             >
               <LogOut className="w-5 h-5" />
               {!isSidebarCollapsed && <span>Logout</span>}
             </button>
+            <button
+              type="button"
+              onClick={toggleSidebarCollapsed}
+              className="flex items-center justify-center w-full py-2 text-gray-400 hover:text-white transition-colors rounded-lg"
+              title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={
+                isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'
+              }
+            >
+              {isSidebarCollapsed ? (
+                <ChevronRight className="w-5 h-5" />
+              ) : (
+                <>
+                  <ChevronLeft className="w-5 h-5" />
+                  <span className="ml-2 text-sm">Collapse</span>
+                </>
+              )}
+            </button>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={toggleSidebarCollapsed}
-          className="absolute top-23 left-full -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-lg flex items-center justify-center bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-md text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 z-50"
-          title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          aria-label={
-            isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'
-          }
-        >
-          {isSidebarCollapsed ? (
-            <ChevronRight className="w-4 h-4" />
-          ) : (
-            <ChevronLeft className="w-4 h-4" />
-          )}
-        </button>
       </aside>
 
       {isMobileMenuOpen && (
         <div className="lg:hidden">
           <div
-            className="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-70 z-40"
+            className="fixed inset-0 bg-black/50 dark:bg-black/70 z-40 animate-fade-in"
             onClick={() => setIsMobileMenuOpen(false)}
           />
-          <aside className="fixed inset-y-0 left-0 flex flex-col w-64 bg-gray-900 z-50">
+          <aside
+            className="fixed inset-y-0 left-0 flex flex-col w-64 bg-gray-900 z-50 animate-slide-up"
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handleTouchEnd}
+          >
             <div className="flex items-center justify-between px-4 py-5 border-b border-gray-800">
               <div className="flex items-center space-x-3">
                 <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center">
@@ -231,8 +285,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                     key={item.href}
                     to={item.href}
                     onClick={() => setIsMobileMenuOpen(false)}
-                    className={`sidebar-nav-item ${isActive ? 'active' : ''}`}
+                    className={`sidebar-nav-item relative ${isActive ? 'active' : ''}`}
                   >
+                    {isActive && (
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-white rounded-r-full" />
+                    )}
                     <Icon className="w-5 h-5" />
                     <span>{item.label}</span>
                   </Link>
@@ -293,7 +350,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
                   {showThemeMenu && (
                     <div
-                      className="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50"
+                      className="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 animate-fade-in"
                       onClick={e => e.stopPropagation()}
                     >
                       <button
@@ -356,7 +413,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           </div>
         </header>
 
-        <main className="flex-1 py-6 px-4 sm:px-6 lg:px-8">{children}</main>
+        <main
+          id="main-content"
+          className="flex-1 py-6 px-4 sm:px-6 lg:px-8"
+          tabIndex={-1}
+        >
+          {children}
+        </main>
       </div>
     </div>
   );
