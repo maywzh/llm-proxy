@@ -14,6 +14,7 @@ pub mod handlers;
 pub mod health;
 pub mod models;
 pub mod proxy;
+pub mod rectifier;
 pub mod streaming;
 
 // Re-export commonly used types

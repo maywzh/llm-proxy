@@ -867,7 +867,7 @@ class TestGCPVertexAuthentication:
 
         access_token = "ya29.a0AfH6SMBx..."
 
-        headers = _build_anthropic_headers(access_token, {})
+        headers = _build_anthropic_headers(access_token, {}, "gcp-vertex", {})
 
         assert headers["Authorization"] == f"Bearer {access_token}"
         assert headers["Content-Type"] == "application/json"
@@ -880,20 +880,98 @@ class TestGCPVertexAuthentication:
         access_token = "test-token"
         request_headers = {"anthropic-version": "custom-version"}
 
-        headers = _build_anthropic_headers(access_token, request_headers)
+        headers = _build_anthropic_headers(
+            access_token, request_headers, "gcp-vertex", {}
+        )
 
         assert headers["anthropic-version"] == "custom-version"
 
-    def test_anthropic_beta_header_forwarded(self):
-        """Test anthropic-beta header is forwarded if present."""
+    def test_anthropic_beta_header_allowlist(self):
+        """Test anthropic-beta header is filtered by allowlist."""
         from app.api.gcp_vertex import _build_anthropic_headers
 
         access_token = "test-token"
-        request_headers = {"anthropic-beta": "some-beta-feature"}
+        request_headers = {"anthropic-beta": "some-beta-feature,other-feature"}
+        provider_params = {
+            "anthropic_beta_policy": "allowlist",
+            "anthropic_beta_allowlist": ["some-beta-feature"],
+        }
 
-        headers = _build_anthropic_headers(access_token, request_headers)
+        headers = _build_anthropic_headers(
+            access_token, request_headers, "gcp-vertex", provider_params
+        )
 
         assert headers["anthropic-beta"] == "some-beta-feature"
+
+
+@pytest.mark.unit
+class TestGCPVertexSanitizeBehavior:
+    """Test GCP Vertex path uses shared sanitize strategy."""
+
+    def test_streaming_payload_is_sanitized(self):
+        from app.transformer.rectifier import sanitize_provider_payload
+
+        provider_payload = {
+            "thinking": {"type": "enabled", "budget_tokens": 1024},
+            "model": "claude-opus-4-6",
+            "stream": True,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "reasoning",
+                            "signature": "sig",
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "lookup",
+                            "input": {},
+                            "signature": "sig_tool",
+                        },
+                    ],
+                }
+            ],
+        }
+
+        sanitize_provider_payload(provider_payload)
+
+        assert "thinking" not in provider_payload
+        blocks = provider_payload["messages"][0]["content"]
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "tool_use"
+        assert "signature" not in blocks[0]
+
+    def test_non_streaming_payload_is_sanitized(self):
+        from app.transformer.rectifier import sanitize_provider_payload
+
+        provider_payload = {
+            "model": "claude-opus-4-6",
+            "stream": False,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "redacted_thinking",
+                            "data": "secret",
+                            "signature": "sig_redacted",
+                        },
+                        {"type": "text", "text": "", "signature": "sig_text"},
+                    ],
+                }
+            ],
+        }
+
+        sanitize_provider_payload(provider_payload)
+
+        blocks = provider_payload["messages"][0]["content"]
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "text"
+        assert blocks[0]["text"] == "."
+        assert "signature" not in blocks[0]
 
 
 # ============================================================================

@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from .base import TransformContext
+from .rectifier import sanitize_provider_payload
 from .registry import TransformerRegistry
 from .unified import (
     Protocol,
@@ -362,14 +363,16 @@ class TransformPipeline:
                 _sanitize_empty_assistant_messages(payload)
 
             # Sanitize payload before sending to provider
-            _sanitize_provider_payload(payload)
+            sanitize_provider_payload(payload)
+            ensure_tool_use_result_pairing(payload)
 
             return payload, True
         else:
             # Full transformation
             payload = self.transform_request(raw, ctx)
             # Sanitize payload before sending to provider
-            _sanitize_provider_payload(payload)
+            sanitize_provider_payload(payload)
+            ensure_tool_use_result_pairing(payload)
             return payload, False
 
     def transform_response_with_bypass(
@@ -441,62 +444,6 @@ class TransformPipeline:
         return client_transformer.transform_stream_chunk_out(chunk, ctx.client_protocol)
 
 
-# =============================================================================
-# Sanitization Helpers
-# =============================================================================
-
-
-def _sanitize_provider_payload(payload: dict[str, Any]) -> None:
-    """
-    Sanitize the provider-bound payload to prevent validation errors.
-
-    This is the single entry point for all message-level sanitization before
-    the payload is sent to any provider. Consolidating the logic here avoids
-    scattered, case-by-case fixes across the codebase.
-
-    Steps applied to each message's content array:
-      1. Strip thinking blocks — their provider-specific signatures are not
-         reusable across providers and a thinking block without a signature
-         is also invalid.
-      2. Replace blank text fields — providers like Bedrock Converse reject
-         content blocks whose text field is blank. Clients (e.g. Claude Code)
-         may legitimately send empty text blocks.
-      3. Backfill empty assistant content — after the above steps the content
-         array may be empty; an empty assistant message is invalid for most
-         providers, so we insert a placeholder.
-    """
-    messages = payload.get("messages")
-    if not isinstance(messages, list):
-        return
-    for msg in messages:
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-
-        # 1. Strip thinking blocks
-        content = [
-            block
-            for block in content
-            if not (isinstance(block, dict) and block.get("type") == "thinking")
-        ]
-
-        # 2. Replace blank text fields
-        for block in content:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "text"
-                and isinstance(block.get("text"), str)
-                and not block["text"].strip()
-            ):
-                block["text"] = "."
-
-        # 3. Backfill empty assistant content
-        if not content and msg.get("role") == "assistant":
-            content = [{"type": "text", "text": "."}]
-
-        msg["content"] = content
-
-
 def _sanitize_empty_assistant_messages(payload: dict[str, Any]) -> None:
     """
     Sanitize empty assistant messages in Anthropic-format payloads.
@@ -517,3 +464,99 @@ def _sanitize_empty_assistant_messages(payload: dict[str, Any]) -> None:
         )
         if is_empty:
             messages[i]["content"] = "null"
+
+
+def ensure_tool_use_result_pairing(payload: dict[str, Any]) -> None:
+    """
+    Ensure every tool_use / tool_call has a matching tool_result response.
+
+    Providers like AWS Bedrock Converse strictly validate that every tool_use
+    block is immediately followed by a corresponding tool_result. When a client
+    sends an incomplete conversation (e.g. tool call was cancelled), the missing
+    result causes a 400 error.
+
+    Handles both payload formats:
+      - OpenAI: assistant messages carry ``tool_calls``; results appear as
+        subsequent ``{"role":"tool","tool_call_id":"..."}`` messages.
+      - Anthropic: ``tool_use`` and ``tool_result`` are content blocks inside
+        the ``content`` array.
+
+    For any unpaired tool_use, a placeholder tool_result is injected so that
+    downstream providers never see an orphan.
+    """
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return
+
+    # Collect all tool_result / tool-role IDs present in the conversation.
+    result_ids: set[str] = set()
+    for msg in messages:
+        # OpenAI format: role:"tool" with tool_call_id
+        if msg.get("role") == "tool":
+            tid = msg.get("tool_call_id")
+            if isinstance(tid, str):
+                result_ids.add(tid)
+        # Anthropic format: content blocks with type:"tool_result"
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tid = block.get("tool_use_id")
+                    if isinstance(tid, str):
+                        result_ids.add(tid)
+
+    # Walk messages, collect orphaned tool_use IDs per assistant message index.
+    inserts: list[tuple[int, list[str]]] = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        orphans: list[str] = []
+
+        # OpenAI format: tool_calls array on assistant message
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                tid = call.get("id") if isinstance(call, dict) else None
+                if isinstance(tid, str) and tid not in result_ids:
+                    orphans.append(tid)
+
+        # Anthropic format: tool_use content blocks
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tid = block.get("id")
+                    if isinstance(tid, str) and tid not in result_ids:
+                        orphans.append(tid)
+
+        if orphans:
+            inserts.append((i, orphans))
+
+    # Insert placeholders in reverse order to preserve indices.
+    for assistant_idx, orphan_ids in reversed(inserts):
+        insert_pos = assistant_idx + 1
+        use_openai_format = isinstance(messages[assistant_idx].get("tool_calls"), list)
+
+        if use_openai_format:
+            # OpenAI: one role:"tool" message per orphan (insert in reverse)
+            for tid in reversed(orphan_ids):
+                messages.insert(
+                    insert_pos,
+                    {
+                        "role": "tool",
+                        "tool_call_id": tid,
+                        "content": "[Tool call interrupted - no result available]",
+                    },
+                )
+        else:
+            # Anthropic: one user message with tool_result blocks
+            blocks = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tid,
+                    "content": "[Tool call interrupted - no result available]",
+                    "is_error": True,
+                }
+                for tid in orphan_ids
+            ]
+            messages.insert(insert_pos, {"role": "user", "content": blocks})

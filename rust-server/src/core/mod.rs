@@ -15,6 +15,7 @@ pub mod config;
 pub mod database;
 pub mod error;
 pub mod error_logger;
+pub mod header_policy;
 pub mod jsonl_logger;
 pub mod langfuse;
 pub mod logging;

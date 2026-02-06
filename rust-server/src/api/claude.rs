@@ -11,9 +11,11 @@ use crate::api::claude_models::{
 };
 use crate::api::gemini3::{normalize_request_payload, strip_gemini3_provider_fields};
 use crate::api::handlers::AppState;
+use crate::api::proxy::ensure_tool_use_result_pairing;
 use crate::api::streaming::calculate_message_tokens_with_tools;
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
+use crate::core::header_policy::sanitize_anthropic_beta_header;
 use crate::core::jsonl_logger::{
     log_provider_request, log_provider_response, log_provider_streaming_response, log_request,
     log_response, log_streaming_response,
@@ -115,6 +117,39 @@ fn strip_provider_suffix(model: &str, provider_suffix: Option<&str>) -> String {
         .and_then(|rest| rest.strip_prefix('/'))
         .unwrap_or(model)
         .to_string()
+}
+
+async fn read_provider_error_message(
+    response: reqwest::Response,
+    status: reqwest::StatusCode,
+) -> String {
+    let bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(_) => return format!("HTTP {}", status),
+    };
+
+    if let Ok(body) = serde_json::from_slice::<Value>(&bytes) {
+        if let Some(message) = body
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            return message.to_string();
+        }
+        if let Some(message) = body.get("error").and_then(|e| e.as_str()) {
+            return message.to_string();
+        }
+        if let Some(message) = body.get("message").and_then(|m| m.as_str()) {
+            return message.to_string();
+        }
+    }
+
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    if text.is_empty() {
+        format!("HTTP {}", status)
+    } else {
+        text
+    }
 }
 
 // ============================================================================
@@ -350,6 +385,9 @@ pub async fn create_message(
                 // Log request immediately to JSONL
                 let claude_request_value =
                     serde_json::to_value(&claude_request).unwrap_or_default();
+                let mut provider_request_value = claude_request_value.clone();
+                ensure_tool_use_result_pairing(&mut provider_request_value);
+                ensure_tool_use_result_pairing(&mut openai_request);
                 log_request(
                     &request_id,
                     "/v1/messages",
@@ -372,10 +410,20 @@ pub async fn create_message(
                     &provider.api_base,
                     provider_endpoint,
                     if is_anthropic {
-                        &claude_request_value
+                        &provider_request_value
                     } else {
                         &openai_request
                     },
+                );
+
+                let anthropic_version = headers
+                    .get("anthropic-version")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("2023-06-01");
+                let anthropic_beta_header = sanitize_anthropic_beta_header(
+                    &provider.provider_type,
+                    &provider.provider_params,
+                    headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
                 );
 
                 // Build and send request based on provider_type
@@ -385,22 +433,14 @@ pub async fn create_message(
                         .http_client
                         .post(&url)
                         .header("x-api-key", &provider.api_key)
-                        .header("Content-Type", "application/json");
+                        .header("Content-Type", "application/json")
+                        .header("anthropic-version", anthropic_version);
 
-                    // Forward anthropic-version header (use client value or default)
-                    let anthropic_version = headers
-                        .get("anthropic-version")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("2023-06-01");
-                    req = req.header("anthropic-version", anthropic_version);
-
-                    // Forward anthropic-beta header if provided by client
-                    if let Some(beta) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok())
-                    {
+                    if let Some(beta) = anthropic_beta_header.as_deref() {
                         req = req.header("anthropic-beta", beta);
                     }
 
-                    req.json(&claude_request).send().await
+                    req.json(&provider_request_value).send().await
                 } else {
                     // OpenAI protocol: use Authorization Bearer
                     state
@@ -466,16 +506,7 @@ pub async fn create_message(
 
                 // Check if backend API returned an error status code
                 if status.is_client_error() || status.is_server_error() {
-                    let error_body = match response.bytes().await {
-                        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                            Ok(body) => body,
-                            Err(_) => {
-                                let text = String::from_utf8_lossy(&bytes).to_string();
-                                json!({"error": {"message": text}})
-                            }
-                        },
-                        Err(_) => json!({"error": {"message": format!("HTTP {}", status)}}),
-                    };
+                    let error_message = read_provider_error_message(response, status).await;
 
                     tracing::error!(
                         request_id = %request_id,
@@ -484,13 +515,6 @@ pub async fn create_message(
                         "Backend API returned error status"
                     );
 
-                    // Record error in Langfuse
-                    let error_message = error_body
-                        .get("error")
-                        .and_then(|e| e.get("message"))
-                        .and_then(|m| m.as_str())
-                        .unwrap_or(&format!("HTTP {}", status))
-                        .to_string();
                     generation_data.is_error = true;
                     generation_data.error_message = Some(error_message.clone());
                     generation_data.end_time = Some(Utc::now());

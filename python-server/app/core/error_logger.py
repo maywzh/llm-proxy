@@ -1,16 +1,17 @@
 """Async error logger that batches error records into the database."""
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from app.core.logging import get_logger
 
 logger = get_logger()
 
-_MAX_BODY_SIZE = 64 * 1024  # 64KB
+_MAX_STRING_LEN = 200
 
 _SENSITIVE_HEADERS = re.compile(
     r"^(authorization|x-api-key|cookie|set-cookie|proxy-authorization)$",
@@ -45,6 +46,8 @@ class ErrorLogRecord:
     request_body: Optional[str] = None
     response_body: Optional[str] = None
     total_duration_ms: Optional[int] = None
+    provider_request_body: Optional[str] = None
+    provider_request_headers: Optional[str] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -58,12 +61,55 @@ def mask_headers(headers: dict) -> dict:
     return masked
 
 
+_MAX_TRUNCATE_DEPTH = 10
+
+
+def truncate_json_strings(value: Any, _depth: int = _MAX_TRUNCATE_DEPTH) -> Any:
+    """Recursively truncate long string values in a JSON-like structure.
+
+    Preserves the complete JSON shape. If a string value is itself valid JSON,
+    parse and recurse into it, then serialize back. Plain strings longer than
+    _MAX_STRING_LEN are shortened; keys, numbers, booleans, None are kept intact.
+    """
+    if isinstance(value, str):
+        if _depth > 0 and (value.startswith("{") or value.startswith("[")):
+            try:
+                parsed = json.loads(value)
+                truncated = truncate_json_strings(parsed, _depth - 1)
+                return json.dumps(truncated, ensure_ascii=False)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        byte_len = len(value.encode("utf-8"))
+        if byte_len <= _MAX_STRING_LEN:
+            return value
+        encoded = value.encode("utf-8")
+        end = _MAX_STRING_LEN
+        while end > 0 and (encoded[end] & 0xC0) == 0x80:
+            end -= 1
+        return f"{encoded[:end].decode('utf-8')}... [truncated, {byte_len} bytes total]"
+    if isinstance(value, dict):
+        return {k: truncate_json_strings(v, _depth) for k, v in value.items()}
+    if isinstance(value, list):
+        return [truncate_json_strings(item, _depth) for item in value]
+    return value
+
+
 def _truncate_body(body: Optional[str]) -> Optional[str]:
     if body is None:
         return None
-    if len(body) <= _MAX_BODY_SIZE:
-        return body
-    return body[:_MAX_BODY_SIZE] + "...[truncated]"
+    try:
+        parsed = json.loads(body)
+        truncated = truncate_json_strings(parsed)
+        return json.dumps(truncated, ensure_ascii=False)
+    except (json.JSONDecodeError, ValueError):
+        byte_len = len(body.encode("utf-8"))
+        if byte_len <= _MAX_STRING_LEN:
+            return body
+        encoded = body.encode("utf-8")
+        end = _MAX_STRING_LEN
+        while end > 0 and (encoded[end] & 0xC0) == 0x80:
+            end -= 1
+        return f"{encoded[:end].decode('utf-8')}... [truncated, {byte_len} bytes total]"
 
 
 class ErrorLogger:
@@ -81,6 +127,10 @@ class ErrorLogger:
     def log_error(self, record: ErrorLogRecord):
         record.request_body = _truncate_body(record.request_body)
         record.response_body = _truncate_body(record.response_body)
+        record.provider_request_body = _truncate_body(record.provider_request_body)
+        record.provider_request_headers = _truncate_body(
+            record.provider_request_headers
+        )
         try:
             self._queue.put_nowait(record)
         except asyncio.QueueFull:
@@ -143,6 +193,8 @@ class ErrorLogger:
                         request_body=rec.request_body,
                         response_body=rec.response_body,
                         total_duration_ms=rec.total_duration_ms,
+                        provider_request_body=rec.provider_request_body,
+                        provider_request_headers=rec.provider_request_headers,
                     )
                     session.add(model)
         except Exception as e:
@@ -195,6 +247,8 @@ def log_error(
     request_body: Optional[str] = None,
     response_body: Optional[str] = None,
     total_duration_ms: Optional[int] = None,
+    provider_request_body: Optional[str] = None,
+    provider_request_headers: Optional[str] = None,
 ):
     el = get_error_logger()
     if el is None:
@@ -215,5 +269,7 @@ def log_error(
         request_body=request_body,
         response_body=response_body,
         total_duration_ms=total_duration_ms,
+        provider_request_body=provider_request_body,
+        provider_request_headers=provider_request_headers,
     )
     el.log_error(record)

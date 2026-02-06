@@ -134,6 +134,8 @@ class ErrorLogModel(Base):
     request_body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     response_body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     total_duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    provider_request_body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    provider_request_headers: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 def hash_key(key: str) -> str:
