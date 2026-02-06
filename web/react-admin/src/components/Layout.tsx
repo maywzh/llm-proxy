@@ -169,15 +169,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center">
                 <img
                   src="/logo.png"
-                  alt="LLM Proxy"
+                  alt="HEN"
                   className="w-full h-full object-cover"
                   draggable={false}
                 />
               </div>
               {!isSidebarCollapsed && (
-                <span className="text-xl font-semibold text-white">
-                  LLM Proxy
-                </span>
+                <span className="text-xl font-semibold text-white">HEN</span>
               )}
             </div>
           </div>
@@ -260,14 +258,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center">
                   <img
                     src="/logo.png"
-                    alt="LLM Proxy"
+                    alt="HEN"
                     className="w-full h-full object-cover"
                     draggable={false}
                   />
                 </div>
-                <span className="text-xl font-semibold text-white">
-                  LLM Proxy
-                </span>
+                <span className="text-xl font-semibold text-white">HEN</span>
               </div>
               <button
                 onClick={() => setIsMobileMenuOpen(false)}

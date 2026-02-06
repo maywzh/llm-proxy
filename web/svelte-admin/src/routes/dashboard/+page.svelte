@@ -43,7 +43,7 @@
 </script>
 
 <svelte:head>
-  <title>Dashboard - LLM Proxy Admin</title>
+  <title>Dashboard - HEN Admin</title>
 </svelte:head>
 
 {#if !publicDashboardUrl}
