@@ -169,13 +169,13 @@
             >
               <img
                 src="/logo.png"
-                alt="LLM Proxy"
+                alt="HEN"
                 class="w-full h-full object-cover"
                 draggable="false"
               />
             </div>
             {#if !isSidebarCollapsed}
-              <span class="text-xl font-semibold text-white"> LLM Proxy </span>
+              <span class="text-xl font-semibold text-white"> HEN </span>
             {/if}
           </div>
         </div>
@@ -272,12 +272,12 @@
               >
                 <img
                   src="/logo.png"
-                  alt="LLM Proxy"
+                  alt="HEN"
                   class="w-full h-full object-cover"
                   draggable="false"
                 />
               </div>
-              <span class="text-xl font-semibold text-white"> LLM Proxy </span>
+              <span class="text-xl font-semibold text-white"> HEN </span>
             </div>
             <button
               onclick={() => (isMobileMenuOpen = false)}

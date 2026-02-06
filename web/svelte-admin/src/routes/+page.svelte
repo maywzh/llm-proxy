@@ -12,7 +12,7 @@
 </script>
 
 <svelte:head>
-  <title>LLM Proxy Admin</title>
+  <title>HEN Admin</title>
 </svelte:head>
 
 <!-- This page redirects to /login -->

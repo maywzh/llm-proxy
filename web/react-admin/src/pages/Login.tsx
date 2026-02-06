@@ -62,13 +62,13 @@ const Login: React.FC = () => {
             <div className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl mb-4 animate-fade-in">
               <img
                 src="/logo.png"
-                alt="LLM Proxy"
+                alt="HEN"
                 className="w-10 h-10"
                 draggable={false}
               />
             </div>
             <h2 className="text-3xl font-bold text-gray-900 dark:text-gray-100">
-              LLM Proxy
+              HEN
             </h2>
             <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
               Sign in to manage your proxy configuration

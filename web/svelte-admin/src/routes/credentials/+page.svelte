@@ -153,7 +153,7 @@
 </script>
 
 <svelte:head>
-  <title>Credentials - LLM Proxy Admin</title>
+  <title>Credentials - HEN Admin</title>
 </svelte:head>
 
 <div class="space-y-6">
