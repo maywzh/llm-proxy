@@ -400,7 +400,7 @@
 </script>
 
 <svelte:head>
-  <title>Health Check - LLM Proxy Admin</title>
+  <title>Health Check - HEN Admin</title>
 </svelte:head>
 
 <div class="space-y-6">

@@ -201,7 +201,7 @@
 </script>
 
 <svelte:head>
-  <title>Providers - LLM Proxy Admin</title>
+  <title>Providers - HEN Admin</title>
 </svelte:head>
 
 <div class="space-y-6">
