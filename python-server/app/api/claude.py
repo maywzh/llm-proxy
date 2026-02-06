@@ -17,6 +17,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from app.api.dependencies import verify_auth, get_provider_svc
+from app.core.header_policy import sanitize_anthropic_beta_header
+from app.transformer.pipeline import (
+    ensure_tool_use_result_pairing,
+)
 from app.core.utils import strip_provider_suffix
 from app.services.provider_service import ProviderService
 from app.services.langfuse_service import (
@@ -290,8 +294,11 @@ async def create_message(
             )
             headers["x-api-key"] = provider.api_key
 
-            # Forward anthropic-beta header if provided
-            anthropic_beta = request.headers.get("anthropic-beta")
+            anthropic_beta = sanitize_anthropic_beta_header(
+                provider.provider_type,
+                provider.provider_params,
+                request.headers.get("anthropic-beta"),
+            )
             if anthropic_beta:
                 headers["anthropic-beta"] = anthropic_beta
 
@@ -383,6 +390,7 @@ async def _handle_streaming_request(
     langfuse_service,
 ) -> StreamingResponse:
     """Handle streaming Claude request."""
+    ensure_tool_use_result_pairing(openai_request)
     client = get_http_client()
     stream_ctx = client.stream("POST", url, json=openai_request, headers=headers)
 
@@ -560,6 +568,7 @@ async def _handle_non_streaming_request(
     fallback_input_tokens = _calculate_claude_input_tokens(claude_request)
     logger.debug(f"Pre-calculated fallback input tokens: {fallback_input_tokens}")
 
+    ensure_tool_use_result_pairing(openai_request)
     client = get_http_client()
     response = await client.post(url, json=openai_request, headers=headers)
 

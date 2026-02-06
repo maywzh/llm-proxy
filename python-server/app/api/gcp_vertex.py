@@ -39,6 +39,7 @@ from app.services.langfuse_service import (
     LangfuseService,
 )
 from app.core.http_client import get_http_client
+from app.core.header_policy import sanitize_anthropic_beta_header
 from app.utils.client import extract_client
 from app.core.jsonl_logger import (
     log_request,
@@ -59,6 +60,7 @@ from app.core.logging import (
     get_api_key_name,
 )
 from app.utils.streaming import build_messages_for_token_count, calculate_message_tokens
+from app.transformer.rectifier import sanitize_provider_payload
 
 router = APIRouter(prefix="/models/gcp-vertex/v1", tags=["gcp-vertex"])
 logger = get_logger()
@@ -165,6 +167,8 @@ def _build_provider_url(
 def _build_anthropic_headers(
     provider_api_key: str,
     request_headers: dict[str, str],
+    provider_type: str,
+    provider_params: dict[str, Any],
 ) -> dict[str, str]:
     """Build headers for Anthropic provider.
 
@@ -178,8 +182,11 @@ def _build_anthropic_headers(
         "Authorization": f"Bearer {provider_api_key}",
     }
 
-    # Forward anthropic-beta header if provided
-    anthropic_beta = request_headers.get("anthropic-beta")
+    anthropic_beta = sanitize_anthropic_beta_header(
+        provider_type,
+        provider_params,
+        request_headers.get("anthropic-beta"),
+    )
     if anthropic_beta:
         headers["anthropic-beta"] = anthropic_beta
 
@@ -441,10 +448,15 @@ async def _handle_streaming_request(
     headers = _build_anthropic_headers(
         provider.api_key,
         dict(request.headers),
+        provider.provider_type,
+        provider.provider_params,
     )
 
     # Prepare request payload - use mapped model
     provider_payload = {**data, "model": mapped_model}
+
+    # Sanitize payload before forwarding to provider.
+    sanitize_provider_payload(provider_payload)
 
     # Ensure stream is true
     provider_payload["stream"] = True
@@ -609,10 +621,15 @@ async def _handle_non_streaming_request(
     headers = _build_anthropic_headers(
         provider.api_key,
         dict(request.headers),
+        provider.provider_type,
+        provider.provider_params,
     )
 
     # Prepare request payload - use mapped model
     provider_payload = {**data, "model": mapped_model}
+
+    # Sanitize payload before forwarding to provider.
+    sanitize_provider_payload(provider_payload)
 
     # Ensure stream is false
     provider_payload["stream"] = False
