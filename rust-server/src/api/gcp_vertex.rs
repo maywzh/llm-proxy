@@ -26,6 +26,8 @@ use serde_json::{json, Value};
 
 use crate::api::disconnect::DisconnectStream;
 use crate::api::proxy::{build_gcp_vertex_url, verify_auth_multi_format, ProxyState};
+use crate::api::rectifier::sanitize_provider_payload;
+use crate::core::header_policy::sanitize_anthropic_beta_header;
 use crate::core::jsonl_logger::{
     log_provider_request, log_provider_response, log_provider_streaming_response, log_request,
     log_response, log_streaming_response,
@@ -146,6 +148,9 @@ pub async fn gcp_vertex_proxy(
         obj.insert("stream".to_string(), Value::Bool(is_streaming));
     }
 
+    // Sanitize payload before forwarding to provider.
+    sanitize_provider_payload(&mut payload);
+
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
         let client = extract_client(&headers);
         let request_start = Instant::now();
@@ -231,6 +236,12 @@ pub async fn gcp_vertex_proxy(
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("vertex-2023-10-16");
 
+                let anthropic_beta_header = sanitize_anthropic_beta_header(
+                    &provider.provider_type,
+                    &provider.provider_params,
+                    headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
+                );
+
                 let mut req = state
                     .app_state
                     .http_client
@@ -239,11 +250,8 @@ pub async fn gcp_vertex_proxy(
                     .header("Content-Type", "application/json")
                     .header("anthropic-version", anthropic_version);
 
-                // Forward anthropic-beta header if provided by client
-                if let Some(beta) = headers.get("anthropic-beta") {
-                    if let Ok(beta_str) = beta.to_str() {
-                        req = req.header("anthropic-beta", beta_str);
-                    }
+                if let Some(beta) = anthropic_beta_header.as_deref() {
+                    req = req.header("anthropic-beta", beta);
                 }
 
                 let response = match req.json(&payload).send().await {

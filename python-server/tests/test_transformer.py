@@ -2278,11 +2278,11 @@ class TestAnthropicToolResultsToOpenAI:
 
 
 class TestSanitizeProviderPayload:
-    """Tests for _sanitize_provider_payload."""
+    """Tests for sanitize_provider_payload."""
 
     def test_strip_thinking_keeps_text(self):
         """Stripping thinking blocks should keep non-thinking content."""
-        from app.transformer.pipeline import _sanitize_provider_payload
+        from app.transformer.rectifier import sanitize_provider_payload
 
         payload = {
             "messages": [
@@ -2299,7 +2299,7 @@ class TestSanitizeProviderPayload:
                 }
             ]
         }
-        _sanitize_provider_payload(payload)
+        sanitize_provider_payload(payload)
         content = payload["messages"][0]["content"]
         assert len(content) == 1
         assert content[0]["type"] == "text"
@@ -2307,7 +2307,7 @@ class TestSanitizeProviderPayload:
 
     def test_only_thinking_adds_placeholder(self):
         """Assistant message with only thinking blocks should get a placeholder."""
-        from app.transformer.pipeline import _sanitize_provider_payload
+        from app.transformer.rectifier import sanitize_provider_payload
 
         payload = {
             "messages": [
@@ -2324,7 +2324,7 @@ class TestSanitizeProviderPayload:
                 {"role": "user", "content": "Next question"},
             ]
         }
-        _sanitize_provider_payload(payload)
+        sanitize_provider_payload(payload)
         content = payload["messages"][0]["content"]
         assert len(content) == 1
         assert content[0]["type"] == "text"
@@ -2332,7 +2332,7 @@ class TestSanitizeProviderPayload:
 
     def test_user_message_no_placeholder(self):
         """Non-assistant messages should not get a placeholder when empty."""
-        from app.transformer.pipeline import _sanitize_provider_payload
+        from app.transformer.rectifier import sanitize_provider_payload
 
         payload = {
             "messages": [
@@ -2344,13 +2344,13 @@ class TestSanitizeProviderPayload:
                 }
             ]
         }
-        _sanitize_provider_payload(payload)
+        sanitize_provider_payload(payload)
         content = payload["messages"][0]["content"]
         assert len(content) == 0
 
     def test_blank_text_fields_replaced(self):
         """Blank text fields should be replaced with placeholder."""
-        from app.transformer.pipeline import _sanitize_provider_payload
+        from app.transformer.rectifier import sanitize_provider_payload
 
         payload = {
             "messages": [
@@ -2371,7 +2371,7 @@ class TestSanitizeProviderPayload:
                 },
             ]
         }
-        _sanitize_provider_payload(payload)
+        sanitize_provider_payload(payload)
         # Empty text replaced
         assert payload["messages"][0]["content"][0]["text"] == "."
         # Whitespace-only text replaced
@@ -2380,3 +2380,234 @@ class TestSanitizeProviderPayload:
         assert payload["messages"][2]["content"][0]["text"] == "."
         # Non-empty text untouched
         assert payload["messages"][2]["content"][1]["text"] == "real content"
+
+    def test_redacted_thinking_and_signature_removed(self):
+        """Redacted thinking should be removed and stale signatures stripped."""
+        from app.transformer.rectifier import sanitize_provider_payload
+
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "redacted_thinking",
+                            "data": "secret",
+                            "signature": "sig_redacted",
+                        },
+                        {"type": "text", "text": "Hello", "signature": "sig_text"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "lookup",
+                            "input": {},
+                            "signature": "sig_tool",
+                        },
+                    ],
+                }
+            ]
+        }
+
+        sanitize_provider_payload(payload)
+
+        content = payload["messages"][0]["content"]
+        assert len(content) == 2
+        assert content[0]["type"] == "text"
+        assert "signature" not in content[0]
+        assert content[1]["type"] == "tool_use"
+        assert "signature" not in content[1]
+
+    def test_remove_top_level_thinking_for_tool_chain_without_prefix(self):
+        """Top-level thinking should be removed when tool chain lacks thinking prefix."""
+        from app.transformer.rectifier import sanitize_provider_payload
+
+        payload = {
+            "thinking": {"type": "enabled", "budget_tokens": 1024},
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "reasoning",
+                            "signature": "sig",
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "lookup",
+                            "input": {},
+                        },
+                    ],
+                }
+            ],
+        }
+
+        sanitize_provider_payload(payload)
+
+        assert "thinking" not in payload
+
+    def test_keep_top_level_thinking_without_tool_use(self):
+        """Top-level thinking remains when last assistant message has no tool_use."""
+        from app.transformer.rectifier import sanitize_provider_payload
+
+        payload = {
+            "thinking": {"type": "enabled", "budget_tokens": 1024},
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                    ],
+                }
+            ],
+        }
+
+        sanitize_provider_payload(payload)
+
+        assert "thinking" in payload
+
+
+# =============================================================================
+# Ensure Tool Use/Result Pairing Tests
+# =============================================================================
+
+
+class TestEnsureToolUseResultPairing:
+    """Tests for ensure_tool_use_result_pairing."""
+
+    def test_openai_no_orphans(self):
+        from app.transformer.pipeline import ensure_tool_use_result_pairing
+
+        payload = {
+            "messages": [
+                {"role": "user", "content": "Read file"},
+                {
+                    "role": "assistant",
+                    "content": "OK",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "read", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "file content"},
+            ]
+        }
+        import copy
+
+        original = copy.deepcopy(payload)
+        ensure_tool_use_result_pairing(payload)
+        assert payload == original
+
+    def test_openai_orphan_injected(self):
+        from app.transformer.pipeline import ensure_tool_use_result_pairing
+
+        payload = {
+            "messages": [
+                {"role": "user", "content": "Read file"},
+                {
+                    "role": "assistant",
+                    "content": "OK",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "read", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "user", "content": "Never mind"},
+            ]
+        }
+        ensure_tool_use_result_pairing(payload)
+        msgs = payload["messages"]
+        assert len(msgs) == 4
+        assert msgs[2]["role"] == "tool"
+        assert msgs[2]["tool_call_id"] == "call_1"
+
+    def test_openai_multiple_orphans(self):
+        from app.transformer.pipeline import ensure_tool_use_result_pairing
+
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "OK",
+                    "tool_calls": [
+                        {
+                            "id": "call_a",
+                            "type": "function",
+                            "function": {"name": "f1", "arguments": "{}"},
+                        },
+                        {
+                            "id": "call_b",
+                            "type": "function",
+                            "function": {"name": "f2", "arguments": "{}"},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_a", "content": "result_a"},
+                {"role": "user", "content": "next"},
+            ]
+        }
+        ensure_tool_use_result_pairing(payload)
+        msgs = payload["messages"]
+        assert len(msgs) == 4
+        assert msgs[1]["role"] == "tool"
+        assert msgs[1]["tool_call_id"] == "call_b"
+
+    def test_anthropic_no_orphans(self):
+        from app.transformer.pipeline import ensure_tool_use_result_pairing
+
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Let me read"},
+                        {"type": "tool_use", "id": "tu_1", "name": "read", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": "file data",
+                        }
+                    ],
+                },
+            ]
+        }
+        import copy
+
+        original = copy.deepcopy(payload)
+        ensure_tool_use_result_pairing(payload)
+        assert payload == original
+
+    def test_anthropic_orphan_injected(self):
+        from app.transformer.pipeline import ensure_tool_use_result_pairing
+
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "tu_1", "name": "read", "input": {}}
+                    ],
+                },
+                {"role": "user", "content": "Forget it"},
+            ]
+        }
+        ensure_tool_use_result_pairing(payload)
+        msgs = payload["messages"]
+        assert len(msgs) == 3
+        assert msgs[1]["role"] == "user"
+        blocks = msgs[1]["content"]
+        assert blocks[0]["type"] == "tool_result"
+        assert blocks[0]["tool_use_id"] == "tu_1"
+        assert blocks[0]["is_error"] is True

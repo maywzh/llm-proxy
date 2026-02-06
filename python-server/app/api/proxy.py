@@ -27,6 +27,7 @@ from app.services.langfuse_service import (
     LangfuseService,
 )
 from app.core.http_client import get_http_client
+from app.core.header_policy import sanitize_anthropic_beta_header
 from app.core.utils import strip_provider_suffix
 from app.utils.client import extract_client
 from app.utils.gemini3 import normalize_gemini3_request, strip_gemini3_provider_fields
@@ -249,6 +250,28 @@ def _build_protocol_error_response(
     if model:
         _attach_response_metadata(response, model, provider or "unknown")
     return response
+
+
+def _build_provider_debug_headers(
+    url: str,
+    ctx: TransformContext,
+    headers: dict[str, str],
+) -> dict[str, str]:
+    """Build provider request headers for error logging (with secrets masked)."""
+    h: dict[str, str] = {"url": url, "content-type": "application/json"}
+    if ctx.provider_protocol == Protocol.ANTHROPIC:
+        h["x-api-key"] = "***"
+        h["anthropic-version"] = headers.get("anthropic-version", "2023-06-01")
+        if "anthropic-beta" in headers:
+            h["anthropic-beta"] = headers["anthropic-beta"]
+    elif ctx.provider_protocol == Protocol.GCP_VERTEX:
+        h["authorization"] = "Bearer ***"
+        h["anthropic-version"] = headers.get("anthropic-version", "vertex-2023-10-16")
+        if "anthropic-beta" in headers:
+            h["anthropic-beta"] = headers["anthropic-beta"]
+    else:
+        h["authorization"] = "Bearer ***"
+    return h
 
 
 def _record_protocol_metrics(ctx: TransformContext, bypassed: bool) -> None:
@@ -715,6 +738,16 @@ async def _handle_streaming_request(
     elif ctx.provider_protocol == Protocol.GCP_VERTEX:
         headers["anthropic-version"] = "vertex-2023-10-16"
 
+    # Forward anthropic-beta header (filtered by policy)
+    if ctx.provider_protocol in (Protocol.ANTHROPIC, Protocol.GCP_VERTEX):
+        anthropic_beta = sanitize_anthropic_beta_header(
+            provider.provider_type,
+            provider.provider_params,
+            request.headers.get("anthropic-beta"),
+        )
+        if anthropic_beta:
+            headers["anthropic-beta"] = anthropic_beta
+
     # Transform request
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)
     _normalize_gemini3_provider_payload(provider_payload, ctx)
@@ -799,6 +832,11 @@ async def _handle_streaming_request(
             )
 
             if response.status_code < 500 and response.status_code != 429:
+                provider_debug_headers = _build_provider_debug_headers(
+                    url,
+                    ctx,
+                    headers,
+                )
                 log_error(
                     error_category=ErrorCategory.PROVIDER_4XX,
                     error_code=response.status_code,
@@ -817,6 +855,8 @@ async def _handle_streaming_request(
                     else None,
                     is_streaming=True,
                     response_body=json.dumps(error_json) if error_json else None,
+                    provider_request_body=json.dumps(provider_payload),
+                    provider_request_headers=json.dumps(provider_debug_headers),
                 )
 
             return _build_protocol_error_response(
@@ -914,6 +954,16 @@ async def _handle_non_streaming_request(
     elif ctx.provider_protocol == Protocol.GCP_VERTEX:
         headers["anthropic-version"] = "vertex-2023-10-16"
 
+    # Forward anthropic-beta header (filtered by policy)
+    if ctx.provider_protocol in (Protocol.ANTHROPIC, Protocol.GCP_VERTEX):
+        anthropic_beta = sanitize_anthropic_beta_header(
+            provider.provider_type,
+            provider.provider_params,
+            request.headers.get("anthropic-beta"),
+        )
+        if anthropic_beta:
+            headers["anthropic-beta"] = anthropic_beta
+
     # Transform request
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)
     _normalize_gemini3_provider_payload(provider_payload, ctx)
@@ -982,6 +1032,11 @@ async def _handle_non_streaming_request(
         )
 
         if response.status_code < 500 and response.status_code != 429:
+            provider_debug_headers = _build_provider_debug_headers(
+                url,
+                ctx,
+                headers,
+            )
             log_error(
                 error_category=ErrorCategory.PROVIDER_4XX,
                 error_code=response.status_code,
@@ -1000,6 +1055,8 @@ async def _handle_non_streaming_request(
                 else None,
                 is_streaming=False,
                 response_body=json.dumps(error_body) if error_body else None,
+                provider_request_body=json.dumps(provider_payload),
+                provider_request_headers=json.dumps(provider_debug_headers),
             )
 
         return _build_protocol_error_response(

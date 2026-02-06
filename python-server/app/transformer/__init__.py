@@ -65,6 +65,8 @@ from .pipeline import (
     TokenLimitTransformer,
 )
 
+from .rectifier import sanitize_provider_payload
+
 from .passthrough import (
     PassthroughTransformer,
     should_bypass,
@@ -141,6 +143,7 @@ __all__ = [
     "FeatureTransformerChain",
     "ReasoningTransformer",
     "TokenLimitTransformer",
+    "sanitize_provider_payload",
     # Passthrough
     "PassthroughTransformer",
     "should_bypass",

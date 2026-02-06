@@ -26,10 +26,12 @@ use crate::api::models::{
     GcpVertexConfig, LiteLlmParams, ModelInfo, ModelInfoDetails, ModelInfoEntry, ModelInfoListV1,
     ModelInfoQueryParams, ModelInfoQueryParamsV1, ModelList, PaginatedModelInfoList,
 };
+use crate::api::rectifier::sanitize_provider_payload;
 use crate::api::streaming::{calculate_message_tokens_with_tools, create_sse_stream};
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
 use crate::core::error_logger::{log_error, mask_headers, ErrorCategory, ErrorLogRecord};
+use crate::core::header_policy::sanitize_anthropic_beta_header;
 use crate::core::jsonl_logger::{
     log_provider_request, log_provider_response, log_request, log_response,
 };
@@ -306,6 +308,9 @@ pub async fn handle_proxy_request(
         // Sanitize payload before sending to provider
         sanitize_provider_payload(&mut provider_payload);
 
+        // Ensure every tool_use/tool_call has a matching tool_result
+        ensure_tool_use_result_pairing(&mut provider_payload);
+
         // Record bypass or cross-protocol metrics
         let metrics = get_metrics();
         if bypassed {
@@ -422,6 +427,12 @@ pub async fn handle_proxy_request(
                     &provider_payload,
                 );
 
+                let anthropic_beta_header = sanitize_anthropic_beta_header(
+                    &provider.provider_type,
+                    &provider.provider_params,
+                    headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
+                );
+
                 // Send request to provider
                 // Handle different authentication methods based on protocol
                 let response = match if provider_protocol == Protocol::Anthropic {
@@ -440,10 +451,8 @@ pub async fn handle_proxy_request(
                         .header("Content-Type", "application/json");
 
                     // Forward anthropic-beta header if provided by client
-                    if let Some(beta) = headers.get("anthropic-beta") {
-                        if let Ok(beta_str) = beta.to_str() {
-                            req = req.header("anthropic-beta", beta_str);
-                        }
+                    if let Some(beta) = anthropic_beta_header.as_deref() {
+                        req = req.header("anthropic-beta", beta);
                     }
 
                     req.json(&provider_payload).send().await
@@ -464,6 +473,11 @@ pub async fn handle_proxy_request(
 
                     // GCP Vertex AI requires anthropic-version header for Claude models
                     req = req.header("anthropic-version", anthropic_version);
+
+                    // Forward anthropic-beta header if provided by client
+                    if let Some(beta) = anthropic_beta_header.as_deref() {
+                        req = req.header("anthropic-beta", beta);
+                    }
 
                     req.json(&provider_payload).send().await
                 } else {
@@ -512,6 +526,41 @@ pub async fn handle_proxy_request(
                     // Only log provider 4xx errors (excluding 429) as they indicate
                     // potential issues with our request transformation
                     if status.is_client_error() && status.as_u16() != 429 {
+                        // Build provider request headers for debugging
+                        let provider_headers = {
+                            let mut h = serde_json::Map::new();
+                            h.insert("url".to_string(), json!(url));
+                            h.insert("content-type".to_string(), json!("application/json"));
+                            match provider_protocol {
+                                Protocol::Anthropic => {
+                                    h.insert("x-api-key".to_string(), json!("***"));
+                                    let av = headers
+                                        .get("anthropic-version")
+                                        .and_then(|v| v.to_str().ok())
+                                        .unwrap_or("2023-06-01");
+                                    h.insert("anthropic-version".to_string(), json!(av));
+                                    if let Some(beta) = anthropic_beta_header.as_deref() {
+                                        h.insert("anthropic-beta".to_string(), json!(beta));
+                                    }
+                                }
+                                Protocol::GcpVertex => {
+                                    h.insert("authorization".to_string(), json!("Bearer ***"));
+                                    let av = headers
+                                        .get("anthropic-version")
+                                        .and_then(|v| v.to_str().ok())
+                                        .unwrap_or("vertex-2023-10-16");
+                                    h.insert("anthropic-version".to_string(), json!(av));
+                                    if let Some(beta) = anthropic_beta_header.as_deref() {
+                                        h.insert("anthropic-beta".to_string(), json!(beta));
+                                    }
+                                }
+                                _ => {
+                                    h.insert("authorization".to_string(), json!("Bearer ***"));
+                                }
+                            }
+                            Value::Object(h)
+                        };
+
                         log_error(ErrorLogRecord {
                             request_id: request_id.clone(),
                             error_category: ErrorCategory::Provider4xx,
@@ -530,6 +579,8 @@ pub async fn handle_proxy_request(
                             client: client.clone(),
                             is_streaming: generation_data.is_streaming,
                             total_duration_ms: Some(request_start.elapsed().as_millis() as i32),
+                            provider_request_body: Some(provider_payload.clone()),
+                            provider_request_headers: Some(provider_headers),
                             ..Default::default()
                         });
                     }
@@ -629,47 +680,123 @@ pub async fn handle_proxy_request(
 // Helper Functions
 // ============================================================================
 
-/// Sanitize the provider-bound payload to prevent validation errors.
+/// Ensure every tool_use / tool_call has a matching tool_result response.
 ///
-/// This is the single entry point for all message-level sanitization before
-/// the payload is sent to any provider. Consolidating the logic here avoids
-/// scattered, case-by-case fixes across the codebase.
+/// Providers like AWS Bedrock Converse strictly validate that every `tool_use`
+/// block is immediately followed by a corresponding `tool_result`. When a
+/// client sends an incomplete conversation (e.g. tool call was cancelled), the
+/// missing result causes a 400 error.
 ///
-/// Steps applied to each message's content array:
-///   1. Strip thinking blocks — their provider-specific signatures are not
-///      reusable across providers and a thinking block without a signature
-///      is also invalid.
-///   2. Replace blank text fields — providers like Bedrock Converse reject
-///      content blocks whose text field is blank. Clients (e.g. Claude Code)
-///      may legitimately send empty text blocks.
-///   3. Backfill empty assistant content — after the above steps the content
-///      array may be empty; an empty assistant message is invalid for most
-///      providers, so we insert a placeholder.
-fn sanitize_provider_payload(payload: &mut Value) {
-    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
-        for msg in messages {
-            let is_assistant = msg.get("role").and_then(|r| r.as_str()) == Some("assistant");
-            if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
-                // 1. Strip thinking blocks
-                content
-                    .retain(|block| block.get("type").and_then(|t| t.as_str()) != Some("thinking"));
+/// This function handles both payload formats:
+///   - **OpenAI format**: assistant messages carry `tool_calls`; results appear
+///     as subsequent `{"role":"tool","tool_call_id":"..."}` messages.
+///   - **Anthropic format**: `tool_use` and `tool_result` are content blocks
+///     inside the `content` array.
+///
+/// For any unpaired tool_use, a placeholder tool_result is injected so that
+/// downstream providers never see an orphan.
+pub(crate) fn ensure_tool_use_result_pairing(payload: &mut Value) {
+    let messages = match payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        Some(m) => m,
+        None => return,
+    };
 
-                // 2. Replace blank text fields
-                for block in content.iter_mut() {
-                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                            if text.trim().is_empty() {
-                                block["text"] = json!(".");
-                            }
+    // Collect all tool_result / tool role IDs present in the conversation.
+    let mut result_ids: HashSet<String> = HashSet::new();
+    for msg in messages.iter() {
+        // OpenAI format: role:"tool" with tool_call_id
+        if msg.get("role").and_then(|r| r.as_str()) == Some("tool") {
+            if let Some(id) = msg.get("tool_call_id").and_then(|v| v.as_str()) {
+                result_ids.insert(id.to_string());
+            }
+        }
+        // Anthropic format: content blocks with type:"tool_result"
+        if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+            for block in content {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                    if let Some(id) = block.get("tool_use_id").and_then(|v| v.as_str()) {
+                        result_ids.insert(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Walk messages, collect orphaned tool_use IDs per assistant message index.
+    // We insert placeholder results right after the assistant message that
+    // introduced the tool call, so we iterate in reverse to keep indices stable.
+    let mut inserts: Vec<(usize, Vec<String>)> = Vec::new();
+    for (i, msg) in messages.iter().enumerate() {
+        let is_assistant = msg.get("role").and_then(|r| r.as_str()) == Some("assistant");
+        if !is_assistant {
+            continue;
+        }
+        let mut orphans: Vec<String> = Vec::new();
+
+        // OpenAI format: tool_calls array on assistant message
+        if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+            for call in calls {
+                if let Some(id) = call.get("id").and_then(|v| v.as_str()) {
+                    if !result_ids.contains(id) {
+                        orphans.push(id.to_string());
+                    }
+                }
+            }
+        }
+
+        // Anthropic format: tool_use content blocks
+        if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+            for block in content {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    if let Some(id) = block.get("id").and_then(|v| v.as_str()) {
+                        if !result_ids.contains(id) {
+                            orphans.push(id.to_string());
                         }
                     }
                 }
-
-                // 3. Backfill empty assistant content
-                if content.is_empty() && is_assistant {
-                    content.push(json!({"type": "text", "text": "."}));
-                }
             }
+        }
+
+        if !orphans.is_empty() {
+            inserts.push((i, orphans));
+        }
+    }
+
+    // Insert placeholders in reverse order to preserve indices.
+    for (assistant_idx, orphan_ids) in inserts.into_iter().rev() {
+        let insert_pos = assistant_idx + 1;
+        // Detect format: if the assistant message has `tool_calls` field, use
+        // OpenAI format; otherwise use Anthropic content block format.
+        let use_openai_format = messages[assistant_idx].get("tool_calls").is_some();
+
+        if use_openai_format {
+            // OpenAI: one role:"tool" message per orphan
+            for id in orphan_ids.into_iter().rev() {
+                let placeholder = json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": "[Tool call interrupted - no result available]"
+                });
+                messages.insert(insert_pos, placeholder);
+            }
+        } else {
+            // Anthropic: one user message with tool_result blocks
+            let blocks: Vec<Value> = orphan_ids
+                .into_iter()
+                .map(|id| {
+                    json!({
+                        "type": "tool_result",
+                        "tool_use_id": id,
+                        "content": "[Tool call interrupted - no result available]",
+                        "is_error": true
+                    })
+                })
+                .collect();
+            let placeholder = json!({
+                "role": "user",
+                "content": blocks
+            });
+            messages.insert(insert_pos, placeholder);
         }
     }
 }
@@ -2178,119 +2305,100 @@ mod tests {
         assert!(tool_call.get("extra_content").is_none());
     }
 
-    #[test]
-    fn test_sanitize_provider_payload() {
-        let mut payload = json!({
-            "messages": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": [
-                    {"type": "thinking", "thinking": "Let me think...", "signature": "abc123"},
-                    {"type": "text", "text": "Here's my answer"}
-                ]}
-            ]
-        });
-        sanitize_provider_payload(&mut payload);
-        let blocks = payload["messages"][1]["content"].as_array().unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0]["type"], "text");
-        assert_eq!(blocks[0]["text"], "Here's my answer");
-    }
+    // ========================================================================
+    // ensure_tool_use_result_pairing tests
+    // ========================================================================
 
     #[test]
-    fn test_sanitize_no_thinking() {
+    fn test_tool_pairing_openai_no_orphans() {
         let mut payload = json!({
             "messages": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": [
-                    {"type": "text", "text": "Response"}
-                ]}
+                {"role": "user", "content": "Read file"},
+                {"role": "assistant", "content": "OK", "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "file content"}
             ]
         });
         let original = payload.clone();
-        sanitize_provider_payload(&mut payload);
+        ensure_tool_use_result_pairing(&mut payload);
         assert_eq!(payload, original);
     }
 
     #[test]
-    fn test_sanitize_string_content() {
+    fn test_tool_pairing_openai_orphan_injected() {
         let mut payload = json!({
             "messages": [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Simple text response"}
+                {"role": "user", "content": "Read file"},
+                {"role": "assistant", "content": "OK", "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                ]},
+                {"role": "user", "content": "Never mind"}
             ]
         });
-        let original = payload.clone();
-        sanitize_provider_payload(&mut payload);
-        assert_eq!(payload, original);
+        ensure_tool_use_result_pairing(&mut payload);
+        let msgs = payload["messages"].as_array().unwrap();
+        // Placeholder inserted after assistant (index 1), before user (now index 3)
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[2]["role"], "tool");
+        assert_eq!(msgs[2]["tool_call_id"], "call_1");
     }
 
     #[test]
-    fn test_sanitize_multiple_messages() {
+    fn test_tool_pairing_openai_multiple_orphans() {
         let mut payload = json!({
             "messages": [
-                {"role": "assistant", "content": [
-                    {"type": "thinking", "thinking": "First thought", "signature": "sig1"},
-                    {"type": "text", "text": "Answer 1"}
+                {"role": "assistant", "content": "OK", "tool_calls": [
+                    {"id": "call_a", "type": "function", "function": {"name": "f1", "arguments": "{}"}},
+                    {"id": "call_b", "type": "function", "function": {"name": "f2", "arguments": "{}"}}
                 ]},
-                {"role": "user", "content": "Follow up"},
-                {"role": "assistant", "content": [
-                    {"type": "thinking", "thinking": "Second thought", "signature": "sig2"},
-                    {"type": "text", "text": "Answer 2"}
-                ]}
+                {"role": "tool", "tool_call_id": "call_a", "content": "result_a"},
+                {"role": "user", "content": "next"}
             ]
         });
-        sanitize_provider_payload(&mut payload);
-        let blocks0 = payload["messages"][0]["content"].as_array().unwrap();
-        assert_eq!(blocks0.len(), 1);
-        assert_eq!(blocks0[0]["text"], "Answer 1");
-        let blocks2 = payload["messages"][2]["content"].as_array().unwrap();
-        assert_eq!(blocks2.len(), 1);
-        assert_eq!(blocks2[0]["text"], "Answer 2");
+        ensure_tool_use_result_pairing(&mut payload);
+        let msgs = payload["messages"].as_array().unwrap();
+        // call_b is orphaned, placeholder inserted after assistant at index 0
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "call_b");
     }
 
     #[test]
-    fn test_sanitize_only_thinking() {
-        // When an assistant message has only thinking blocks, content gets a placeholder
-        // to prevent API validation errors from empty content arrays
+    fn test_tool_pairing_anthropic_no_orphans() {
         let mut payload = json!({
             "messages": [
                 {"role": "assistant", "content": [
-                    {"type": "thinking", "thinking": "Just thinking", "signature": "sig1"}
-                ]},
-                {"role": "user", "content": "Next question"}
-            ]
-        });
-        sanitize_provider_payload(&mut payload);
-        let blocks = payload["messages"][0]["content"].as_array().unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0]["type"], "text");
-        assert_eq!(blocks[0]["text"], ".");
-    }
-
-    #[test]
-    fn test_sanitize_blank_text_fields() {
-        let mut payload = json!({
-            "messages": [
-                {"role": "assistant", "content": [
-                    {"type": "text", "text": ""},
-                ]},
-                {"role": "assistant", "content": [
-                    {"type": "text", "text": "  "},
+                    {"type": "text", "text": "Let me read"},
+                    {"type": "tool_use", "id": "tu_1", "name": "read", "input": {}}
                 ]},
                 {"role": "user", "content": [
-                    {"type": "text", "text": ""},
-                    {"type": "text", "text": "real content"},
-                ]},
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "file data"}
+                ]}
             ]
         });
-        sanitize_provider_payload(&mut payload);
-        // Empty text in assistant message replaced
-        assert_eq!(payload["messages"][0]["content"][0]["text"], ".");
-        // Whitespace-only text in assistant message replaced
-        assert_eq!(payload["messages"][1]["content"][0]["text"], ".");
-        // Empty text in user message also replaced
-        assert_eq!(payload["messages"][2]["content"][0]["text"], ".");
-        // Non-empty text untouched
-        assert_eq!(payload["messages"][2]["content"][1]["text"], "real content");
+        let original = payload.clone();
+        ensure_tool_use_result_pairing(&mut payload);
+        assert_eq!(payload, original);
+    }
+
+    #[test]
+    fn test_tool_pairing_anthropic_orphan_injected() {
+        let mut payload = json!({
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "read", "input": {}}
+                ]},
+                {"role": "user", "content": "Forget it"}
+            ]
+        });
+        ensure_tool_use_result_pairing(&mut payload);
+        let msgs = payload["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[1]["role"], "user");
+        let blocks = msgs[1]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[0]["tool_use_id"], "tu_1");
+        assert_eq!(blocks[0]["is_error"], true);
     }
 }
