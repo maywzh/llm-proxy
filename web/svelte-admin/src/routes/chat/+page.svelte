@@ -246,7 +246,7 @@
         request,
         $chatSettings.credentialKey.trim(),
         (chunk: StreamChunk) => {
-          const delta = chunk.choices[0]?.delta;
+          const delta = chunk.choices?.[0]?.delta;
           const thinkingDelta =
             typeof delta?.reasoning_content === 'string'
               ? delta.reasoning_content

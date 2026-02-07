@@ -298,6 +298,9 @@ pub async fn handle_proxy_request(
             .transform_pipeline
             .transform_request_with_bypass(payload.clone(), &transform_ctx)?;
 
+        // Strip thinking blocks to prevent cross-provider signature validation failures
+        strip_thinking_blocks(&mut provider_payload);
+
         // Record bypass or cross-protocol metrics
         let metrics = get_metrics();
         if bypassed {
@@ -596,6 +599,23 @@ pub async fn handle_proxy_request(
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/// Strip thinking blocks from request payload.
+/// Thinking blocks contain provider-specific signatures that cannot be reused
+/// across providers. When the proxy routes requests to different provider
+/// instances, the original signatures become invalid and cause 400 errors.
+/// We remove entire thinking blocks rather than just signatures, because
+/// a thinking block without a signature is also invalid.
+fn strip_thinking_blocks(payload: &mut Value) {
+    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for msg in messages {
+            if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+                content
+                    .retain(|block| block.get("type").and_then(|t| t.as_str()) != Some("thinking"));
+            }
+        }
+    }
+}
 
 /// Extract model from request based on protocol
 fn extract_model_from_request(payload: &Value, protocol: Protocol) -> String {
@@ -1108,8 +1128,11 @@ async fn handle_streaming_proxy_response(
                         "Final output before [DONE]"
                     );
 
-                    // Add [DONE] marker
-                    output.push_str("data: [DONE]\n\n");
+                    // Add [DONE] marker only if finalize didn't emit MessageStop
+                    // (finalize emits MessageStop which OpenAI transformer converts to [DONE])
+                    if !state.stream_state.message_stopped {
+                        output.push_str("data: [DONE]\n\n");
+                    }
 
                     // Mark the cancel handle as completed since stream finished normally
                     // This prevents false positive disconnect metrics when DisconnectStream is dropped
@@ -2096,5 +2119,91 @@ mod tests {
             .get("provider_specific_fields")
             .is_none());
         assert!(tool_call.get("extra_content").is_none());
+    }
+
+    #[test]
+    fn test_strip_thinking_blocks() {
+        let mut payload = json!({
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "Let me think...", "signature": "abc123"},
+                    {"type": "text", "text": "Here's my answer"}
+                ]}
+            ]
+        });
+        strip_thinking_blocks(&mut payload);
+        let blocks = payload["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "Here's my answer");
+    }
+
+    #[test]
+    fn test_strip_thinking_blocks_no_thinking() {
+        let mut payload = json!({
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Response"}
+                ]}
+            ]
+        });
+        let original = payload.clone();
+        strip_thinking_blocks(&mut payload);
+        assert_eq!(payload, original);
+    }
+
+    #[test]
+    fn test_strip_thinking_blocks_string_content() {
+        let mut payload = json!({
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Simple text response"}
+            ]
+        });
+        let original = payload.clone();
+        strip_thinking_blocks(&mut payload);
+        assert_eq!(payload, original);
+    }
+
+    #[test]
+    fn test_strip_thinking_blocks_multiple_messages() {
+        let mut payload = json!({
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "First thought", "signature": "sig1"},
+                    {"type": "text", "text": "Answer 1"}
+                ]},
+                {"role": "user", "content": "Follow up"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "Second thought", "signature": "sig2"},
+                    {"type": "text", "text": "Answer 2"}
+                ]}
+            ]
+        });
+        strip_thinking_blocks(&mut payload);
+        let blocks0 = payload["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks0.len(), 1);
+        assert_eq!(blocks0[0]["text"], "Answer 1");
+        let blocks2 = payload["messages"][2]["content"].as_array().unwrap();
+        assert_eq!(blocks2.len(), 1);
+        assert_eq!(blocks2[0]["text"], "Answer 2");
+    }
+
+    #[test]
+    fn test_strip_thinking_blocks_only_thinking() {
+        // When a message has only thinking blocks, content becomes empty array
+        let mut payload = json!({
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "Just thinking", "signature": "sig1"}
+                ]},
+                {"role": "user", "content": "Next question"}
+            ]
+        });
+        strip_thinking_blocks(&mut payload);
+        let blocks = payload["messages"][0]["content"].as_array().unwrap();
+        assert!(blocks.is_empty());
     }
 }

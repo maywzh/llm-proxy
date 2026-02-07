@@ -421,6 +421,16 @@ impl TransformPipeline {
                     );
                 }
             }
+
+            // Sanitize empty assistant messages for Anthropic-compatible protocols.
+            // Anthropic API rejects non-final assistant messages with empty content.
+            if matches!(
+                ctx.provider_protocol,
+                Protocol::Anthropic | Protocol::GcpVertex
+            ) {
+                sanitize_empty_assistant_messages(&mut payload);
+            }
+
             Ok((payload, true))
         } else {
             // Full transformation
@@ -456,6 +466,43 @@ impl TransformPipeline {
         } else {
             // Full transformation
             self.transform_response(raw, ctx).map(|v| (v, false))
+        }
+    }
+}
+
+// ============================================================================
+// Sanitization Helpers
+// ============================================================================
+
+/// Sanitize empty assistant messages in Anthropic-format payloads.
+///
+/// Anthropic API requires all messages to have non-empty content,
+/// except for the optional final assistant message (used for prefill).
+/// This function replaces empty content in non-final assistant messages
+/// with a placeholder to avoid 400 errors from the API.
+fn sanitize_empty_assistant_messages(payload: &mut serde_json::Value) {
+    if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        let len = messages.len();
+        if len <= 1 {
+            return;
+        }
+        for msg in messages.iter_mut().take(len - 1) {
+            let is_empty_assistant = msg
+                .get("role")
+                .and_then(|r| r.as_str())
+                .map(|r| r == "assistant")
+                .unwrap_or(false)
+                && msg
+                    .get("content")
+                    .map(|c| {
+                        c.as_str().map(|s| s.is_empty()).unwrap_or(false)
+                            || c.as_array().map(|a| a.is_empty()).unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+
+            if is_empty_assistant {
+                msg["content"] = serde_json::Value::String("null".to_string());
+            }
         }
     }
 }
