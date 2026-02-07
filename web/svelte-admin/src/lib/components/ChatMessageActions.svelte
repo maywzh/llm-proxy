@@ -1,21 +1,33 @@
 <script lang="ts">
   import { Check, Copy, Share2, RotateCcw } from 'lucide-svelte';
 
-  export let copied: boolean;
-  export let disabled: boolean = false;
-  export let onCopy: () => void;
+  type Props = {
+    copied: boolean;
+    disabled?: boolean;
+    onCopy: () => void;
+    shared?: boolean;
+    shareDisabled?: boolean;
+    onShare?: () => void;
+    showRegenerate?: boolean;
+    regenerateDisabled?: boolean;
+    onRegenerate?: () => void;
+  };
 
-  export let shared: boolean = false;
-  export let shareDisabled: boolean = false;
-  export let onShare: () => void = () => {};
-
-  export let showRegenerate: boolean = false;
-  export let regenerateDisabled: boolean = false;
-  export let onRegenerate: () => void = () => {};
+  let {
+    copied,
+    disabled = false,
+    onCopy,
+    shared = false,
+    shareDisabled = false,
+    onShare = () => {},
+    showRegenerate = false,
+    regenerateDisabled = false,
+    onRegenerate = () => {},
+  }: Props = $props();
 </script>
 
 <div
-  class="mt-1 px-4 flex items-center gap-2 text-gray-500 dark:text-gray-300 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+  class="mt-2 flex items-center gap-1 text-gray-400 dark:text-gray-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
 >
   <div class="relative group/copy">
     <button
