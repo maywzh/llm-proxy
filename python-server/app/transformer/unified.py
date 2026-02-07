@@ -21,6 +21,7 @@ class Protocol(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     RESPONSE_API = "response_api"
+    GCP_VERTEX = "gcp_vertex"
 
     @classmethod
     def from_provider_type(cls, provider_type: str) -> "Protocol":
@@ -28,6 +29,8 @@ class Protocol(str, Enum):
         provider_lower = provider_type.lower()
         if provider_lower in ("anthropic", "claude"):
             return cls.ANTHROPIC
+        if provider_lower in ("gcp-vertex", "gcp_vertex", "vertex"):
+            return cls.GCP_VERTEX
         # OpenAI, Azure, and unknown types default to OpenAI
         return cls.OPENAI
 

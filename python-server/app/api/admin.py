@@ -1,7 +1,7 @@
 """Admin API for dynamic configuration management"""
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, status
 from fastapi.security import HTTPBearer
@@ -90,6 +90,8 @@ class ProviderCreate(BaseModel):
                 "api_base": "https://api.openai.com/v1",
                 "api_key": "sk-xxx",
                 "model_mapping": {"gpt-4": "gpt-4-turbo"},
+                "weight": 1,
+                "provider_params": {},
             }
         }
     )
@@ -99,8 +101,8 @@ class ProviderCreate(BaseModel):
     )
     provider_type: str = Field(
         default="openai",
-        description="Provider type (openai, azure, etc.)",
-        examples=["openai", "azure"],
+        description="Provider type (openai, azure, gcp-vertex, etc.)",
+        examples=["openai", "azure", "gcp-vertex"],
     )
     api_base: str = Field(
         ..., description="API base URL", examples=["https://api.openai.com/v1"]
@@ -112,6 +114,17 @@ class ProviderCreate(BaseModel):
         default_factory=dict,
         description="Model name mapping (source -> target)",
         examples=[{"gpt-4": "gpt-4-turbo"}],
+    )
+    weight: int = Field(
+        default=1,
+        ge=1,
+        description="Load balancing weight",
+        examples=[1],
+    )
+    provider_params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-specific parameters (e.g., GCP Vertex settings)",
+        examples=[{"gcp_project": "my-project", "gcp_location": "us-central1"}],
     )
 
 
@@ -125,12 +138,16 @@ class ProviderUpdate(BaseModel):
     )
 
     provider_type: Optional[str] = Field(
-        None, description="Provider type (openai, azure, etc.)"
+        None, description="Provider type (openai, azure, gcp-vertex, etc.)"
     )
     api_base: Optional[str] = Field(None, description="API base URL")
     api_key: Optional[str] = Field(None, description="API key for the provider")
     model_mapping: Optional[dict[str, str]] = Field(
         None, description="Model name mapping"
+    )
+    weight: Optional[int] = Field(None, ge=1, description="Load balancing weight")
+    provider_params: Optional[dict[str, Any]] = Field(
+        None, description="Provider-specific parameters"
     )
     is_enabled: Optional[bool] = Field(
         None, description="Whether the provider is enabled"
@@ -149,6 +166,8 @@ class ProviderResponse(BaseModel):
                 "provider_type": "openai",
                 "api_base": "https://api.openai.com/v1",
                 "model_mapping": {"gpt-4": "gpt-4-turbo"},
+                "weight": 1,
+                "provider_params": {},
                 "is_enabled": True,
             }
         },
@@ -156,9 +175,15 @@ class ProviderResponse(BaseModel):
 
     id: int = Field(..., description="Auto-increment provider ID")
     provider_key: str = Field(..., description="Unique provider key identifier")
-    provider_type: str = Field(..., description="Provider type (openai, azure, etc.)")
+    provider_type: str = Field(
+        ..., description="Provider type (openai, azure, gcp-vertex, etc.)"
+    )
     api_base: str = Field(..., description="API base URL")
     model_mapping: dict[str, str] = Field(..., description="Model name mapping")
+    weight: int = Field(default=1, description="Load balancing weight")
+    provider_params: dict[str, Any] = Field(
+        default_factory=dict, description="Provider-specific parameters"
+    )
     is_enabled: bool = Field(..., description="Whether the provider is enabled")
 
 
@@ -176,6 +201,8 @@ class ProviderListResponse(BaseModel):
                         "provider_type": "openai",
                         "api_base": "https://api.openai.com/v1",
                         "model_mapping": {},
+                        "weight": 1,
+                        "provider_params": {},
                         "is_enabled": True,
                     }
                 ],
@@ -431,6 +458,8 @@ async def api_list_providers(
                 provider_type=p.provider_type,
                 api_base=p.api_base,
                 model_mapping=p.get_model_mapping(),
+                weight=p.weight,
+                provider_params=p.get_provider_params(),
                 is_enabled=p.is_enabled,
             )
             for p in providers
@@ -481,6 +510,8 @@ async def api_create_provider(
         api_base=provider.api_base,
         api_key=provider.api_key,
         model_mapping=provider.model_mapping,
+        weight=provider.weight,
+        provider_params=provider.provider_params,
     )
 
     await config.reload()
@@ -494,6 +525,8 @@ async def api_create_provider(
             provider_type=new_provider.provider_type,
             api_base=new_provider.api_base,
             model_mapping=new_provider.get_model_mapping(),
+            weight=new_provider.weight,
+            provider_params=new_provider.get_provider_params(),
             is_enabled=new_provider.is_enabled,
         ),
     )
@@ -539,6 +572,8 @@ async def api_get_provider(
         provider_type=provider.provider_type,
         api_base=provider.api_base,
         model_mapping=provider.get_model_mapping(),
+        weight=provider.weight,
+        provider_params=provider.get_provider_params(),
         is_enabled=provider.is_enabled,
     )
 

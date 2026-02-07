@@ -166,9 +166,12 @@ pub struct Provider {
     pub api_key: String,
     pub weight: u32,
     pub model_mapping: HashMap<String, ModelMappingValue>,
-    /// Provider type (e.g., "openai", "azure", "anthropic")
+    /// Provider type (e.g., "openai", "azure", "anthropic", "gcp-vertex")
     #[serde(default = "default_provider_type")]
     pub provider_type: String,
+    /// Provider-specific parameters (e.g., GCP project, location, publisher)
+    #[serde(default)]
+    pub provider_params: HashMap<String, serde_json::Value>,
 }
 
 fn default_provider_type() -> String {
@@ -189,6 +192,49 @@ impl Provider {
     /// Get the model metadata for the given model if available.
     pub fn get_model_metadata(&self, model: &str) -> Option<ModelMappingEntry> {
         get_model_metadata(model, &self.model_mapping)
+    }
+
+    /// Get a string parameter from provider_params.
+    pub fn get_param(&self, key: &str) -> Option<&str> {
+        self.provider_params.get(key).and_then(|v| v.as_str())
+    }
+}
+
+/// GCP Vertex AI specific configuration extracted from provider_params.
+#[derive(Debug, Clone)]
+pub struct GcpVertexConfig {
+    pub project: String,
+    pub location: String,
+    pub publisher: String,
+}
+
+impl GcpVertexConfig {
+    /// Extract GCP Vertex configuration from a provider.
+    /// Returns None if any required field is missing.
+    pub fn from_provider(provider: &Provider) -> Option<Self> {
+        Some(Self {
+            project: provider.get_param("gcp_project")?.to_string(),
+            location: provider.get_param("gcp_location")?.to_string(),
+            publisher: provider.get_param("gcp_publisher")?.to_string(),
+        })
+    }
+
+    /// Extract GCP Vertex configuration with defaults for missing fields.
+    pub fn from_provider_with_defaults(provider: &Provider) -> Self {
+        Self {
+            project: provider
+                .get_param("gcp_project")
+                .unwrap_or_default()
+                .to_string(),
+            location: provider
+                .get_param("gcp_location")
+                .unwrap_or("us-central1")
+                .to_string(),
+            publisher: provider
+                .get_param("gcp_publisher")
+                .unwrap_or("anthropic")
+                .to_string(),
+        }
     }
 }
 
@@ -921,6 +967,7 @@ mod tests {
             weight: 1,
             model_mapping: HashMap::new(),
             provider_type: "openai".to_string(),
+            provider_params: HashMap::new(),
         };
 
         let cloned = provider.clone();
@@ -1034,6 +1081,7 @@ mod tests {
             weight: 1,
             model_mapping: mapping,
             provider_type: "openai".to_string(),
+            provider_params: HashMap::new(),
         };
 
         // Test exact match

@@ -17,6 +17,7 @@ from app.api.router import (
     admin_router,
     claude_router,
     v2_router,
+    gcp_vertex_router,
 )
 from app.api.models import model_info_v1, model_info_v2
 from app.api.proxy import chat_completions_v2, messages_v2, responses_v2
@@ -227,6 +228,7 @@ def create_app() -> FastAPI:
     app.include_router(metrics_router)
     app.include_router(admin_router)
     app.include_router(claude_router)
+    app.include_router(gcp_vertex_router)
 
     # v1 路由 (LiteLLM v1 compatible - no pagination)
     app.add_api_route("/v1/model/info", model_info_v1, methods=["GET"], tags=["models"])
@@ -238,9 +240,18 @@ def create_app() -> FastAPI:
     app.add_api_route("/model/info", model_info_v2, methods=["GET"], tags=["models"])
 
     # Root API routes (map to v2 handlers)
-    app.add_api_route("/chat/completions", chat_completions_v2, methods=["POST"], tags=["proxy"])
+    app.add_api_route(
+        "/chat/completions", chat_completions_v2, methods=["POST"], tags=["proxy"]
+    )
     app.add_api_route("/messages", messages_v2, methods=["POST"], tags=["proxy"])
     app.add_api_route("/responses", responses_v2, methods=["POST"], tags=["proxy"])
+
+    # v1 endpoints use transformer for GCP Vertex support
+    app.add_api_route("/v1/messages", messages_v2, methods=["POST"], tags=["proxy"])
+    app.add_api_route(
+        "/v1/chat/completions", chat_completions_v2, methods=["POST"], tags=["proxy"]
+    )
+    app.add_api_route("/v1/responses", responses_v2, methods=["POST"], tags=["proxy"])
 
     @app.get("/health")
     async def health_check():

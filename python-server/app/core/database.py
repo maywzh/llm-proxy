@@ -53,6 +53,7 @@ class ProviderModel(Base):
     api_key: Mapped[str] = mapped_column(String(500), nullable=False)
     model_mapping: Mapped[dict] = mapped_column(JSONB, nullable=False, default={})
     weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    provider_params: Mapped[dict] = mapped_column(JSONB, nullable=False, default={})
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -67,6 +68,10 @@ class ProviderModel(Base):
     def get_model_mapping(self) -> Dict[str, ModelMappingValue]:
         """Get model_mapping dict (normalized to support both simple and extended formats)"""
         return normalize_model_mapping(self.model_mapping or {})
+
+    def get_provider_params(self) -> Dict[str, Any]:
+        """Get provider_params dict"""
+        return self.provider_params or {}
 
 
 class CredentialModel(Base):
@@ -393,6 +398,7 @@ class DynamicConfig:
                 weight=p.weight,
                 model_mapping=p.get_model_mapping(),
                 provider_type=p.provider_type,
+                provider_params=p.get_provider_params(),
             )
             for p in versioned_config.providers
         ]
@@ -562,6 +568,8 @@ async def create_provider(
     api_base: str,
     api_key: str,
     model_mapping: Optional[dict] = None,
+    weight: int = 1,
+    provider_params: Optional[dict] = None,
 ) -> ProviderModel:
     """Create a new provider"""
     async with db.session() as session:
@@ -571,6 +579,8 @@ async def create_provider(
             api_base=api_base,
             api_key=api_key,
             model_mapping=model_mapping or {},
+            weight=weight,
+            provider_params=provider_params or {},
             is_enabled=True,
         )
         session.add(provider)

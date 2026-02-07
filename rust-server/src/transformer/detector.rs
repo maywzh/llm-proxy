@@ -35,7 +35,7 @@ impl ProtocolDetector {
 
     /// Detect protocol from explicit `x-protocol` header.
     ///
-    /// Supported values: "openai", "anthropic", "claude", "response", "response-api"
+    /// Supported values: "openai", "anthropic", "claude", "response", "response-api", "gcp-vertex", "vertex"
     pub fn detect_from_explicit_header(headers: &HeaderMap) -> Option<Protocol> {
         headers
             .get("x-protocol")
@@ -44,6 +44,7 @@ impl ProtocolDetector {
                 "openai" => Some(Protocol::OpenAI),
                 "anthropic" | "claude" => Some(Protocol::Anthropic),
                 "response" | "response-api" => Some(Protocol::ResponseApi),
+                "gcp-vertex" | "gcp_vertex" | "vertex" => Some(Protocol::GcpVertex),
                 _ => None,
             })
     }

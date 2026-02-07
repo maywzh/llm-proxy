@@ -50,7 +50,12 @@ from .registry import TransformerRegistry
 
 from .detector import ProtocolDetector
 
-from .protocols import AnthropicTransformer, OpenAITransformer, ResponseApiTransformer
+from .protocols import (
+    AnthropicTransformer,
+    GcpVertexTransformer,
+    OpenAITransformer,
+    ResponseApiTransformer,
+)
 
 from .pipeline import (
     TransformPipeline,
@@ -127,6 +132,7 @@ __all__ = [
     "ProtocolDetector",
     # Protocol Transformers
     "AnthropicTransformer",
+    "GcpVertexTransformer",
     "OpenAITransformer",
     "ResponseApiTransformer",
     # Pipeline

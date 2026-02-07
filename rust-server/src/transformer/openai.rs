@@ -390,6 +390,45 @@ impl Default for OpenAITransformer {
     }
 }
 
+impl OpenAITransformer {
+    /// Normalize OpenAI tool_choice to UIF dict format.
+    ///
+    /// OpenAI formats:
+    /// - "auto" -> {"type": "auto"}
+    /// - "none" -> {"type": "none"}
+    /// - "required" -> {"type": "any"}
+    /// - {"type": "function", "function": {"name": "xxx"}} -> {"type": "tool", "name": "xxx"}
+    fn normalize_tool_choice_to_uif(tool_choice: Option<Value>) -> Option<Value> {
+        tool_choice.map(|tc| {
+            if let Some(s) = tc.as_str() {
+                // String format: "auto", "none", "required"
+                match s {
+                    "auto" => json!({"type": "auto"}),
+                    "none" => json!({"type": "none"}),
+                    "required" => json!({"type": "any"}),
+                    other => json!({"type": other}),
+                }
+            } else if let Some(obj) = tc.as_object() {
+                // Object format: already a dict, possibly needs normalization
+                if obj.get("type").and_then(|t| t.as_str()) == Some("function") {
+                    // OpenAI specific function format
+                    // {"type": "function", "function": {"name": "xxx"}} -> {"type": "tool", "name": "xxx"}
+                    if let Some(name) = obj
+                        .get("function")
+                        .and_then(|f| f.get("name"))
+                        .and_then(|n| n.as_str())
+                    {
+                        return json!({"type": "tool", "name": name});
+                    }
+                }
+                tc
+            } else {
+                tc
+            }
+        })
+    }
+}
+
 impl Transformer for OpenAITransformer {
     fn protocol(&self) -> Protocol {
         Protocol::OpenAI
@@ -442,13 +481,16 @@ impl Transformer for OpenAITransformer {
             extra: request.extra,
         };
 
+        // Normalize tool_choice from OpenAI format to UIF format
+        let tool_choice = Self::normalize_tool_choice_to_uif(request.tool_choice);
+
         Ok(UnifiedRequest {
             model: request.model,
             messages,
             system,
             parameters,
             tools,
-            tool_choice: request.tool_choice,
+            tool_choice,
             request_id: uuid::Uuid::new_v4().to_string(),
             client_protocol: Protocol::OpenAI,
             metadata: HashMap::new(),
@@ -1446,5 +1488,80 @@ mod tests {
             anthropic_output.contains("\"output_tokens\":23"),
             "Should contain output_tokens: 23"
         );
+    }
+
+    #[test]
+    fn test_openai_tool_choice_string_normalization() {
+        let transformer = OpenAITransformer::new();
+
+        // Test "auto" string -> {"type": "auto"}
+        let request = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"type": "function", "function": {"name": "t", "parameters": {"type": "object"}}}],
+            "tool_choice": "auto"
+        });
+        let unified = transformer.transform_request_out(request).unwrap();
+        assert_eq!(unified.tool_choice, Some(json!({"type": "auto"})));
+
+        // Test "none" string -> {"type": "none"}
+        let request = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"type": "function", "function": {"name": "t", "parameters": {"type": "object"}}}],
+            "tool_choice": "none"
+        });
+        let unified = transformer.transform_request_out(request).unwrap();
+        assert_eq!(unified.tool_choice, Some(json!({"type": "none"})));
+
+        // Test "required" string -> {"type": "any"}
+        let request = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"type": "function", "function": {"name": "t", "parameters": {"type": "object"}}}],
+            "tool_choice": "required"
+        });
+        let unified = transformer.transform_request_out(request).unwrap();
+        assert_eq!(unified.tool_choice, Some(json!({"type": "any"})));
+
+        // Test {"type": "function", "function": {"name": "xxx"}} -> {"type": "tool", "name": "xxx"}
+        let request = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"type": "function", "function": {"name": "my_func", "parameters": {"type": "object"}}}],
+            "tool_choice": {"type": "function", "function": {"name": "my_func"}}
+        });
+        let unified = transformer.transform_request_out(request).unwrap();
+        assert_eq!(
+            unified.tool_choice,
+            Some(json!({"type": "tool", "name": "my_func"}))
+        );
+    }
+
+    #[test]
+    fn test_openai_to_anthropic_tool_choice() {
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let openai = OpenAITransformer::new();
+        let anthropic = AnthropicTransformer::new();
+
+        // OpenAI request with tool_choice: "auto" (string)
+        let request = json!({
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "test"}],
+            "tools": [{"type": "function", "function": {"name": "generate_image", "description": "Generate an image", "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]}}}],
+            "tool_choice": "auto"
+        });
+
+        // Transform: OpenAI -> Unified
+        let unified = openai.transform_request_out(request).unwrap();
+        // Verify tool_choice is normalized to dict format
+        assert_eq!(unified.tool_choice, Some(json!({"type": "auto"})));
+
+        // Transform: Unified -> Anthropic
+        let anthropic_req = anthropic.transform_request_in(&unified).unwrap();
+
+        // Verify Anthropic tool_choice format is correct
+        assert_eq!(anthropic_req["tool_choice"]["type"], "auto");
     }
 }

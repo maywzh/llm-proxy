@@ -4,15 +4,14 @@ This module provides V2 API endpoints that support cross-protocol transformation
 between different LLM API formats (OpenAI, Anthropic, Response API).
 """
 
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Literal, Optional
+from typing import Any, Awaitable, Callable, Optional
 import json
 import time
 import uuid
 
 import httpx
-from fastapi import APIRouter, Request, Depends, HTTPException, Query
+from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse, Response
 from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
@@ -43,7 +42,11 @@ from app.core.metrics import (
     CROSS_PROTOCOL_REQUESTS,
     CLIENT_DISCONNECTS,
 )
-from app.core.stream_metrics import StreamStats, record_stream_metrics
+from app.core.stream_metrics import (
+    StreamStats,
+    StreamingUsageTracker,
+    record_stream_metrics,
+)
 from app.core.logging import (
     get_logger,
     set_provider_context,
@@ -63,27 +66,12 @@ from app.transformer import (
     format_sse_done,
     OpenAITransformer,
     AnthropicTransformer,
+    GcpVertexTransformer,
     ResponseApiTransformer,
 )
 
 router = APIRouter()
 logger = get_logger()
-
-
-# =============================================================================
-# Streaming Usage Tracker
-# =============================================================================
-
-
-@dataclass
-class StreamingUsageTracker:
-    """Tracks token usage and timing during streaming for metrics recording at exit."""
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    usage_from_provider: bool = False
-    start_time: float = field(default_factory=time.time)
-    first_token_time: Optional[float] = None
 
 
 # =============================================================================
@@ -100,6 +88,7 @@ def get_transform_pipeline() -> TransformPipeline:
         registry = TransformerRegistry()
         registry.register(OpenAITransformer())
         registry.register(AnthropicTransformer())
+        registry.register(GcpVertexTransformer())
         registry.register(ResponseApiTransformer())
         _transform_pipeline = TransformPipeline(registry)
     return _transform_pipeline
@@ -118,6 +107,9 @@ def _get_provider_endpoint(protocol: Protocol) -> str:
         return "/v1/messages"
     elif protocol == Protocol.RESPONSE_API:
         return "/v1/responses"
+    elif protocol == Protocol.GCP_VERTEX:
+        # GCP Vertex endpoint is built dynamically in _build_gcp_vertex_url
+        return ""
     return "/chat/completions"
 
 
@@ -134,6 +126,47 @@ def _extract_stream_flag(payload: dict[str, Any], protocol: Protocol) -> bool:
 def _provider_type_to_protocol(provider_type: str) -> Protocol:
     """Convert provider_type string to Protocol enum."""
     return Protocol.from_provider_type(provider_type)
+
+
+def _build_gcp_vertex_url(provider: "Provider", model: str, is_streaming: bool) -> str:
+    """Build the GCP Vertex AI endpoint URL.
+
+    The api_base should include any custom prefix (e.g., https://xxx.com/models/gcp-vertex).
+    This function only appends the dynamic GCP Vertex path.
+
+    Args:
+        provider: Provider instance with GCP configuration
+        model: Model name (e.g., claude-sonnet-4-20250514)
+        is_streaming: Whether this is a streaming request
+
+    Returns:
+        Full URL for the GCP Vertex AI endpoint
+    """
+    action = "streamRawPredict" if is_streaming else "rawPredict"
+    return (
+        f"{provider.api_base}/v1/projects/{provider.gcp_project}"
+        f"/locations/{provider.gcp_location}"
+        f"/publishers/{provider.gcp_publisher}"
+        f"/models/{model}:{action}"
+    )
+
+
+def _build_provider_url(
+    provider: "Provider", ctx: "TransformContext", model: str
+) -> str:
+    """Build the provider endpoint URL based on protocol.
+
+    Args:
+        provider: Provider instance
+        ctx: Transform context with protocol info
+        model: Model name for GCP Vertex
+
+    Returns:
+        Full URL for the provider endpoint
+    """
+    if ctx.provider_protocol == Protocol.GCP_VERTEX:
+        return _build_gcp_vertex_url(provider, model, ctx.stream)
+    return f"{provider.api_base}{_get_provider_endpoint(ctx.provider_protocol)}"
 
 
 def _normalize_gemini3_provider_payload(
@@ -176,7 +209,7 @@ def _create_protocol_error_event(
     Returns:
         Formatted SSE event as bytes
     """
-    if protocol == Protocol.ANTHROPIC:
+    if protocol in (Protocol.ANTHROPIC, Protocol.GCP_VERTEX):
         event = {"type": "error", "error": {"type": error_type, "message": message}}
     else:  # OpenAI and Response API
         event = {"error": {"message": message, "type": error_type}}
@@ -193,7 +226,7 @@ def _build_protocol_error_response(
     provider: Optional[str] = None,
 ) -> Response:
     """Build an error response in the appropriate protocol format."""
-    if protocol == Protocol.ANTHROPIC:
+    if protocol in (Protocol.ANTHROPIC, Protocol.GCP_VERTEX):
         body = {
             "type": "error",
             "error": {
@@ -600,8 +633,11 @@ async def _create_cross_protocol_stream(
 
                 if event.data:
                     # Transform chunk from provider format to unified format
+                    # Note: event.data is already parsed JSON from SSE parser,
+                    # but transform_stream_chunk_in expects SSE format with "data: " prefix
+                    sse_formatted = f"data: {event.data}\n"
                     unified_chunks = pipeline.transform_stream_chunk_in(
-                        event.data.encode("utf-8"), ctx
+                        sse_formatted.encode("utf-8"), ctx
                     )
 
                     # Process chunks through state tracker
@@ -670,6 +706,9 @@ async def _handle_streaming_request(
         headers["anthropic-version"] = "2023-06-01"
         headers["x-api-key"] = provider.api_key
         del headers["Authorization"]
+    # GCP Vertex uses Bearer token authentication (already set above)
+    elif ctx.provider_protocol == Protocol.GCP_VERTEX:
+        headers["anthropic-version"] = "vertex-2023-10-16"
 
     # Transform request
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)
@@ -681,7 +720,13 @@ async def _handle_streaming_request(
     if bypassed:
         logger.debug(f"Using bypass mode for streaming request to {provider.name}")
 
-    url = f"{provider.api_base}{_get_provider_endpoint(ctx.provider_protocol)}"
+    # Build URL based on provider protocol
+    mapped_model = (
+        provider.get_mapped_model(effective_model)
+        if effective_model
+        else effective_model
+    )
+    url = _build_provider_url(provider, ctx, mapped_model or "")
     provider_endpoint = _get_provider_endpoint(ctx.provider_protocol)
 
     # Log provider request to JSONL
@@ -839,6 +884,9 @@ async def _handle_non_streaming_request(
         headers["anthropic-version"] = "2023-06-01"
         headers["x-api-key"] = provider.api_key
         del headers["Authorization"]
+    # GCP Vertex uses Bearer token authentication (already set above)
+    elif ctx.provider_protocol == Protocol.GCP_VERTEX:
+        headers["anthropic-version"] = "vertex-2023-10-16"
 
     # Transform request
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)
@@ -850,7 +898,13 @@ async def _handle_non_streaming_request(
     if bypassed:
         logger.debug(f"Using bypass mode for non-streaming request to {provider.name}")
 
-    url = f"{provider.api_base}{_get_provider_endpoint(ctx.provider_protocol)}"
+    # Build URL based on provider protocol
+    mapped_model = (
+        provider.get_mapped_model(effective_model)
+        if effective_model
+        else effective_model
+    )
+    url = _build_provider_url(provider, ctx, mapped_model or "")
     provider_endpoint = _get_provider_endpoint(ctx.provider_protocol)
 
     # Log provider request to JSONL

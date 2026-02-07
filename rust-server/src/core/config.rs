@@ -239,9 +239,13 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub model_mapping: HashMap<String, ModelMappingValue>,
 
-    /// Provider type (e.g., "openai", "azure", "anthropic")
+    /// Provider type (e.g., "openai", "azure", "anthropic", "gcp-vertex")
     #[serde(default = "default_provider_type")]
     pub provider_type: String,
+
+    /// Provider-specific parameters (e.g., GCP project, location, publisher)
+    #[serde(default)]
+    pub provider_params: HashMap<String, serde_json::Value>,
 }
 
 fn default_provider_type() -> String {

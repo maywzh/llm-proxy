@@ -46,7 +46,7 @@ from app.core.logging import (
 )
 from app.core.utils import strip_provider_suffix
 from app.utils.client import extract_client
-from app.models.provider import Provider
+from app.models.provider import Provider, GcpVertexConfig
 
 router = APIRouter()
 logger = get_logger()
@@ -108,6 +108,56 @@ async def _parse_stream_error(response: httpx.Response) -> dict:
             text = body.decode("utf-8", errors="replace")
             return {"error": {"message": text or f"HTTP {response.status_code}"}}
     return {"error": {"message": f"HTTP {response.status_code}"}}
+
+
+def _build_provider_url(
+    provider: Provider, endpoint: str, is_streaming: bool = False, model: str = ""
+) -> str:
+    """Build the provider URL based on provider type.
+
+    For GCP Vertex providers, constructs the full Vertex AI URL.
+    For other providers, simply appends the endpoint to api_base.
+
+    Args:
+        provider: Provider configuration
+        endpoint: API endpoint (e.g., "chat/completions")
+        is_streaming: Whether this is a streaming request (for GCP Vertex)
+        model: Model name for GCP Vertex URL building
+
+    Returns:
+        Full URL for the provider endpoint
+    """
+    if provider.provider_type == "gcp-vertex":
+        action = "streamRawPredict" if is_streaming else "rawPredict"
+        mapped_model = provider.get_mapped_model(model) if model else model
+        gcp_config = GcpVertexConfig.from_provider(provider)
+        if gcp_config is None:
+            gcp_config = GcpVertexConfig.from_provider_with_defaults(provider)
+        return (
+            f"{provider.api_base}/v1/projects/{gcp_config.project}"
+            f"/locations/{gcp_config.location}"
+            f"/publishers/{gcp_config.publisher}"
+            f"/models/{mapped_model}:{action}"
+        )
+    return f"{provider.api_base}/{endpoint}"
+
+
+def _build_gcp_vertex_headers(provider: Provider) -> dict:
+    """Build headers for GCP Vertex AI requests.
+
+    GCP Vertex AI uses Bearer token authentication with anthropic-version header.
+
+    Args:
+        provider: Provider configuration
+
+    Returns:
+        Headers dict for GCP Vertex AI
+    """
+    return {
+        "Authorization": f"Bearer {provider.api_key}",
+        "Content-Type": "application/json",
+        "anthropic-version": "vertex-2023-10-16",
+    }
 
 
 def _init_langfuse_trace(
@@ -333,11 +383,17 @@ async def _handle_streaming_request(
     """
     logger.debug(f"Streaming request to {provider.name} for model {effective_model}")
 
-    headers = {
-        "Authorization": f"Bearer {provider.api_key}",
-        "Content-Type": "application/json",
-    }
-    url = f"{provider.api_base}/{endpoint}"
+    # Build headers based on provider type
+    if provider.provider_type == "gcp-vertex":
+        headers = _build_gcp_vertex_headers(provider)
+    else:
+        headers = {
+            "Authorization": f"Bearer {provider.api_key}",
+            "Content-Type": "application/json",
+        }
+    url = _build_provider_url(
+        provider, endpoint, is_streaming=True, model=effective_model or ""
+    )
 
     strip_gemini3_provider_fields(data, provider_model)
 
@@ -525,11 +581,17 @@ async def _handle_non_streaming_request(
 
     logger.debug(f"Pre-calculated fallback input tokens: {fallback_input_tokens}")
 
-    headers = {
-        "Authorization": f"Bearer {provider.api_key}",
-        "Content-Type": "application/json",
-    }
-    url = f"{provider.api_base}/{endpoint}"
+    # Build headers based on provider type
+    if provider.provider_type == "gcp-vertex":
+        headers = _build_gcp_vertex_headers(provider)
+    else:
+        headers = {
+            "Authorization": f"Bearer {provider.api_key}",
+            "Content-Type": "application/json",
+        }
+    url = _build_provider_url(
+        provider, endpoint, is_streaming=False, model=effective_model or ""
+    )
 
     strip_gemini3_provider_fields(data, provider_model)
 

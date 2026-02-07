@@ -47,6 +47,7 @@ impl ProviderService {
     ///         weight: 1,
     ///         model_mapping: HashMap::new(),
     ///         provider_type: "openai".to_string(),
+    ///         provider_params: HashMap::new(),
     ///     }],
     ///     server: ServerConfig::default(),
     ///     verify_ssl: true,
@@ -70,6 +71,7 @@ impl ProviderService {
                 weight: p.weight,
                 model_mapping: p.model_mapping,
                 provider_type: p.provider_type,
+                provider_params: p.provider_params,
             })
             .collect();
 
@@ -206,6 +208,7 @@ mod tests {
                     weight: 2,
                     model_mapping: simple_mapping(&[("model1", "provider1-model1")]),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
                 ProviderConfig {
                     name: "Provider2".to_string(),
@@ -214,6 +217,7 @@ mod tests {
                     weight: 1,
                     model_mapping: simple_mapping(&[("model2", "provider2-model2")]),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
             ],
             server: ServerConfig::default(),
@@ -236,6 +240,7 @@ mod tests {
                 weight: 1,
                 model_mapping: HashMap::new(),
                 provider_type: "openai".to_string(),
+                provider_params: HashMap::new(),
             }],
             server: ServerConfig::default(),
             verify_ssl: true,
@@ -594,6 +599,7 @@ mod tests {
                     weight: 1,
                     model_mapping: simple_mapping(&[("claude-opus-4-5-.*", "claude-opus-mapped")]),
                     provider_type: "anthropic".to_string(),
+                    provider_params: HashMap::new(),
                 },
                 ProviderConfig {
                     name: "openai-provider".to_string(),
@@ -602,6 +608,7 @@ mod tests {
                     weight: 1,
                     model_mapping: simple_mapping(&[("gpt-4", "gpt-4-turbo")]),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
             ],
             server: ServerConfig::default(),
@@ -656,6 +663,7 @@ mod tests {
                 weight: 1,
                 model_mapping: simple_mapping(&[("gemini-*", "gemini-pro")]),
                 provider_type: "openai".to_string(),
+                provider_params: HashMap::new(),
             }],
             server: ServerConfig::default(),
             verify_ssl: true,
@@ -696,6 +704,7 @@ mod tests {
                     ("claude-opus", "claude-opus-exact"),
                 ]),
                 provider_type: "anthropic".to_string(),
+                provider_params: HashMap::new(),
             }],
             server: ServerConfig::default(),
             verify_ssl: true,
@@ -732,6 +741,7 @@ mod tests {
                     weight: 2,
                     model_mapping: simple_mapping(&[("claude-opus-4-5-.*", "provider1-claude")]),
                     provider_type: "anthropic".to_string(),
+                    provider_params: HashMap::new(),
                 },
                 ProviderConfig {
                     name: "provider2".to_string(),
@@ -740,6 +750,7 @@ mod tests {
                     weight: 1,
                     model_mapping: simple_mapping(&[("claude-opus-4-5-.*", "provider2-claude")]),
                     provider_type: "anthropic".to_string(),
+                    provider_params: HashMap::new(),
                 },
             ],
             server: ServerConfig::default(),
@@ -792,6 +803,7 @@ mod tests {
                         ("gemini-*", "gemini-pro"),              // Simple wildcard
                     ]),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
                 ProviderConfig {
                     name: "provider2".to_string(),
@@ -803,6 +815,7 @@ mod tests {
                         ("claude-.*", "claude-default"),         // Regex pattern
                     ]),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
             ],
             server: ServerConfig::default(),

@@ -150,7 +150,7 @@ class TestChatCompletionsEndpoint:
 
     def test_chat_completions_streaming_uses_client_stream(self, app_client):
         """Ensure streaming path relies on httpx.AsyncClient.stream"""
-        with patch("app.api.completions.get_http_client") as mock_get_client:
+        with patch("app.api.proxy.get_http_client") as mock_get_client:
             mock_client = MagicMock()
             mock_client.aclose = AsyncMock()
             mock_client.post = AsyncMock(

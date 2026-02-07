@@ -31,6 +31,7 @@ export interface Provider {
   api_base: string;
   model_mapping: Record<string, ModelMappingValue>;
   is_enabled: boolean;
+  provider_params?: Record<string, unknown>;
 }
 
 export interface ProviderCreate {
@@ -39,6 +40,7 @@ export interface ProviderCreate {
   api_base: string;
   api_key: string;
   model_mapping?: Record<string, ModelMappingValue>;
+  provider_params?: Record<string, unknown>;
 }
 
 export interface ProviderUpdate {
@@ -47,6 +49,7 @@ export interface ProviderUpdate {
   api_key?: string;
   model_mapping?: Record<string, ModelMappingValue>;
   is_enabled?: boolean;
+  provider_params?: Record<string, unknown>;
 }
 
 export interface ProviderListResponse {
@@ -160,6 +163,10 @@ export interface ProviderFormData {
   api_key: string;
   model_mapping: Record<string, ModelMappingValue>;
   is_enabled: boolean;
+  // GCP Vertex AI fields (stored in provider_params on backend)
+  gcp_project: string;
+  gcp_location: string;
+  gcp_publisher: string;
 }
 
 export interface CredentialFormData {

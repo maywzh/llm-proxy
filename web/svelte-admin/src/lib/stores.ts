@@ -10,6 +10,7 @@ import type {
   ConfigVersionResponse,
   ModalState,
   ProviderFormData,
+  ProviderUpdate,
   CredentialFormData,
 } from './types';
 
@@ -141,13 +142,26 @@ export const actions = {
     errors.update(state => ({ ...state, providers: null }));
 
     try {
-      const response = await client.createProvider({
+      const createData: Parameters<typeof client.createProvider>[0] = {
         provider_key: data.provider_key,
         provider_type: data.provider_type,
         api_base: data.api_base,
         api_key: data.api_key,
         model_mapping: data.model_mapping,
-      });
+      };
+
+      // Include provider_params for GCP Vertex
+      if (data.provider_type === 'gcp-vertex') {
+        createData.provider_params = {
+          gcp_project: data.gcp_project,
+          gcp_location: data.gcp_location?.trim() || 'us-central1',
+          gcp_publisher: data.gcp_publisher?.trim() || 'anthropic',
+        };
+      } else {
+        createData.provider_params = {};
+      }
+
+      const response = await client.createProvider(createData);
 
       // Backend returns Provider directly (not wrapped in { version, provider })
       providers.update(list => [...list, response]);
@@ -163,7 +177,7 @@ export const actions = {
     }
   },
 
-  async updateProvider(id: number, data: Partial<ProviderFormData>) {
+  async updateProvider(id: number, data: ProviderUpdate) {
     const client = auth.apiClient;
     if (!client) return false;
 
