@@ -15,7 +15,12 @@ import {
   Shuffle,
   Inbox,
 } from 'lucide-react';
-import type { Provider, ProviderFormData, ProviderUpdate } from '../types';
+import type {
+  Provider,
+  ProviderFormData,
+  ProviderUpdate,
+  ProviderCreate,
+} from '../types';
 
 const Providers: React.FC = () => {
   const { apiClient } = useAuth();
@@ -37,6 +42,9 @@ const Providers: React.FC = () => {
     api_key: '',
     model_mapping: {},
     is_enabled: true,
+    gcp_project: '',
+    gcp_location: '',
+    gcp_publisher: '',
   });
 
   const debouncedSearch = useDebounce(searchTerm, 300);
@@ -72,6 +80,9 @@ const Providers: React.FC = () => {
       api_key: '',
       model_mapping: {},
       is_enabled: true,
+      gcp_project: '',
+      gcp_location: '',
+      gcp_publisher: '',
     });
     setModelMappingError(null);
     setEditingProvider(null);
@@ -101,6 +112,9 @@ const Providers: React.FC = () => {
       api_key: '', // Don't populate existing key for security
       model_mapping: provider.model_mapping,
       is_enabled: provider.is_enabled,
+      gcp_project: (provider.provider_params?.gcp_project as string) || '',
+      gcp_location: (provider.provider_params?.gcp_location as string) || '',
+      gcp_publisher: (provider.provider_params?.gcp_publisher as string) || '',
     });
     setShowCreateForm(true);
   };
@@ -109,6 +123,15 @@ const Providers: React.FC = () => {
     e.preventDefault();
     if (!apiClient) return;
     if (modelMappingError) return;
+
+    // Validate gcp_project is required when provider_type is gcp-vertex
+    if (
+      formData.provider_type === 'gcp-vertex' &&
+      !formData.gcp_project.trim()
+    ) {
+      setError('GCP Project ID is required for GCP Vertex provider');
+      return;
+    }
 
     setLoading(true);
     setError(null);
@@ -128,16 +151,40 @@ const Providers: React.FC = () => {
           updateData.api_key = formData.api_key;
         }
 
+        // Include provider_params for GCP Vertex
+        if (formData.provider_type === 'gcp-vertex') {
+          updateData.provider_params = {
+            gcp_project: formData.gcp_project,
+            gcp_location: formData.gcp_location.trim() || 'us-central1',
+            gcp_publisher: formData.gcp_publisher.trim() || 'anthropic',
+          };
+        } else {
+          updateData.provider_params = {};
+        }
+
         await apiClient.updateProvider(editingProvider.id, updateData);
       } else {
         // Create new provider
-        await apiClient.createProvider({
+        const createData: ProviderCreate = {
           provider_key: formData.provider_key,
           provider_type: formData.provider_type,
           api_base: formData.api_base,
           api_key: formData.api_key,
           model_mapping: formData.model_mapping,
-        });
+        };
+
+        // Include provider_params for GCP Vertex
+        if (formData.provider_type === 'gcp-vertex') {
+          createData.provider_params = {
+            gcp_project: formData.gcp_project,
+            gcp_location: formData.gcp_location.trim() || 'us-central1',
+            gcp_publisher: formData.gcp_publisher.trim() || 'anthropic',
+          };
+        } else {
+          createData.provider_params = {};
+        }
+
+        await apiClient.createProvider(createData);
       }
 
       resetForm();
@@ -188,8 +235,12 @@ const Providers: React.FC = () => {
   // Filtered providers based on search
   const filteredProviders = providers.filter(
     provider =>
-      provider.provider_key.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-      provider.provider_type.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+      provider.provider_key
+        .toLowerCase()
+        .includes(debouncedSearch.toLowerCase()) ||
+      provider.provider_type
+        .toLowerCase()
+        .includes(debouncedSearch.toLowerCase()) ||
       provider.api_base.toLowerCase().includes(debouncedSearch.toLowerCase())
   );
 
@@ -306,6 +357,7 @@ const Providers: React.FC = () => {
                     <option value="azure">Azure OpenAI</option>
                     <option value="anthropic">Anthropic</option>
                     <option value="google">Google</option>
+                    <option value="gcp-vertex">GCP Vertex AI</option>
                     <option value="custom">Custom</option>
                   </select>
                 </div>
@@ -323,10 +375,86 @@ const Providers: React.FC = () => {
                     setFormData(prev => ({ ...prev, api_base: e.target.value }))
                   }
                   className="input"
-                  placeholder="https://api.openai.com/v1"
+                  placeholder={
+                    formData.provider_type === 'gcp-vertex'
+                      ? 'https://us-central1-aiplatform.googleapis.com'
+                      : 'https://api.openai.com/v1'
+                  }
                   required
                 />
               </div>
+
+              {/* GCP Vertex AI specific fields */}
+              {formData.provider_type === 'gcp-vertex' && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+                  <div>
+                    <label htmlFor="gcp_project" className="label">
+                      GCP Project ID <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      id="gcp_project"
+                      type="text"
+                      value={formData.gcp_project}
+                      onChange={e =>
+                        setFormData(prev => ({
+                          ...prev,
+                          gcp_project: e.target.value,
+                        }))
+                      }
+                      className="input"
+                      placeholder="my-project-id"
+                      required
+                    />
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Your GCP project identifier
+                    </p>
+                  </div>
+
+                  <div>
+                    <label htmlFor="gcp_location" className="label">
+                      GCP Location
+                    </label>
+                    <input
+                      id="gcp_location"
+                      type="text"
+                      value={formData.gcp_location}
+                      onChange={e =>
+                        setFormData(prev => ({
+                          ...prev,
+                          gcp_location: e.target.value,
+                        }))
+                      }
+                      className="input"
+                      placeholder="us-central1"
+                    />
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Default: us-central1
+                    </p>
+                  </div>
+
+                  <div>
+                    <label htmlFor="gcp_publisher" className="label">
+                      GCP Publisher
+                    </label>
+                    <input
+                      id="gcp_publisher"
+                      type="text"
+                      value={formData.gcp_publisher}
+                      onChange={e =>
+                        setFormData(prev => ({
+                          ...prev,
+                          gcp_publisher: e.target.value,
+                        }))
+                      }
+                      className="input"
+                      placeholder="anthropic"
+                    />
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Default: anthropic
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label htmlFor="api_key" className="label">

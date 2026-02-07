@@ -141,13 +141,13 @@ if [[ ${#react_abs_files[@]} -gt 0 ]]; then
 
   # Prettier format
   echo "   Running prettier..."
-  pnpm -C web/react-admin exec prettier --write "${react_abs_files[@]}" 2>/dev/null
+  web/react-admin/node_modules/.bin/prettier --write "${react_abs_files[@]}" 2>/dev/null
   git add -- "${react_repo_files[@]}"
   echo "   ✅ Prettier formatted"
 
   # ESLint
   echo "   Running eslint..."
-  if ! pnpm -C web/react-admin exec eslint "${react_abs_files[@]}" 2>&1 | head -30; then
+  if ! (cd web/react-admin && node_modules/.bin/eslint "${react_abs_files[@]}" 2>&1 | head -30); then
     echo "   ❌ ESLint found issues"
     lint_failed=1
   else

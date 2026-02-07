@@ -545,6 +545,7 @@ mod tests {
             model_mapping: sqlx::types::Json(HashMap::new()),
             weight: 1,
             is_enabled: true,
+            provider_params: sqlx::types::Json(HashMap::new()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

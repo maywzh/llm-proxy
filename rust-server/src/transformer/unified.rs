@@ -19,6 +19,7 @@ pub enum Protocol {
     OpenAI,
     Anthropic,
     ResponseApi,
+    GcpVertex,
 }
 
 impl std::fmt::Display for Protocol {
@@ -27,6 +28,7 @@ impl std::fmt::Display for Protocol {
             Protocol::OpenAI => write!(f, "openai"),
             Protocol::Anthropic => write!(f, "anthropic"),
             Protocol::ResponseApi => write!(f, "response_api"),
+            Protocol::GcpVertex => write!(f, "gcp_vertex"),
         }
     }
 }
@@ -39,6 +41,7 @@ impl std::str::FromStr for Protocol {
             "openai" => Ok(Protocol::OpenAI),
             "anthropic" | "claude" => Ok(Protocol::Anthropic),
             "response_api" | "responses" => Ok(Protocol::ResponseApi),
+            "gcp_vertex" | "gcp-vertex" | "vertex" => Ok(Protocol::GcpVertex),
             _ => Err(format!("Unknown protocol: {}", s)),
         }
     }
@@ -50,7 +53,7 @@ impl std::str::FromStr for Protocol {
 /// to the appropriate Protocol for request/response transformation.
 ///
 /// # Arguments
-/// * `provider_type` - The provider type string (e.g., "openai", "anthropic", "azure")
+/// * `provider_type` - The provider type string (e.g., "openai", "anthropic", "azure", "gcp-vertex")
 ///
 /// # Returns
 /// The corresponding Protocol enum value. Unknown types default to OpenAI.
@@ -63,11 +66,13 @@ impl std::str::FromStr for Protocol {
 /// assert_eq!(provider_type_to_protocol("openai"), Protocol::OpenAI);
 /// assert_eq!(provider_type_to_protocol("anthropic"), Protocol::Anthropic);
 /// assert_eq!(provider_type_to_protocol("azure"), Protocol::OpenAI);
+/// assert_eq!(provider_type_to_protocol("gcp-vertex"), Protocol::GcpVertex);
 /// assert_eq!(provider_type_to_protocol("unknown"), Protocol::OpenAI);
 /// ```
 pub fn provider_type_to_protocol(provider_type: &str) -> Protocol {
     match provider_type.to_lowercase().as_str() {
         "anthropic" | "claude" => Protocol::Anthropic,
+        "gcp-vertex" | "gcp_vertex" | "vertex" => Protocol::GcpVertex,
         _ => Protocol::OpenAI,
     }
 }
@@ -752,6 +757,7 @@ mod tests {
         assert_eq!(Protocol::OpenAI.to_string(), "openai");
         assert_eq!(Protocol::Anthropic.to_string(), "anthropic");
         assert_eq!(Protocol::ResponseApi.to_string(), "response_api");
+        assert_eq!(Protocol::GcpVertex.to_string(), "gcp_vertex");
     }
 
     #[test]
@@ -766,6 +772,15 @@ mod tests {
             "response_api".parse::<Protocol>().unwrap(),
             Protocol::ResponseApi
         );
+        assert_eq!(
+            "gcp_vertex".parse::<Protocol>().unwrap(),
+            Protocol::GcpVertex
+        );
+        assert_eq!(
+            "gcp-vertex".parse::<Protocol>().unwrap(),
+            Protocol::GcpVertex
+        );
+        assert_eq!("vertex".parse::<Protocol>().unwrap(), Protocol::GcpVertex);
     }
 
     #[test]
@@ -858,6 +873,15 @@ mod tests {
         assert_eq!(provider_type_to_protocol("ANTHROPIC"), Protocol::Anthropic);
         assert_eq!(provider_type_to_protocol("claude"), Protocol::Anthropic);
         assert_eq!(provider_type_to_protocol("Claude"), Protocol::Anthropic);
+    }
+
+    #[test]
+    fn test_provider_type_to_protocol_gcp_vertex() {
+        assert_eq!(provider_type_to_protocol("gcp-vertex"), Protocol::GcpVertex);
+        assert_eq!(provider_type_to_protocol("gcp_vertex"), Protocol::GcpVertex);
+        assert_eq!(provider_type_to_protocol("vertex"), Protocol::GcpVertex);
+        assert_eq!(provider_type_to_protocol("GCP-VERTEX"), Protocol::GcpVertex);
+        assert_eq!(provider_type_to_protocol("Vertex"), Protocol::GcpVertex);
     }
 
     #[test]

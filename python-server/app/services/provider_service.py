@@ -42,6 +42,7 @@ class ProviderService:
                 weight=p.weight,
                 model_mapping=p.model_mapping,
                 provider_type=p.provider_type,
+                provider_params=p.provider_params,
             )
             for p in config.providers
         ]

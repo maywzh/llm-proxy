@@ -289,6 +289,7 @@ pub struct ProviderListResponse {
     "model_mapping": {"gpt-4": "gpt-4-turbo"},
     "weight": 1,
     "is_enabled": true,
+    "provider_params": {},
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
 }))]
@@ -307,6 +308,8 @@ pub struct ProviderResponse {
     pub weight: i32,
     /// Whether this provider is enabled
     pub is_enabled: bool,
+    /// Provider-specific parameters (e.g., GCP project, location, publisher)
+    pub provider_params: HashMap<String, serde_json::Value>,
     /// Creation timestamp (RFC 3339 format)
     pub created_at: String,
     /// Last update timestamp (RFC 3339 format)
@@ -323,6 +326,7 @@ impl From<ProviderEntity> for ProviderResponse {
             model_mapping: e.model_mapping.0,
             weight: e.weight,
             is_enabled: e.is_enabled,
+            provider_params: e.provider_params.0,
             created_at: e.created_at.to_rfc3339(),
             updated_at: e.updated_at.to_rfc3339(),
         }
@@ -338,7 +342,8 @@ impl From<ProviderEntity> for ProviderResponse {
     "api_key": "sk-your-api-key",
     "model_mapping": {"gpt-4": "gpt-4-turbo"},
     "weight": 1,
-    "is_enabled": true
+    "is_enabled": true,
+    "provider_params": {}
 }))]
 pub struct CreateProviderRequest {
     /// Unique provider key identifier
@@ -358,6 +363,9 @@ pub struct CreateProviderRequest {
     /// Whether this provider is enabled (default: true)
     #[serde(default = "default_true")]
     pub is_enabled: bool,
+    /// Provider-specific parameters (e.g., GCP project, location, publisher)
+    #[serde(default)]
+    pub provider_params: HashMap<String, serde_json::Value>,
 }
 
 /// Request to update an existing provider
@@ -365,7 +373,8 @@ pub struct CreateProviderRequest {
 #[schema(example = json!({
     "api_base": "https://api.openai.com/v1",
     "weight": 2,
-    "is_enabled": false
+    "is_enabled": false,
+    "provider_params": {}
 }))]
 pub struct UpdateProviderRequest {
     /// Provider type (e.g., "openai", "azure", "anthropic")
@@ -380,6 +389,8 @@ pub struct UpdateProviderRequest {
     pub weight: Option<i32>,
     /// Whether this provider is enabled
     pub is_enabled: Option<bool>,
+    /// Provider-specific parameters (e.g., GCP project, location, publisher)
+    pub provider_params: Option<HashMap<String, serde_json::Value>>,
 }
 
 // ============================================================================
@@ -672,6 +683,7 @@ pub async fn create_provider(
         model_mapping: req.model_mapping,
         weight: req.weight,
         is_enabled: req.is_enabled,
+        provider_params: req.provider_params,
     };
 
     let provider = db.create_provider(&create).await?;
@@ -715,6 +727,7 @@ pub async fn update_provider(
         model_mapping: req.model_mapping,
         weight: req.weight,
         is_enabled: req.is_enabled,
+        provider_params: req.provider_params,
     };
 
     let provider = db

@@ -27,6 +27,7 @@ fn provider_config_strategy() -> impl Strategy<Value = ProviderConfig> {
         weight,
         model_mapping: HashMap::new(),
         provider_type: "openai".to_string(),
+        provider_params: HashMap::new(),
     })
 }
 
@@ -103,6 +104,7 @@ proptest! {
                     weight: weight1,
                     model_mapping: HashMap::new(),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
                 ProviderConfig {
                     name: "Provider2".to_string(),
@@ -111,6 +113,7 @@ proptest! {
                     weight: weight2,
                     model_mapping: HashMap::new(),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
             ],
             server: ServerConfig::default(),
@@ -200,6 +203,7 @@ proptest! {
                     weight: 1,
                     model_mapping,
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
             ],
             server: ServerConfig::default(),
@@ -261,6 +265,7 @@ proptest! {
                     weight,
                     model_mapping: HashMap::new(),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
             ],
             server: ServerConfig::default(),
@@ -361,6 +366,7 @@ mod quickcheck_tests {
                 weight,
                 model_mapping: HashMap::new(),
                 provider_type: "openai".to_string(),
+                provider_params: HashMap::new(),
             })
             .collect();
 
@@ -397,6 +403,7 @@ mod quickcheck_tests {
                 weight: 1,
                 model_mapping: HashMap::new(),
                 provider_type: "openai".to_string(),
+                provider_params: HashMap::new(),
             })
             .collect();
 
@@ -453,6 +460,7 @@ mod complex_multi_provider_tests {
                         ("model-c", "provider0-model-c"),
                     ]),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
                 ProviderConfig {
                     name: "provider1".to_string(),
@@ -465,6 +473,7 @@ mod complex_multi_provider_tests {
                         ("model-d", "provider1-model-d"),
                     ]),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
                 ProviderConfig {
                     name: "provider2".to_string(),
@@ -476,6 +485,7 @@ mod complex_multi_provider_tests {
                         ("model-d", "provider2-model-d"),
                     ]),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
                 ProviderConfig {
                     name: "provider3".to_string(),
@@ -484,6 +494,7 @@ mod complex_multi_provider_tests {
                     weight: 4,
                     model_mapping: simple_mapping(&[("model-c", "provider3-model-c")]),
                     provider_type: "openai".to_string(),
+                    provider_params: HashMap::new(),
                 },
             ],
             server: ServerConfig::default(),
