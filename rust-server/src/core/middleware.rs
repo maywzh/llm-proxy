@@ -28,6 +28,9 @@ const MODEL_CHECK_PATHS: &[&str] = &[
     "/v2/chat/completions",
     "/v2/messages",
     "/v2/responses",
+    "/chat/completions",
+    "/messages",
+    "/responses",
 ];
 
 /// Extension type for storing model name in response
@@ -411,7 +414,10 @@ impl MetricsMiddleware {
             || endpoint == "/v2/chat/completions"
             || endpoint == "/v2/messages"
             || endpoint == "/v2/completions"
-            || endpoint == "/v2/responses";
+            || endpoint == "/v2/responses"
+            || endpoint == "/chat/completions"
+            || endpoint == "/messages"
+            || endpoint == "/responses";
         if is_llm_endpoint {
             // For streaming responses, duration is actually TTFB (time to first byte)
             // since next.run() returns when headers are ready, not when body is complete

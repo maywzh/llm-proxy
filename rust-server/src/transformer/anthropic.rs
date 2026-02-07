@@ -150,7 +150,9 @@ pub struct AnthropicRequest {
 /// Anthropic usage.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AnthropicUsage {
+    #[serde(default)]
     pub input_tokens: i32,
+    #[serde(default)]
     pub output_tokens: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<i32>,
@@ -417,7 +419,33 @@ impl AnthropicTransformer {
 
     /// Convert unified message to Anthropic message.
     fn unified_to_message(msg: &UnifiedMessage) -> AnthropicMessage {
-        let role = msg.role.to_string();
+        // Anthropic API only allows "user" and "assistant" roles.
+        // Tool results must be sent as "user" role with tool_result content blocks.
+        let role = match msg.role {
+            Role::Tool => "user".to_string(),
+            ref r => r.to_string(),
+        };
+
+        // For Role::Tool messages from OpenAI format (text content + tool_call_id),
+        // convert to Anthropic tool_result content block.
+        if msg.role == Role::Tool {
+            if let Some(ref tool_call_id) = msg.tool_call_id {
+                let result_content = msg.text_content();
+                let content_value = if result_content.is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(result_content)
+                };
+                return AnthropicMessage {
+                    role,
+                    content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                        tool_use_id: tool_call_id.clone(),
+                        content: content_value,
+                        is_error: None,
+                    }]),
+                };
+            }
+        }
 
         let content = if msg.content.len() == 1 {
             if let Some(text) = msg.content[0].as_text() {
@@ -439,7 +467,49 @@ impl AnthropicTransformer {
             )
         };
 
+        // Append tool_calls as tool_use content blocks for assistant messages.
+        // In OpenAI format, tool calls are separate from content, but Anthropic
+        // requires them as content blocks within the message.
+        // Skip tool_calls already present in content to avoid duplicates
+        // (Anthropic→Anthropic path stores them in both places).
+        let content = if !msg.tool_calls.is_empty() {
+            let mut blocks = match content {
+                AnthropicContent::Text(text) if text.is_empty() => vec![],
+                AnthropicContent::Text(text) => {
+                    vec![AnthropicContentBlock::Text { text }]
+                }
+                AnthropicContent::Blocks(blocks) => blocks,
+            };
+            let existing_ids: std::collections::HashSet<String> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    AnthropicContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            for tc in &msg.tool_calls {
+                if !existing_ids.contains(&tc.id) {
+                    blocks.push(AnthropicContentBlock::ToolUse {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        input: tc.arguments.clone(),
+                    });
+                }
+            }
+            AnthropicContent::Blocks(blocks)
+        } else {
+            content
+        };
+
         AnthropicMessage { role, content }
+    }
+
+    /// Check if Anthropic content is empty (empty string or empty blocks).
+    fn is_empty_content(content: &AnthropicContent) -> bool {
+        match content {
+            AnthropicContent::Text(text) => text.is_empty(),
+            AnthropicContent::Blocks(blocks) => blocks.is_empty(),
+        }
     }
 
     /// Convert Anthropic stop reason to unified stop reason.
@@ -547,11 +617,26 @@ impl Transformer for AnthropicTransformer {
 
     fn transform_request_in(&self, unified: &UnifiedRequest) -> Result<Value> {
         // Convert messages
-        let messages: Vec<AnthropicMessage> = unified
+        let mut messages: Vec<AnthropicMessage> = unified
             .messages
             .iter()
             .map(Self::unified_to_message)
             .collect();
+
+        // Anthropic API requires all messages to have non-empty content,
+        // except for the optional final assistant message (prefill).
+        // Fill non-final empty assistant messages with a placeholder to avoid 400 errors.
+        if messages.len() > 1 {
+            let last_idx = messages.len() - 1;
+            for (i, msg) in messages.iter_mut().enumerate() {
+                if i == last_idx {
+                    continue;
+                }
+                if msg.role == "assistant" && Self::is_empty_content(&msg.content) {
+                    msg.content = AnthropicContent::Text("null".to_string());
+                }
+            }
+        }
 
         // Convert tools with Bedrock compatibility
         // For Bedrock Claude models, if messages contain tool_use/tool_result but no tools are defined,
@@ -1180,6 +1265,25 @@ mod tests {
     }
 
     #[test]
+    fn test_streaming_message_delta_partial_usage_in() {
+        let transformer = AnthropicTransformer::new();
+
+        // Anthropic message_delta events only include output_tokens in usage,
+        // not input_tokens. This must parse without error.
+        let chunk = b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":25}}\n\n";
+        let chunks = transformer
+            .transform_stream_chunk_in(&Bytes::from_static(chunk))
+            .unwrap();
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].chunk_type, ChunkType::MessageDelta);
+        assert_eq!(chunks[0].stop_reason, Some(StopReason::EndTurn));
+        let usage = chunks[0].usage.as_ref().unwrap();
+        assert_eq!(usage.output_tokens, 25);
+        assert_eq!(usage.input_tokens, 0);
+    }
+
+    #[test]
     fn test_streaming_ping_event_in() {
         let transformer = AnthropicTransformer::new();
 
@@ -1516,5 +1620,118 @@ mod tests {
             unified.system,
             Some("cc_version=2.1.17.f12; cc_entrypoint=cli\nYou are helpful.".to_string())
         );
+    }
+
+    #[test]
+    fn test_unified_to_message_tool_calls_to_tool_use() {
+        // When a UIF message has tool_calls (from OpenAI format),
+        // they should be converted to tool_use content blocks in Anthropic format.
+        let msg = UnifiedMessage {
+            role: Role::Assistant,
+            content: vec![],
+            name: None,
+            tool_calls: vec![UnifiedToolCall {
+                id: "call_1".to_string(),
+                name: "get_weather".to_string(),
+                arguments: json!({"city": "SF"}),
+            }],
+            tool_call_id: None,
+        };
+
+        let anthropic_msg = AnthropicTransformer::unified_to_message(&msg);
+        assert_eq!(anthropic_msg.role, "assistant");
+        if let AnthropicContent::Blocks(blocks) = &anthropic_msg.content {
+            assert_eq!(blocks.len(), 1);
+            match &blocks[0] {
+                AnthropicContentBlock::ToolUse { id, name, input } => {
+                    assert_eq!(id, "call_1");
+                    assert_eq!(name, "get_weather");
+                    assert_eq!(input, &json!({"city": "SF"}));
+                }
+                _ => panic!("Expected ToolUse block"),
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_unified_to_message_no_duplicate_tool_use() {
+        // When content already contains ToolUse (Anthropic→Anthropic path),
+        // tool_calls should not create duplicates.
+        let msg = UnifiedMessage {
+            role: Role::Assistant,
+            content: vec![UnifiedContent::ToolUse {
+                id: "call_1".to_string(),
+                name: "get_weather".to_string(),
+                input: json!({"city": "SF"}),
+            }],
+            name: None,
+            tool_calls: vec![UnifiedToolCall {
+                id: "call_1".to_string(),
+                name: "get_weather".to_string(),
+                arguments: json!({"city": "SF"}),
+            }],
+            tool_call_id: None,
+        };
+
+        let anthropic_msg = AnthropicTransformer::unified_to_message(&msg);
+        if let AnthropicContent::Blocks(blocks) = &anthropic_msg.content {
+            let tool_use_count = blocks
+                .iter()
+                .filter(|b| matches!(b, AnthropicContentBlock::ToolUse { .. }))
+                .count();
+            assert_eq!(tool_use_count, 1, "Should not duplicate tool_use blocks");
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_openai_to_anthropic_tool_conversation() {
+        // Full OpenAI→Anthropic cross-protocol tool conversation.
+        use super::super::openai::OpenAITransformer;
+
+        let openai = OpenAITransformer::new();
+        let anthropic = AnthropicTransformer::new();
+
+        let request = json!({
+            "model": "claude-3-opus",
+            "messages": [
+                {"role": "user", "content": "What's the weather in SF?"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}}
+                ]},
+                {"role": "tool", "content": "Sunny, 72°F", "tool_call_id": "call_1"}
+            ],
+            "tools": [{"type": "function", "function": {"name": "get_weather", "description": "Get weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]
+        });
+
+        // OpenAI → Unified
+        let unified = openai.transform_request_out(request).unwrap();
+
+        // Unified → Anthropic
+        let anthropic_req = anthropic.transform_request_in(&unified).unwrap();
+
+        let messages = anthropic_req["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+
+        // messages[0]: user
+        assert_eq!(messages[0]["role"], "user");
+
+        // messages[1]: assistant with tool_use
+        assert_eq!(messages[1]["role"], "assistant");
+        let content1 = messages[1]["content"].as_array().unwrap();
+        assert_eq!(content1.len(), 1);
+        assert_eq!(content1[0]["type"], "tool_use");
+        assert_eq!(content1[0]["id"], "call_1");
+        assert_eq!(content1[0]["name"], "get_weather");
+
+        // messages[2]: user with tool_result
+        assert_eq!(messages[2]["role"], "user");
+        let content2 = messages[2]["content"].as_array().unwrap();
+        assert_eq!(content2.len(), 1);
+        assert_eq!(content2[0]["type"], "tool_result");
+        assert_eq!(content2[0]["tool_use_id"], "call_1");
     }
 }

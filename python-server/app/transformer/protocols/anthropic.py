@@ -170,6 +170,19 @@ class AnthropicTransformer(Transformer):
         for msg in unified.messages:
             messages.append(self._unified_to_message(msg))
 
+        # Anthropic API requires all messages to have non-empty content,
+        # except for the optional final assistant message (prefill).
+        # Fill non-final empty assistant messages with a placeholder.
+        if len(messages) > 1:
+            for i in range(len(messages) - 1):
+                if messages[i].get("role") == "assistant":
+                    c = messages[i].get("content")
+                    is_empty = (isinstance(c, str) and not c) or (
+                        isinstance(c, list) and len(c) == 0
+                    )
+                    if is_empty:
+                        messages[i]["content"] = "null"
+
         # Build tools with Bedrock compatibility
         tools: Optional[list[dict[str, Any]]] = None
         if unified.tools:
@@ -677,7 +690,24 @@ class AnthropicTransformer(Transformer):
 
     def _unified_to_message(self, msg: UnifiedMessage) -> dict[str, Any]:
         """Convert unified message to Anthropic message format."""
-        role = msg.role.value
+        # Anthropic API only allows "user" and "assistant" roles.
+        # Tool results must be sent as "user" role with tool_result content blocks.
+        role = "user" if msg.role == Role.TOOL else msg.role.value
+
+        # For Role.TOOL messages from OpenAI format (text content + tool_call_id),
+        # convert to Anthropic tool_result content block.
+        if msg.role == Role.TOOL and msg.tool_call_id:
+            text = msg.text_content()
+            return {
+                "role": role,
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": msg.tool_call_id,
+                        "content": text if text else None,
+                    }
+                ],
+            }
 
         # Build content
         if len(msg.content) == 1 and isinstance(msg.content[0], TextContent):
@@ -688,6 +718,28 @@ class AnthropicTransformer(Transformer):
                 for c in msg.content
                 if self._unified_to_content_block(c) is not None
             ]
+
+        # Append tool_calls as tool_use content blocks for assistant messages.
+        # In OpenAI format, tool calls are separate from content, but Anthropic
+        # requires them as content blocks within the message.
+        if msg.tool_calls:
+            if isinstance(content, str):
+                content = [{"type": "text", "text": content}] if content else []
+            existing_ids = {
+                b["id"]
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "tool_use"
+            }
+            for tc in msg.tool_calls:
+                if tc.id not in existing_ids:
+                    content.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": tc.arguments,
+                        }
+                    )
 
         return {"role": role, "content": content}
 
