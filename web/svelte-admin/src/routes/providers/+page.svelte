@@ -51,7 +51,7 @@
   // Filtered providers based on debounced search
   const filteredProviders = $derived(
     $providers.filter(
-      (provider) =>
+      provider =>
         provider &&
         provider.provider_key &&
         (provider.provider_key
@@ -215,17 +215,21 @@
   <!-- Create/Edit Form Modal -->
   {#if showCreateForm}
     <div
-      class="modal-overlay {isModalClosing ? 'animate-fade-out' : 'animate-fade-in'}"
+      class="modal-overlay {isModalClosing
+        ? 'animate-fade-out'
+        : 'animate-fade-in'}"
       onclick={handleCloseModal}
-      onkeydown={(e) => e.key === 'Escape' && handleCloseModal()}
+      onkeydown={e => e.key === 'Escape' && handleCloseModal()}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
-        class="modal {isModalClosing ? 'animate-modal-exit' : 'animate-modal-enter'}"
-        onclick={(e) => e.stopPropagation()}
-        onkeydown={(e) => e.stopPropagation()}
+        class="modal {isModalClosing
+          ? 'animate-modal-exit'
+          : 'animate-modal-enter'}"
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"
@@ -240,7 +244,7 @@
         </div>
 
         <form
-          onsubmit={(e) => {
+          onsubmit={e => {
             e.preventDefault();
             handleSubmit();
           }}
@@ -320,8 +324,8 @@
               id="model_mapping"
               label="Model Mapping (optional)"
               value={formData.model_mapping}
-              onChange={(next) => (formData.model_mapping = next)}
-              onErrorChange={(err) => (modelMappingError = err)}
+              onChange={next => (formData.model_mapping = next)}
+              onErrorChange={err => (modelMappingError = err)}
               rows={6}
               placeholder={`{\n  "gpt-4": "gpt-4-turbo",\n  "gpt-3.5-turbo": "gpt-3.5-turbo-16k"\n}`}
               helperText={'JSON object in format: {"source_model":"target_model"}'}
@@ -500,15 +504,15 @@
     <div
       class="modal-overlay animate-fade-in"
       onclick={() => (deleteConfirm = null)}
-      onkeydown={(e) => e.key === 'Escape' && (deleteConfirm = null)}
+      onkeydown={e => e.key === 'Escape' && (deleteConfirm = null)}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
         class="modal animate-modal-enter"
-        onclick={(e) => e.stopPropagation()}
-        onkeydown={(e) => e.stopPropagation()}
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"

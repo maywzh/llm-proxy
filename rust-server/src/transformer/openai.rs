@@ -845,31 +845,30 @@ impl Transformer for OpenAITransformer {
         match chunk.chunk_type {
             ChunkType::ContentBlockStart => {
                 // Handle tool_use content block start
-                if let Some(ref content_block) = chunk.content_block {
-                    if let UnifiedContent::ToolUse { id, name, .. } = content_block {
-                        let openai_chunk = json!({
-                            "id": "chatcmpl-stream",
-                            "object": "chat.completion.chunk",
-                            "created": chrono::Utc::now().timestamp(),
-                            "model": "model",
-                            "choices": [{
-                                "index": 0,
-                                "delta": {
-                                    "tool_calls": [{
-                                        "index": chunk.index,
-                                        "id": id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": name,
-                                            "arguments": ""
-                                        }
-                                    }]
-                                },
-                                "finish_reason": null
-                            }]
-                        });
-                        return Ok(format!("data: {}\n\n", openai_chunk));
-                    }
+                if let Some(UnifiedContent::ToolUse { id, name, .. }) = chunk.content_block.as_ref()
+                {
+                    let openai_chunk = json!({
+                        "id": "chatcmpl-stream",
+                        "object": "chat.completion.chunk",
+                        "created": chrono::Utc::now().timestamp(),
+                        "model": "model",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [{
+                                    "index": chunk.index,
+                                    "id": id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": ""
+                                    }
+                                }]
+                            },
+                            "finish_reason": null
+                        }]
+                    });
+                    return Ok(format!("data: {}\n\n", openai_chunk));
                 }
                 Ok(String::new())
             }

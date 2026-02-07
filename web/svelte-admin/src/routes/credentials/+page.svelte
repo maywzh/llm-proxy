@@ -50,10 +50,12 @@
 
   const filteredCredentials = $derived(
     $credentials.filter(
-      (credential) =>
+      credential =>
         credential &&
         credential.name &&
-        (credential.name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+        (credential.name
+          .toLowerCase()
+          .includes(debouncedSearch.toLowerCase()) ||
           credential.key_preview
             ?.toLowerCase()
             .includes(debouncedSearch.toLowerCase()))
@@ -104,8 +106,8 @@
     // Update allowed models from text
     formData.allowed_models = allowedModelsText
       .split('\n')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
 
     if (editingCredential) {
       const updateData = {
@@ -209,17 +211,21 @@
   <!-- Create/Edit Form Modal -->
   {#if showCreateForm}
     <div
-      class="modal-overlay {isModalClosing ? 'animate-fade-out' : 'animate-fade-in'}"
+      class="modal-overlay {isModalClosing
+        ? 'animate-fade-out'
+        : 'animate-fade-in'}"
       onclick={handleCloseModal}
-      onkeydown={(e) => e.key === 'Escape' && handleCloseModal()}
+      onkeydown={e => e.key === 'Escape' && handleCloseModal()}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
-        class="modal {isModalClosing ? 'animate-modal-exit' : 'animate-modal-enter'}"
-        onclick={(e) => e.stopPropagation()}
-        onkeydown={(e) => e.stopPropagation()}
+        class="modal {isModalClosing
+          ? 'animate-modal-exit'
+          : 'animate-modal-enter'}"
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"
@@ -234,7 +240,7 @@
         </div>
 
         <form
-          onsubmit={(e) => {
+          onsubmit={e => {
             e.preventDefault();
             handleSubmit();
           }}
@@ -493,15 +499,15 @@
     <div
       class="modal-overlay animate-fade-in"
       onclick={() => (deleteConfirm = null)}
-      onkeydown={(e) => e.key === 'Escape' && (deleteConfirm = null)}
+      onkeydown={e => e.key === 'Escape' && (deleteConfirm = null)}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
         class="modal animate-modal-enter"
-        onclick={(e) => e.stopPropagation()}
-        onkeydown={(e) => e.stopPropagation()}
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"
@@ -547,15 +553,15 @@
     <div
       class="modal-overlay animate-fade-in"
       onclick={() => (rotateConfirm = null)}
-      onkeydown={(e) => e.key === 'Escape' && (rotateConfirm = null)}
+      onkeydown={e => e.key === 'Escape' && (rotateConfirm = null)}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
         class="modal animate-modal-enter"
-        onclick={(e) => e.stopPropagation()}
-        onkeydown={(e) => e.stopPropagation()}
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"
@@ -602,15 +608,15 @@
     <div
       class="modal-overlay animate-fade-in"
       onclick={() => (newRotatedKey = null)}
-      onkeydown={(e) => e.key === 'Escape' && (newRotatedKey = null)}
+      onkeydown={e => e.key === 'Escape' && (newRotatedKey = null)}
       role="button"
       tabindex="0"
       aria-label="Close modal"
     >
       <div
         class="modal animate-modal-enter"
-        onclick={(e) => e.stopPropagation()}
-        onkeydown={(e) => e.stopPropagation()}
+        onclick={e => e.stopPropagation()}
+        onkeydown={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         tabindex="-1"

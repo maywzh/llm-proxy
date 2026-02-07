@@ -357,7 +357,7 @@ fn test_response_api_to_openai_with_instructions() {
 
     // Instructions should become system message
     let messages = openai_request["messages"].as_array().unwrap();
-    assert!(messages.len() >= 1);
+    assert!(!messages.is_empty());
 
     // Check for system message
     let has_system = messages.iter().any(|m| m["role"] == "system");

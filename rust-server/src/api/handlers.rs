@@ -488,7 +488,7 @@ fn select_provider(
     let mapped_model = provider
         .model_mapping
         .get(model_label)
-        .cloned()
+        .map(|v| v.mapped_model().to_string())
         .unwrap_or_else(|| model_label.to_string());
     generation_data.mapped_model = mapped_model;
 
@@ -1548,11 +1548,26 @@ pub async fn list_model_info(
                     if !model_allowed_for_info(&model_name, &allowed_models) {
                         continue;
                     }
-                    let mapped_model = provider
-                        .model_mapping
-                        .get(&model_name)
-                        .cloned()
+
+                    // Get value from model_mapping
+                    let value = provider.model_mapping.get(&model_name);
+                    let mapped_model = value
+                        .map(|v| v.mapped_model().to_string())
                         .unwrap_or_default();
+
+                    // Build base model_info
+                    let mut model_info = ModelInfoDetails::new(
+                        provider.name.clone(),
+                        provider.provider_type.clone(),
+                        provider.weight,
+                        crate::api::models::is_pattern(&model_name),
+                    );
+
+                    // Apply extended metadata if available
+                    if let Some(metadata) = value.and_then(|v| v.metadata()) {
+                        model_info = model_info.with_metadata(metadata);
+                    }
+
                     data.push(ModelInfoEntry {
                         model_name: model_name.clone(),
                         litellm_params: LiteLlmParams {
@@ -1560,12 +1575,7 @@ pub async fn list_model_info(
                             api_base: provider.api_base.clone(),
                             custom_llm_provider: provider.provider_type.clone(),
                         },
-                        model_info: ModelInfoDetails {
-                            provider_name: provider.name.clone(),
-                            provider_type: provider.provider_type.clone(),
-                            weight: provider.weight,
-                            is_pattern: crate::api::models::is_pattern(&model_name),
-                        },
+                        model_info,
                     });
                 }
             }
