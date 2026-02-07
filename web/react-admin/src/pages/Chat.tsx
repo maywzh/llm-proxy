@@ -19,6 +19,7 @@ import type {
   ChatContentPart,
 } from '../types';
 import { renderMarkdownToHtml } from '../utils/markdown';
+import { renderMermaidBlocks } from '../utils/mermaid';
 import { ChatMessageActions } from '../components/ChatMessageActions';
 import { ChatComposer } from '../components/ChatComposer';
 import { useChatSettings } from '../stores/chat-settings';
@@ -157,6 +158,7 @@ const Chat: React.FC = () => {
   const [sharedIndex, setSharedIndex] = useState<number | null>(null);
   const shareResetTimerRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesAreaRef = useRef<HTMLDivElement>(null);
   const credentialKeyInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -217,6 +219,12 @@ const Chat: React.FC = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      renderMermaidBlocks(messagesAreaRef.current);
+    }
+  });
 
   useEffect(() => {
     if (showSettings && isEditingCredentialKey) {
@@ -606,7 +614,7 @@ const Chat: React.FC = () => {
           </button>
         )}
         {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto" ref={messagesAreaRef}>
           <div className="mx-auto w-full max-w-3xl h-full px-4 py-4">
             {messages.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center">

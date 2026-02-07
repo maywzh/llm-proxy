@@ -3,6 +3,10 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
+  --font-mono:
+    'Share Tech Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+
   /* Primary Colors */
   --color-primary-50: #eff6ff;
   --color-primary-100: #dbeafe;
@@ -45,6 +49,8 @@
 @layer base {
   html {
     font-family:
+      'Quantico',
+      'Noto Serif SC',
       system-ui,
       -apple-system,
       BlinkMacSystemFont,
@@ -53,6 +59,14 @@
       'Helvetica Neue',
       Arial,
       sans-serif;
+  }
+
+  code,
+  pre,
+  .font-mono {
+    font-family:
+      'Share Tech Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      'Liberation Mono', 'Courier New', monospace;
   }
 
   body {
@@ -438,11 +452,11 @@
   }
 
   .markdown :where(code) {
-    @apply font-mono text-[0.875em] px-1 py-0.5 rounded bg-black/5 dark:bg-white/10;
+    @apply font-mono text-[0.95em] px-1 py-0.5 rounded bg-black/5 dark:bg-white/10;
   }
 
   .markdown :where(pre) {
-    @apply my-3 overflow-x-auto text-sm whitespace-pre;
+    @apply my-3 overflow-x-auto text-base whitespace-pre;
   }
 
   .markdown :where(pre code) {
@@ -451,6 +465,18 @@
 
   .markdown :where(pre code.hljs) {
     @apply block p-3 rounded-lg;
+  }
+
+  .markdown .mermaid-block {
+    @apply my-3 flex justify-center overflow-x-auto rounded-lg p-4 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700;
+  }
+
+  .markdown .mermaid-block svg {
+    @apply max-w-full h-auto;
+  }
+
+  .markdown .mermaid-block.mermaid-error {
+    @apply font-mono text-sm text-red-600 dark:text-red-400 whitespace-pre-wrap justify-start;
   }
 
   html:not(.dark) .markdown .hljs {
@@ -632,7 +658,7 @@
   }
 
   .markdown :where(kbd) {
-    @apply font-mono text-[0.85em] px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-600 bg-white/40 dark:bg-black/20;
+    @apply font-mono text-[0.9em] px-1.5 py-0.5 rounded border border-gray-300 dark:border-gray-600 bg-white/40 dark:bg-black/20;
   }
 
   .markdown :where(hr) {
