@@ -188,6 +188,9 @@ class CrossProtocolStreamState:
     message_id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:24]}")
     usage: Optional[UnifiedUsage] = None
     stop_reason: Optional[StopReason] = None
+    # Provider-reported input_tokens from message_start event
+    # (Anthropic sends input_tokens in message_start, not message_delta)
+    provider_input_tokens: Optional[int] = None
     # Cache tool info (id, name) by block index for accurate content_block_start synthesis
     tool_info_cache: dict[int, ToolInfo] = field(default_factory=dict)
     # Input tokens for usage tracking (pre-calculated)
@@ -267,6 +270,12 @@ class CrossProtocolStreamState:
                     if chunk.message:
                         self.model = chunk.message.model
                         self.message_id = chunk.message.id
+                        # Capture input_tokens from message_start usage
+                        # (Anthropic sends input_tokens here, not in message_delta)
+                        if chunk.message.usage and chunk.message.usage.input_tokens > 0:
+                            self.provider_input_tokens = (
+                                chunk.message.usage.input_tokens
+                            )
                     self.message_started = True
                     result.append(chunk)
                     # Emit ping event after message_start for Anthropic compatibility
@@ -314,6 +323,15 @@ class CrossProtocolStreamState:
 
                 # Get final usage (prioritizing provider usage)
                 final_usage = self.get_final_usage(chunk.usage)
+
+                # Merge input_tokens from message_start if final usage has zero input_tokens
+                # (Anthropic sends input_tokens in message_start, output_tokens in message_delta)
+                if (
+                    final_usage
+                    and final_usage.input_tokens == 0
+                    and self.provider_input_tokens is not None
+                ):
+                    final_usage.input_tokens = self.provider_input_tokens
 
                 # Create a new chunk with final usage
                 output_chunk = chunk.model_copy()
@@ -420,6 +438,9 @@ class CrossProtocolStreamState:
         if not self.message_delta_emitted and self.message_started:
             # Use accumulated usage
             final_usage = self.usage or UnifiedUsage()
+            # Merge input_tokens from message_start if needed
+            if final_usage.input_tokens == 0 and self.provider_input_tokens is not None:
+                final_usage.input_tokens = self.provider_input_tokens
             result.append(
                 UnifiedStreamChunk.message_delta(StopReason.END_TURN, final_usage)
             )

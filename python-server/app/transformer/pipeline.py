@@ -9,6 +9,7 @@ from typing import Any, Optional
 from .base import TransformContext
 from .registry import TransformerRegistry
 from .unified import (
+    Protocol,
     UnifiedRequest,
     UnifiedResponse,
     UnifiedStreamChunk,
@@ -354,10 +355,22 @@ class TransformPipeline:
             payload = raw.copy()
             if ctx.mapped_model and ctx.mapped_model != ctx.original_model:
                 payload["model"] = ctx.mapped_model
+
+            # Sanitize empty assistant messages for Anthropic-compatible protocols.
+            # Anthropic API rejects non-final assistant messages with empty content.
+            if ctx.provider_protocol in (Protocol.ANTHROPIC, Protocol.GCP_VERTEX):
+                _sanitize_empty_assistant_messages(payload)
+
+            # Strip thinking blocks to prevent cross-provider signature validation failures
+            _strip_thinking_blocks(payload)
+
             return payload, True
         else:
             # Full transformation
-            return self.transform_request(raw, ctx), False
+            payload = self.transform_request(raw, ctx)
+            # Strip thinking blocks to prevent cross-provider signature validation failures
+            _strip_thinking_blocks(payload)
+            return payload, False
 
     def transform_response_with_bypass(
         self, raw: dict[str, Any], ctx: TransformContext
@@ -426,3 +439,53 @@ class TransformPipeline:
         """
         client_transformer = self._registry.get_or_error(ctx.client_protocol)
         return client_transformer.transform_stream_chunk_out(chunk, ctx.client_protocol)
+
+
+# =============================================================================
+# Sanitization Helpers
+# =============================================================================
+
+
+def _strip_thinking_blocks(payload: dict[str, Any]) -> None:
+    """
+    Strip thinking blocks from request payload.
+
+    Thinking blocks contain provider-specific signatures that cannot be reused
+    across providers. When the proxy routes requests to different provider
+    instances, the original signatures become invalid and cause 400 errors.
+    We remove entire thinking blocks rather than just signatures, because
+    a thinking block without a signature is also invalid.
+    """
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            msg["content"] = [
+                block
+                for block in content
+                if not (isinstance(block, dict) and block.get("type") == "thinking")
+            ]
+
+
+def _sanitize_empty_assistant_messages(payload: dict[str, Any]) -> None:
+    """
+    Sanitize empty assistant messages in Anthropic-format payloads.
+
+    Anthropic API requires all messages to have non-empty content,
+    except for the optional final assistant message (used for prefill).
+    Replaces empty content in non-final assistant messages with a placeholder.
+    """
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or len(messages) <= 1:
+        return
+    for i in range(len(messages) - 1):
+        if messages[i].get("role") != "assistant":
+            continue
+        c = messages[i].get("content")
+        is_empty = (isinstance(c, str) and not c) or (
+            isinstance(c, list) and len(c) == 0
+        )
+        if is_empty:
+            messages[i]["content"] = "null"

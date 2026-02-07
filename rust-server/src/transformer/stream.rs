@@ -197,6 +197,9 @@ pub struct CrossProtocolStreamState {
     token_counter: OutboundTokenCounter,
     /// Accumulated stop_reason for final message_delta
     pub stop_reason: Option<super::StopReason>,
+    /// Provider-reported input_tokens from message_start event
+    /// (Anthropic sends input_tokens in message_start, not message_delta)
+    pub provider_input_tokens: Option<i32>,
     /// Cached tool information for synthesizing content_block_start
     pub tool_info_cache: std::collections::HashMap<usize, ToolInfo>,
 }
@@ -218,6 +221,7 @@ impl Default for CrossProtocolStreamState {
             ),
             token_counter: OutboundTokenCounter::new_lazy(""),
             stop_reason: None,
+            provider_input_tokens: None,
             tool_info_cache: std::collections::HashMap::new(),
         }
     }
@@ -312,6 +316,11 @@ impl CrossProtocolStreamState {
                         if let Some(ref msg) = chunk.message {
                             self.model = msg.model.clone();
                             self.message_id = msg.id.clone();
+                            // Capture input_tokens from message_start usage
+                            // (Anthropic sends input_tokens here, not in message_delta)
+                            if msg.usage.input_tokens > 0 {
+                                self.provider_input_tokens = Some(msg.usage.input_tokens);
+                            }
                         }
                         self.message_started = true;
                         result.push(chunk);
@@ -388,7 +397,17 @@ impl CrossProtocolStreamState {
                     );
 
                     // Get final usage (prioritizing provider usage)
-                    let final_usage = self.get_final_usage(chunk.usage.clone());
+                    let mut final_usage = self.get_final_usage(chunk.usage.clone());
+
+                    // Merge input_tokens from message_start if final usage has zero input_tokens
+                    // (Anthropic sends input_tokens in message_start, output_tokens in message_delta)
+                    if let (Some(ref mut usage), Some(input_tokens)) =
+                        (&mut final_usage, self.provider_input_tokens)
+                    {
+                        if usage.input_tokens == 0 {
+                            usage.input_tokens = input_tokens;
+                        }
+                    }
 
                     // DEBUG: Log final usage after get_final_usage
                     tracing::debug!(
@@ -547,7 +566,13 @@ impl CrossProtocolStreamState {
 
         // Emit message_delta if not yet emitted
         if !self.message_delta_emitted && self.message_started {
-            let usage = self.token_counter.finalize();
+            let mut usage = self.token_counter.finalize();
+            // Merge input_tokens from message_start if needed
+            if usage.input_tokens == 0 {
+                if let Some(input_tokens) = self.provider_input_tokens {
+                    usage.input_tokens = input_tokens;
+                }
+            }
             tracing::debug!(
                 usage = ?usage,
                 "finalize(): emitting message_delta with usage"

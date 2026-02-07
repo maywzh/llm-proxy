@@ -382,11 +382,11 @@ class TestErrorHandling:
             headers={"Authorization": "Bearer test-credential-key"},
         )
 
-        # Backend error is passed through faithfully with original status code
+        # Backend error is normalized into standard error format
         assert response.status_code == 503
         data = response.json()
         assert "error" in data
-        assert data["error"] == "Service unavailable"
+        assert data["error"]["message"] == "Service unavailable"
 
     @respx.mock
     def test_provider_streaming_error(self, app_client):

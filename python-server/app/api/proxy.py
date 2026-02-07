@@ -41,6 +41,7 @@ from app.core.metrics import (
     BYPASS_STREAMING_BYTES,
     CROSS_PROTOCOL_REQUESTS,
     CLIENT_DISCONNECTS,
+    TOKEN_USAGE,
 )
 from app.core.stream_metrics import (
     StreamStats,
@@ -617,7 +618,10 @@ async def _create_cross_protocol_stream(
                             final_chunk, ctx
                         )
                         yield formatted.encode("utf-8")
-                    yield format_sse_done().encode("utf-8")
+                    # Add [DONE] marker only if finalize didn't emit MessageStop
+                    # (finalize emits MessageStop which OpenAI transformer converts to [DONE])
+                    if not stream_state.message_stopped:
+                        yield format_sse_done().encode("utf-8")
 
                     # Capture final usage for metrics recording
                     if usage_tracker is not None:
@@ -966,6 +970,16 @@ async def _handle_non_streaming_request(
 
     response_data = response.json()
 
+    # Record token usage metrics from provider response
+    _record_token_usage(
+        response_data,
+        ctx,
+        effective_model or "unknown",
+        provider.name,
+        generation_data,
+        extract_client(request),
+    )
+
     # Log provider response to JSONL
     log_provider_response(
         request_id=ctx.request_id,
@@ -994,6 +1008,63 @@ async def _handle_non_streaming_request(
     return _attach_response_metadata(
         success_response, request.state.model, provider.name
     )
+
+
+def _record_token_usage(
+    response_data: dict[str, Any],
+    ctx: TransformContext,
+    model_name: str,
+    provider_name: str,
+    generation_data: GenerationData,
+    client: str,
+) -> None:
+    """Extract and record token usage metrics from provider response.
+
+    Handles both OpenAI (prompt_tokens/completion_tokens/total_tokens) and
+    Anthropic (input_tokens/output_tokens) usage formats.
+    """
+    usage = response_data.get("usage", {})
+    if not usage:
+        return
+
+    api_key_name = get_api_key_name()
+
+    # Normalize field names across protocols
+    input_t = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+    output_t = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+    total_t = usage.get("total_tokens") or (input_t + output_t)
+
+    # Update generation_data for Langfuse
+    generation_data.prompt_tokens = input_t
+    generation_data.completion_tokens = output_t
+    generation_data.total_tokens = total_t
+
+    if input_t:
+        TOKEN_USAGE.labels(
+            model=model_name,
+            provider=provider_name,
+            token_type="prompt",
+            api_key_name=api_key_name,
+            client=client,
+        ).inc(input_t)
+
+    if output_t:
+        TOKEN_USAGE.labels(
+            model=model_name,
+            provider=provider_name,
+            token_type="completion",
+            api_key_name=api_key_name,
+            client=client,
+        ).inc(output_t)
+
+    if total_t:
+        TOKEN_USAGE.labels(
+            model=model_name,
+            provider=provider_name,
+            token_type="total",
+            api_key_name=api_key_name,
+            client=client,
+        ).inc(total_t)
 
 
 # =============================================================================
