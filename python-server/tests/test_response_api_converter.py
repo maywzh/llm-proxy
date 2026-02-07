@@ -1,7 +1,5 @@
 """Tests for Response API converter."""
 
-import pytest
-
 from app.services.response_api_converter import (
     ResponseApiRequest,
     ResponseApiResponse,
@@ -124,7 +122,10 @@ class TestOpenaiToResponseApiResponse:
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": "Hello! How can I help?"},
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello! How can I help?",
+                    },
                     "finish_reason": "stop",
                 }
             ],
@@ -306,7 +307,11 @@ class TestConvertResponseToolsToOpenai:
 
     def test_non_function_tool_skipped(self):
         tools = [
-            {"type": "computer_use_preview", "display_width": 1920, "display_height": 1080},
+            {
+                "type": "computer_use_preview",
+                "display_width": 1920,
+                "display_height": 1080,
+            },
             {"type": "web_search_preview"},
         ]
         result = _convert_response_tools_to_openai(tools)

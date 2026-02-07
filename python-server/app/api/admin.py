@@ -4,7 +4,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 from loguru import logger
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -24,7 +24,6 @@ from app.core.database import (
     create_credential,
     update_credential,
     delete_credential,
-    hash_key,
     create_key_preview,
 )
 

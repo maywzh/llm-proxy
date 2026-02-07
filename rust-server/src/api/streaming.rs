@@ -22,6 +22,7 @@ use crate::core::metrics::get_metrics;
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::tokenizer::{count_tokens_hf, get_hf_tokenizer, select_tokenizer, TokenizerType};
 use crate::core::OutboundTokenCounter;
+use crate::core::StreamCancelHandle;
 use crate::transformer::unified::UnifiedUsage;
 use axum::body::Body;
 use axum::response::Response as AxumResponse;
@@ -37,6 +38,8 @@ use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::select;
+use tokio::sync::watch;
 
 // Global cache for BPE encoders to avoid repeated initialization
 // Uses DashMap for lock-free reads and fine-grained locking on writes
@@ -132,6 +135,8 @@ struct StreamState {
     request_id: String,
     /// SSE line buffer for handling TCP fragmentation
     sse_line_buffer: String,
+    /// Cancellation receiver
+    cancel_rx: Option<watch::Receiver<bool>>,
 }
 
 impl StreamState {
@@ -146,6 +151,7 @@ impl StreamState {
         client: String,
         ttft_timeout_secs: Option<u64>,
         generation_data: Option<GenerationData>,
+        cancel_rx: Option<watch::Receiver<bool>>,
     ) -> Self {
         // Create OutboundTokenCounter with pre-calculated input tokens
         let token_counter = OutboundTokenCounter::new(&original_model, input_tokens as i32);
@@ -172,6 +178,7 @@ impl StreamState {
             accumulated_sse_data: Vec::new(),
             request_id: String::new(),
             sse_line_buffer: String::new(),
+            cancel_rx,
         }
     }
 }
@@ -914,12 +921,16 @@ pub async fn create_sse_stream(
     endpoint: Option<String>,
     request_payload: Option<Value>,
     client: Option<String>,
+    cancel_handle: Option<StreamCancelHandle>,
 ) -> Result<AxumResponse, AppError> {
     let stream = response.bytes_stream();
 
     // Get api_key_name from context
     let api_key_name = get_api_key_name();
     let client_name = client.unwrap_or_else(|| "unknown".to_string());
+
+    // Get cancellation receiver if handle provided
+    let cancel_rx = cancel_handle.map(|h| h.subscribe());
 
     // Create initial state with TTFT timeout config - connection established immediately!
     // TTFT timeout is handled inside the stream, not before returning the response.
@@ -933,6 +944,7 @@ pub async fn create_sse_stream(
         client_name,
         ttft_timeout_secs,
         generation_data,
+        cancel_rx,
     );
 
     // Set JSONL logging parameters (endpoint and request_payload are no longer needed - request is logged separately)
@@ -943,15 +955,35 @@ pub async fn create_sse_stream(
 
     // Create the byte stream using unfold - TTFT timeout handled inside
     let byte_stream = futures::stream::unfold(initial_state, |mut state| async move {
+        // NOTE: We do NOT check cancellation synchronously here.
+        // The initial check can cause false positives because the cancel signal
+        // may be set by DisconnectStream's Drop handler even for normal completions.
+        // Instead, we only detect disconnects via select! which properly races
+        // against data arrival.
+
         // Get the next chunk, applying TTFT timeout for the first chunk only
+        // We use select! to handle cancellation during await
         let chunk_result = if !state.first_chunk_received {
             // First chunk - apply TTFT timeout if configured
             if let Some(timeout_secs) = state.ttft_timeout_secs {
-                match tokio::time::timeout(Duration::from_secs(timeout_secs), state.stream.next())
-                    .await
-                {
-                    Ok(chunk) => chunk,
-                    Err(_) => {
+                let stream_future = state.stream.next();
+                let timeout_future = tokio::time::sleep(Duration::from_secs(timeout_secs));
+
+                // Create cancellation future
+                let cancel_future = async {
+                    if let Some(rx) = &mut state.cancel_rx {
+                        let _ = rx.changed().await;
+                        true
+                    } else {
+                        futures::future::pending::<bool>().await
+                    }
+                };
+
+                select! {
+                    chunk = stream_future => {
+                        chunk
+                    }
+                    _ = timeout_future => {
                         // TTFT timeout - send error event and terminate stream
                         tracing::warn!(
                             "TTFT timeout: first token not received within {} seconds from {}",
@@ -983,13 +1015,71 @@ pub async fn create_sse_stream(
                             state,
                         ));
                     }
+                    _ = cancel_future => {
+                        tracing::info!(
+                            provider = %state.provider_name,
+                            model = %state.original_model,
+                            request_id = %state.request_id,
+                            "Client disconnected during TTFT wait, cancelling stream"
+                        );
+                        get_metrics().client_disconnects_total.inc();
+                        finalize_stream(&mut state);
+                        return None;
+                    }
                 }
             } else {
-                state.stream.next().await
+                // No timeout, but still need to check cancellation
+                let stream_future = state.stream.next();
+                let cancel_future = async {
+                    if let Some(rx) = &mut state.cancel_rx {
+                        let _ = rx.changed().await;
+                        true
+                    } else {
+                        futures::future::pending::<bool>().await
+                    }
+                };
+
+                select! {
+                    chunk = stream_future => chunk,
+                    _ = cancel_future => {
+                        tracing::info!(
+                            provider = %state.provider_name,
+                            model = %state.original_model,
+                            request_id = %state.request_id,
+                            "Client disconnected, cancelling stream"
+                        );
+                        get_metrics().client_disconnects_total.inc();
+                        finalize_stream(&mut state);
+                        return None;
+                    }
+                }
             }
         } else {
-            // Subsequent chunks - no timeout
-            state.stream.next().await
+            // Subsequent chunks - no timeout, but check cancellation
+            let stream_future = state.stream.next();
+            let cancel_future = async {
+                if let Some(rx) = &mut state.cancel_rx {
+                    let _ = rx.changed().await;
+                    true
+                } else {
+                    futures::future::pending::<bool>().await
+                }
+            };
+
+            select! {
+                chunk = stream_future => chunk,
+                _ = cancel_future => {
+                    tracing::info!(
+                        provider = %state.provider_name,
+                        model = %state.original_model,
+                        request_id = %state.request_id,
+                        "Client disconnected, cancelling stream"
+                    );
+                    get_metrics().client_disconnects_total.inc();
+                    finalize_stream(&mut state);
+                    return None;
+                }
+            }
         };
 
         match chunk_result {
@@ -1712,6 +1802,7 @@ mod tests {
             "test-client".to_string(),
             Some(30), // ttft_timeout_secs
             None,     // generation_data (Langfuse disabled)
+            None,     // cancel_rx
         );
 
         // Verify token_counter is initialized with input_tokens
@@ -1751,6 +1842,7 @@ mod tests {
             "test-client".to_string(),
             Some(30),
             Some(gen_data),
+            None, // cancel_rx
         );
 
         assert!(state.generation_data.is_some());
@@ -1928,6 +2020,7 @@ mod tests {
             "test-client".to_string(),
             None,
             None,
+            None, // cancel_rx
         );
 
         // SSE line buffer should be initialized empty
@@ -1948,6 +2041,7 @@ mod tests {
             "test-client".to_string(),
             None,
             None,
+            None, // cancel_rx
         );
 
         // Send incomplete SSE event (no \n\n terminator)
@@ -1974,6 +2068,7 @@ mod tests {
             "test-client".to_string(),
             None,
             None,
+            None, // cancel_rx
         );
 
         // Send complete SSE event with \n\n terminator
@@ -2000,6 +2095,7 @@ mod tests {
             "test-client".to_string(),
             None,
             None,
+            None, // cancel_rx
         );
 
         // First chunk: incomplete event
@@ -2033,6 +2129,7 @@ mod tests {
             "test-client".to_string(),
             None,
             None,
+            None, // cancel_rx
         );
 
         // Send two complete events in one chunk
@@ -2060,6 +2157,7 @@ mod tests {
             "test-client".to_string(),
             None,
             None,
+            None, // cancel_rx
         );
 
         // Send [DONE] marker
@@ -2084,6 +2182,7 @@ mod tests {
             "test-client".to_string(),
             None,
             None,
+            None, // cancel_rx
         );
 
         // Process remaining buffer with valid JSON
@@ -2109,6 +2208,7 @@ mod tests {
             "test-client".to_string(),
             None,
             None,
+            None, // cancel_rx
         );
 
         // Empty remaining buffer

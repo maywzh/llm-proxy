@@ -1,7 +1,7 @@
 """Tests for V2 API endpoints authentication and model permissions."""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from httpx import AsyncClient
 
 from app.main import app
@@ -136,9 +136,12 @@ class TestV2Models:
         raw_key = "test-key"
         hashed_key = hash_key(raw_key)
 
-        with patch("app.core.config.get_config") as mock_get_config, patch(
-            "app.services.provider_service.get_provider_service"
-        ) as mock_get_provider_svc:
+        with (
+            patch("app.core.config.get_config") as mock_get_config,
+            patch(
+                "app.services.provider_service.get_provider_service"
+            ) as mock_get_provider_svc,
+        ):
             mock_credential = MagicMock()
             mock_credential.credential_key = hashed_key
             mock_credential.name = "test-key"
@@ -189,9 +192,7 @@ class TestV2ModelInfo:
             mock_get_config.return_value = mock_config
 
             async with AsyncClient(app=app, base_url="http://test") as client:
-                response = await client.get(
-                    "/v2/model/info", params={"model": "gpt-4"}
-                )
+                response = await client.get("/v2/model/info", params={"model": "gpt-4"})
                 assert response.status_code == 401
 
 

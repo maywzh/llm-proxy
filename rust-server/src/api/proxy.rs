@@ -19,6 +19,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use crate::api::claude_models::{ClaudeTokenCountRequest, ClaudeTokenCountResponse};
+use crate::api::disconnect::DisconnectStream;
 use crate::api::gemini3::{normalize_request_payload, strip_gemini3_provider_fields};
 use crate::api::handlers::AppState;
 use crate::api::models::{
@@ -39,6 +40,7 @@ use crate::core::middleware::{
 };
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::utils::{get_key_name, strip_provider_suffix};
+use crate::core::StreamCancelHandle;
 use crate::core::{AppError, Result};
 use crate::transformer::{
     provider_type_to_protocol, CrossProtocolStreamState, Protocol, ProtocolDetector,
@@ -721,6 +723,10 @@ async fn handle_streaming_proxy_response(
             None
         };
 
+        // Create cancellation handle for streaming requests
+        let cancel_handle = Some(StreamCancelHandle::new());
+        let cancel_handle_clone = cancel_handle.clone();
+
         match create_sse_stream(
             response,
             model_label.clone(),
@@ -733,6 +739,7 @@ async fn handle_streaming_proxy_response(
             Some(endpoint.to_string()),
             Some(request_payload.clone()),
             Some(client.clone()),
+            cancel_handle_clone,
         )
         .await
         {
@@ -742,6 +749,17 @@ async fn handle_streaming_proxy_response(
                 resp.extensions_mut().insert(ProviderName(provider_name));
                 resp.extensions_mut()
                     .insert(ApiKeyName(api_key_name.to_string()));
+
+                // Wrap body with DisconnectStream to detect client disconnects
+                if let Some(handle) = cancel_handle {
+                    let (parts, body) = resp.into_parts();
+                    let new_body = Body::from_stream(DisconnectStream {
+                        stream: body.into_data_stream(),
+                        cancel_handle: handle,
+                    });
+                    resp = Response::from_parts(parts, new_body);
+                }
+
                 Ok(resp)
             }
             Err(e) => {
@@ -763,6 +781,8 @@ async fn handle_streaming_proxy_response(
         // Use unfold pattern to enable metrics recording at stream end
         use futures::stream::Stream;
         use std::pin::Pin;
+        use tokio::select;
+        use tokio::sync::watch;
 
         // DEBUG: Log that we're entering cross-protocol streaming path
         tracing::debug!(
@@ -771,6 +791,12 @@ async fn handle_streaming_proxy_response(
             provider_protocol = %provider_protocol,
             "Entering cross-protocol streaming path"
         );
+
+        // Create cancellation handle for cross-protocol streaming
+        let cancel_handle = StreamCancelHandle::new();
+        let cancel_rx = cancel_handle.subscribe();
+        // Clone the handle so we can mark it completed from inside the unfold closure
+        let cancel_handle_for_completion = cancel_handle.clone();
 
         struct CrossProtocolStreamingState {
             stream: Pin<
@@ -791,6 +817,10 @@ async fn handle_streaming_proxy_response(
             finalized: bool,
             // SSE line buffer for handling TCP fragmentation
             sse_line_buffer: String,
+            // Cancellation receiver for client disconnect detection
+            cancel_rx: watch::Receiver<bool>,
+            // Handle to mark completion when stream ends normally
+            cancel_handle: StreamCancelHandle,
         }
 
         let streaming_state = CrossProtocolStreamingState {
@@ -807,6 +837,8 @@ async fn handle_streaming_proxy_response(
             first_token_time: None,
             finalized: false,
             sse_line_buffer: String::new(),
+            cancel_rx,
+            cancel_handle: cancel_handle_for_completion,
         };
 
         let transform_stream = futures::stream::unfold(streaming_state, |mut state| async move {
@@ -815,7 +847,51 @@ async fn handle_streaming_proxy_response(
                 return None;
             }
 
-            match state.stream.next().await {
+            // Use select! to race between stream data and cancellation
+            let chunk_result = {
+                let stream_future = state.stream.next();
+                let cancel_future = async {
+                    let mut rx = state.cancel_rx.clone();
+                    let _ = rx.changed().await;
+                    true
+                };
+
+                select! {
+                    chunk = stream_future => chunk,
+                    _ = cancel_future => {
+                        tracing::info!(
+                            provider = %state.provider,
+                            model = %state.model,
+                            "Client disconnected during cross-protocol streaming, cancelling stream"
+                        );
+                        get_metrics().client_disconnects_total.inc();
+
+                        // Record partial metrics
+                        let final_usage = state.stream_state.get_final_usage(None);
+                        let stats = StreamStats {
+                            model: state.model.clone(),
+                            provider: state.provider.clone(),
+                            api_key_name: state.api_key_name.clone(),
+                            client: state.client.clone(),
+                            input_tokens: final_usage
+                                .as_ref()
+                                .map(|u| u.input_tokens as usize)
+                                .unwrap_or(0),
+                            output_tokens: final_usage
+                                .as_ref()
+                                .map(|u| u.output_tokens as usize)
+                                .unwrap_or(0),
+                            start_time: state.start_time,
+                            first_token_time: state.first_token_time,
+                        };
+                        record_stream_metrics(&stats);
+
+                        return None;
+                    }
+                }
+            };
+
+            match chunk_result {
                 Some(Ok(bytes)) => {
                     // Track first token time
                     if state.first_token_time.is_none() {
@@ -963,6 +1039,10 @@ async fn handle_streaming_proxy_response(
                     // Add [DONE] marker
                     output.push_str("data: [DONE]\n\n");
 
+                    // Mark the cancel handle as completed since stream finished normally
+                    // This prevents false positive disconnect metrics when DisconnectStream is dropped
+                    state.cancel_handle.mark_completed();
+
                     // Record metrics
                     let final_usage = state.stream_state.get_final_usage(None);
                     let stats = StreamStats {
@@ -993,6 +1073,12 @@ async fn handle_streaming_proxy_response(
         });
 
         let body = Body::from_stream(transform_stream);
+
+        // Wrap with DisconnectStream to detect client disconnects
+        let body = Body::from_stream(DisconnectStream {
+            stream: body.into_data_stream(),
+            cancel_handle,
+        });
 
         let content_type = match client_protocol {
             Protocol::Anthropic => "text/event-stream",

@@ -8,15 +8,23 @@ import os
 import struct
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, AsyncIterator, Optional, Dict, Any, Callable, Mapping
+from typing import (
+    TYPE_CHECKING,
+    AsyncIterator,
+    Awaitable,
+    Optional,
+    Dict,
+    Any,
+    Callable,
+    Mapping,
+)
 
 import httpx
 import tiktoken
 from fastapi.responses import StreamingResponse
 
-from app.core.config import get_config
 from app.core.exceptions import TTFTTimeoutError
-from app.core.metrics import TOKEN_USAGE, TTFT, TOKENS_PER_SECOND
+from app.core.metrics import CLIENT_DISCONNECTS
 from app.core.stream_metrics import StreamStats, record_stream_metrics
 from app.core.logging import (
     set_provider_context,
@@ -643,6 +651,7 @@ async def stream_response(
     ttft_timeout_secs: Optional[int] = None,
     generation_data: Optional["GenerationData"] = None,
     client: str = "unknown",
+    disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> AsyncIterator[bytes]:
     """Stream response from provider with model rewriting and token tracking
 
@@ -655,6 +664,7 @@ async def stream_response(
         ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
         generation_data: Optional Langfuse generation data for tracing
         client: Client name from User-Agent header
+        disconnect_check: Optional async callable that returns True if client disconnected
     """
     logger = get_logger()
     api_key_name = get_api_key_name()
@@ -742,6 +752,24 @@ async def stream_response(
             else:
                 # Continue accumulating lines
                 continue
+
+            # Only check disconnect on non-empty lines (skip SSE event boundaries)
+            # Check after getting the line but before processing it
+            if disconnect_check is not None:
+                try:
+                    if await disconnect_check():
+                        logger.debug(
+                            f"Client disconnected, stopping stream from provider {provider_name} "
+                            f"model={original_model or 'unknown'}"
+                        )
+                        # Record client disconnect metric
+                        CLIENT_DISCONNECTS.labels(
+                            model=original_model or "unknown",
+                            provider=provider_name,
+                        ).inc()
+                        break
+                except Exception as e:
+                    logger.debug(f"Error checking client disconnect: {e}")
 
             # Convert back to bytes for downstream processing
             chunk = chunk_str.encode("utf-8")
@@ -908,6 +936,25 @@ async def stream_response(
             generation_data.end_time = datetime.now(timezone.utc)
             langfuse_service.trace_generation(generation_data)
 
+    except asyncio.CancelledError:
+        # Handle task cancellation (e.g., client disconnect detected by Starlette)
+        logger.debug(
+            f"Stream cancelled (client disconnected) from provider {provider_name} "
+            f"model={original_model or 'unknown'}"
+        )
+        # Record client disconnect metric
+        CLIENT_DISCONNECTS.labels(
+            model=original_model or "unknown",
+            provider=provider_name,
+        ).inc()
+        # Record partial metrics before re-raising
+        if generation_data:
+            generation_data.output_content = token_counter.output_content
+            generation_data.finish_reason = "client_disconnected"
+            generation_data.end_time = datetime.now(timezone.utc)
+            langfuse_service.trace_generation(generation_data)
+        # Re-raise to allow proper cleanup
+        raise
     except TTFTTimeoutError:
         # Record error in Langfuse
         if generation_data:
@@ -985,6 +1032,7 @@ def create_streaming_response(
     ttft_timeout_secs: Optional[int] = None,
     generation_data: Optional["GenerationData"] = None,
     client: str = "unknown",
+    disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> StreamingResponse:
     """Create streaming response with proper cleanup
 
@@ -997,6 +1045,7 @@ def create_streaming_response(
         ttft_timeout_secs: Time To First Token timeout in seconds. If None or 0, disabled.
         generation_data: Optional Langfuse generation data for tracing
         client: Client name from User-Agent header
+        disconnect_check: Optional async callable that returns True if client disconnected
     """
     return StreamingResponse(
         stream_response(
@@ -1008,6 +1057,7 @@ def create_streaming_response(
             ttft_timeout_secs,
             generation_data,
             client,
+            disconnect_check,
         ),
         media_type="text/event-stream",
     )

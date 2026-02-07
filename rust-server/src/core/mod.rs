@@ -10,6 +10,7 @@
 //! - Langfuse observability
 //! - JSONL request/response logging
 
+pub mod cancel;
 pub mod config;
 pub mod database;
 pub mod error;
@@ -25,6 +26,7 @@ pub mod tokenizer;
 pub mod utils;
 
 // Re-export commonly used types
+pub use cancel::StreamCancelHandle;
 pub use config::{AppConfig, ProviderConfig, ServerConfig};
 pub use database::{
     create_key_preview, hash_key, CreateCredential, CreateProvider, CredentialEntity, Database,

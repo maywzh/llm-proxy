@@ -228,7 +228,8 @@ class CheckProviderHealthResponse(BaseModel):
     provider_id: int = Field(..., description="Provider ID")
     provider_key: str = Field(..., description="Provider key identifier")
     status: HealthStatus = Field(
-        ..., description="Overall provider status: healthy, unhealthy, disabled, unknown"
+        ...,
+        description="Overall provider status: healthy, unhealthy, disabled, unknown",
     )
     models: list[ModelHealthStatus] = Field(
         ..., description="Health status for each tested model"

@@ -7,13 +7,12 @@
 import json
 from typing import Any, Optional
 
-from .base import Transformer, TransformContext
+from .base import Transformer
 from .unified import (
     ChunkType,
     Protocol,
     Role,
     StopReason,
-    UnifiedContent,
     UnifiedMessage,
     UnifiedParameters,
     UnifiedRequest,
@@ -332,9 +331,7 @@ class PassthroughTransformer(Transformer):
         """
         if not name:
             return False
-        return all(
-            c.isalnum() or c in "-_./:" for c in name
-        )
+        return all(c.isalnum() or c in "-_./:" for c in name)
 
     @staticmethod
     def apply_model_mapping(payload: dict[str, Any], mapped_model: str) -> None:
@@ -347,7 +344,9 @@ class PassthroughTransformer(Transformer):
             payload["model"] = mapped_model
 
     @staticmethod
-    def apply_model_mapping_json_safe(payload: bytes, mapped_model: str) -> Optional[bytes]:
+    def apply_model_mapping_json_safe(
+        payload: bytes, mapped_model: str
+    ) -> Optional[bytes]:
         """
         Apply model name mapping using safe JSON parsing.
 
@@ -384,9 +383,12 @@ class PassthroughTransformer(Transformer):
             return None
 
         # Security check: if model names contain unsafe characters, use safe JSON parsing
-        if not PassthroughTransformer.is_safe_model_name(original_model) or \
-           not PassthroughTransformer.is_safe_model_name(mapped_model):
-            return PassthroughTransformer.apply_model_mapping_json_safe(payload, mapped_model)
+        if not PassthroughTransformer.is_safe_model_name(
+            original_model
+        ) or not PassthroughTransformer.is_safe_model_name(mapped_model):
+            return PassthroughTransformer.apply_model_mapping_json_safe(
+                payload, mapped_model
+            )
 
         try:
             payload_str = payload.decode("utf-8")
@@ -408,7 +410,9 @@ class PassthroughTransformer(Transformer):
             return payload_str.replace(search_pattern, replace_pattern).encode("utf-8")
 
         # Fall back to full JSON parsing
-        return PassthroughTransformer.apply_model_mapping_json_safe(payload, mapped_model)
+        return PassthroughTransformer.apply_model_mapping_json_safe(
+            payload, mapped_model
+        )
 
     @staticmethod
     def rewrite_model_in_chunk(
@@ -427,8 +431,9 @@ class PassthroughTransformer(Transformer):
             return None
 
         # Security check: if model names contain unsafe characters, skip rewriting
-        if not PassthroughTransformer.is_safe_model_name(original_model) or \
-           not PassthroughTransformer.is_safe_model_name(mapped_model):
+        if not PassthroughTransformer.is_safe_model_name(
+            original_model
+        ) or not PassthroughTransformer.is_safe_model_name(mapped_model):
             return None
 
         try:

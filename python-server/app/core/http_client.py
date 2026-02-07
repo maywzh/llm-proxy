@@ -1,4 +1,5 @@
 """Shared HTTP client for making requests to providers"""
+
 import httpx
 from typing import Optional
 
@@ -11,7 +12,7 @@ _http_client: Optional[httpx.AsyncClient] = None
 def get_http_client() -> httpx.AsyncClient:
     """
     Get or create the shared HTTP client instance
-    
+
     Returns:
         Shared httpx.AsyncClient configured with app settings
     """
@@ -22,10 +23,8 @@ def get_http_client() -> httpx.AsyncClient:
             verify=config.verify_ssl,
             timeout=float(config.request_timeout_secs),
             limits=httpx.Limits(
-                max_keepalive_connections=20,
-                max_connections=100,
-                keepalive_expiry=30.0
-            )
+                max_keepalive_connections=20, max_connections=100, keepalive_expiry=30.0
+            ),
         )
     return _http_client
 
