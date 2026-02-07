@@ -112,7 +112,9 @@ def _build_model_data(
 
 @router.get("/model/info")
 async def model_info_v1(
-    model: Optional[str] = Query(default=None, description="Filter by exact model name"),
+    model: Optional[str] = Query(
+        default=None, description="Filter by exact model name"
+    ),
     litellm_model_id: Optional[str] = Query(
         default=None, description="Filter by LiteLLM model ID (mapped model name)"
     ),
@@ -138,11 +140,17 @@ async def model_info_v1(
 
 
 async def model_info_v2(
-    model: Optional[str] = Query(default=None, description="Filter by exact model name"),
-    litellm_model_id: Optional[str] = Query(
-        default=None, alias="modelId", description="Filter by model ID (mapped model name)"
+    model: Optional[str] = Query(
+        default=None, description="Filter by exact model name"
     ),
-    search: Optional[str] = Query(default=None, description="Fuzzy search in model_name"),
+    litellm_model_id: Optional[str] = Query(
+        default=None,
+        alias="modelId",
+        description="Filter by model ID (mapped model name)",
+    ),
+    search: Optional[str] = Query(
+        default=None, description="Fuzzy search in model_name"
+    ),
     sort_by: Optional[str] = Query(
         default=None,
         alias="sortBy",
