@@ -78,6 +78,7 @@ fn convert_provider(
         weight: p.weight as u32,
         model_mapping: p.model_mapping.0.clone(),
         provider_type: p.provider_type.clone(),
+        provider_params: p.provider_params.0.clone(),
     }
 }
 

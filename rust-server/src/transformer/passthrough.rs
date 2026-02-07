@@ -481,6 +481,7 @@ impl Transformer for PassthroughTransformer {
             Protocol::OpenAI => "/v1/chat/completions",
             Protocol::Anthropic => "/v1/messages",
             Protocol::ResponseApi => "/v1/responses",
+            Protocol::GcpVertex => "/v1/messages", // GCP Vertex uses Anthropic format
         }
     }
 

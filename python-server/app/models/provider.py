@@ -3,13 +3,12 @@
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 from app.models.config import (
     ModelMappingEntry,
     ModelMappingValue,
     get_mapped_model_name,
-    normalize_model_mapping,
 )
 
 
@@ -114,7 +113,9 @@ def match_model_pattern(
     return None
 
 
-def model_matches_mapping(model: str, model_mapping: Dict[str, ModelMappingValue]) -> bool:
+def model_matches_mapping(
+    model: str, model_mapping: Dict[str, ModelMappingValue]
+) -> bool:
     """Check if a model matches any key in model_mapping (exact or pattern).
 
     Args:
@@ -174,6 +175,18 @@ class Provider:
     weight: int
     model_mapping: Dict[str, ModelMappingValue] = field(default_factory=dict)
     provider_type: str = field(default="openai")
+    provider_params: Dict[str, Any] = field(default_factory=dict)
+
+    def get_param(self, key: str) -> Optional[Any]:
+        """Get a provider parameter by key.
+
+        Args:
+            key: The parameter key to look up
+
+        Returns:
+            The parameter value if found, None otherwise
+        """
+        return self.provider_params.get(key)
 
     def supports_model(self, model: str) -> bool:
         """Check if this provider supports the given model (exact or pattern match)."""
@@ -186,3 +199,51 @@ class Provider:
     def get_model_metadata(self, model: str) -> Optional[ModelMappingEntry]:
         """Get the model metadata for the given model if available."""
         return get_model_metadata(model, self.model_mapping)
+
+
+@dataclass
+class GcpVertexConfig:
+    """GCP Vertex AI specific configuration extracted from Provider.
+
+    This separates GCP-specific configuration from the generic Provider class.
+    """
+
+    project: str
+    location: str
+    publisher: str
+
+    @classmethod
+    def from_provider(cls, provider: Provider) -> Optional["GcpVertexConfig"]:
+        """Create GcpVertexConfig from a Provider if all required params exist.
+
+        Args:
+            provider: The provider to extract GCP config from
+
+        Returns:
+            GcpVertexConfig if gcp_project is present, None otherwise
+        """
+        project = provider.get_param("gcp_project")
+        if project is None:
+            return None
+
+        return cls(
+            project=project,
+            location=provider.get_param("gcp_location") or "us-central1",
+            publisher=provider.get_param("gcp_publisher") or "anthropic",
+        )
+
+    @classmethod
+    def from_provider_with_defaults(cls, provider: Provider) -> "GcpVertexConfig":
+        """Create GcpVertexConfig from a Provider with default values.
+
+        Args:
+            provider: The provider to extract GCP config from
+
+        Returns:
+            GcpVertexConfig with defaults for missing values
+        """
+        return cls(
+            project=provider.get_param("gcp_project") or "",
+            location=provider.get_param("gcp_location") or "us-central1",
+            publisher=provider.get_param("gcp_publisher") or "anthropic",
+        )

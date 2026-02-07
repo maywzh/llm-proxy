@@ -23,7 +23,7 @@ use crate::api::disconnect::DisconnectStream;
 use crate::api::gemini3::{normalize_request_payload, strip_gemini3_provider_fields};
 use crate::api::handlers::AppState;
 use crate::api::models::{
-    LiteLlmParams, ModelInfo, ModelInfoDetails, ModelInfoEntry, ModelInfoListV1,
+    GcpVertexConfig, LiteLlmParams, ModelInfo, ModelInfoDetails, ModelInfoEntry, ModelInfoListV1,
     ModelInfoQueryParams, ModelInfoQueryParamsV1, ModelList, PaginatedModelInfoList,
 };
 use crate::api::streaming::{calculate_message_tokens_with_tools, create_sse_stream};
@@ -143,7 +143,7 @@ pub fn build_protocol_error_response(
     api_key_name: Option<&str>,
 ) -> Response {
     let body = match protocol {
-        Protocol::Anthropic => {
+        Protocol::Anthropic | Protocol::GcpVertex => {
             json!({
                 "type": "error",
                 "error": {
@@ -325,10 +325,39 @@ pub async fn handle_proxy_request(
 
         normalize_gemini3_provider_payload(&mut provider_payload, provider_protocol);
 
-        let url = format!(
-            "{}{}",
-            provider.api_base,
-            get_provider_endpoint(provider_protocol)
+        // Build URL based on provider protocol
+        let url = if provider_protocol == Protocol::GcpVertex {
+            // GCP Vertex AI requires special URL construction
+            let gcp_config = GcpVertexConfig::from_provider(&provider).unwrap_or_else(|| {
+                tracing::error!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    "gcp_project is required for gcp-vertex provider, using defaults"
+                );
+                GcpVertexConfig::from_provider_with_defaults(&provider)
+            });
+            build_gcp_vertex_url(
+                &provider.api_base,
+                &gcp_config.project,
+                &gcp_config.location,
+                &gcp_config.publisher,
+                &transform_ctx.mapped_model,
+                generation_data.is_streaming,
+            )
+        } else {
+            format!(
+                "{}{}",
+                provider.api_base,
+                get_provider_endpoint(provider_protocol)
+            )
+        };
+
+        tracing::debug!(
+            request_id = %request_id,
+            provider = %provider.name,
+            url = %url,
+            provider_protocol = %provider_protocol,
+            "Built provider URL"
         );
 
         // Log request immediately to JSONL
@@ -386,7 +415,7 @@ pub async fn handle_proxy_request(
                 );
 
                 // Send request to provider
-                // P0 fix: Handle Anthropic protocol with x-api-key header instead of Authorization Bearer
+                // Handle different authentication methods based on protocol
                 let response = match if provider_protocol == Protocol::Anthropic {
                     // Anthropic API requires x-api-key header and anthropic-version header
                     let anthropic_version = headers
@@ -408,6 +437,25 @@ pub async fn handle_proxy_request(
                             req = req.header("anthropic-beta", beta_str);
                         }
                     }
+
+                    req.json(&provider_payload).send().await
+                } else if provider_protocol == Protocol::GcpVertex {
+                    // GCP Vertex AI uses Bearer token authentication
+                    // The api_key should be a valid GCP access token
+                    let anthropic_version = headers
+                        .get("anthropic-version")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("vertex-2023-10-16");
+
+                    let mut req = state
+                        .app_state
+                        .http_client
+                        .post(&url)
+                        .header("Authorization", format!("Bearer {}", provider.api_key))
+                        .header("Content-Type", "application/json");
+
+                    // GCP Vertex AI requires anthropic-version header for Claude models
+                    req = req.header("anthropic-version", anthropic_version);
 
                     req.json(&provider_payload).send().await
                 } else {
@@ -552,7 +600,7 @@ pub async fn handle_proxy_request(
 /// Extract model from request based on protocol
 fn extract_model_from_request(payload: &Value, protocol: Protocol) -> String {
     match protocol {
-        Protocol::OpenAI | Protocol::Anthropic => payload
+        Protocol::OpenAI | Protocol::Anthropic | Protocol::GcpVertex => payload
             .get("model")
             .and_then(|m| m.as_str())
             .unwrap_or("unknown")
@@ -572,7 +620,7 @@ fn extract_stream_flag(payload: &Value, protocol: Protocol) -> bool {
             .get("stream")
             .and_then(|s| s.as_bool())
             .unwrap_or(false),
-        Protocol::Anthropic => payload
+        Protocol::Anthropic | Protocol::GcpVertex => payload
             .get("stream")
             .and_then(|s| s.as_bool())
             .unwrap_or(false),
@@ -597,7 +645,31 @@ fn get_provider_endpoint(protocol: Protocol) -> &'static str {
         Protocol::OpenAI => "/chat/completions",
         Protocol::Anthropic => "/v1/messages",
         Protocol::ResponseApi => "/v1/responses",
+        Protocol::GcpVertex => "", // GCP Vertex uses dynamic endpoints constructed elsewhere
     }
+}
+
+/// Build the URL for a GCP Vertex AI request.
+///
+/// The api_base should include any custom prefix (e.g., `https://xxx.com/models/gcp-vertex`).
+/// This function only appends the dynamic GCP Vertex path.
+pub fn build_gcp_vertex_url(
+    api_base: &str,
+    gcp_project: &str,
+    gcp_location: &str,
+    gcp_publisher: &str,
+    model: &str,
+    is_streaming: bool,
+) -> String {
+    let action = if is_streaming {
+        "streamRawPredict"
+    } else {
+        "rawPredict"
+    };
+    format!(
+        "{}/v1/projects/{}/locations/{}/publishers/{}/models/{}:{}",
+        api_base, gcp_project, gcp_location, gcp_publisher, model, action
+    )
 }
 
 /// Handle error response from provider
@@ -1913,15 +1985,21 @@ mod tests {
             extract_model_from_request(&payload, Protocol::OpenAI),
             "gpt-4"
         );
+        assert_eq!(
+            extract_model_from_request(&payload, Protocol::GcpVertex),
+            "gpt-4"
+        );
     }
 
     #[test]
     fn test_extract_stream_flag() {
         let payload = json!({ "model": "gpt-4", "stream": true });
         assert!(extract_stream_flag(&payload, Protocol::OpenAI));
+        assert!(extract_stream_flag(&payload, Protocol::GcpVertex));
 
         let payload = json!({ "model": "gpt-4" });
         assert!(!extract_stream_flag(&payload, Protocol::OpenAI));
+        assert!(!extract_stream_flag(&payload, Protocol::GcpVertex));
     }
 
     #[test]
@@ -1931,6 +2009,36 @@ mod tests {
         assert_eq!(
             get_provider_endpoint(Protocol::ResponseApi),
             "/v1/responses"
+        );
+        assert_eq!(get_provider_endpoint(Protocol::GcpVertex), "");
+    }
+
+    #[test]
+    fn test_build_gcp_vertex_url() {
+        let url = build_gcp_vertex_url(
+            "https://us-central1-aiplatform.googleapis.com",
+            "my-project",
+            "us-central1",
+            "anthropic",
+            "claude-3-5-sonnet@20241022",
+            false,
+        );
+        assert_eq!(
+            url,
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet@20241022:rawPredict"
+        );
+
+        let url_streaming = build_gcp_vertex_url(
+            "https://us-central1-aiplatform.googleapis.com",
+            "my-project",
+            "us-central1",
+            "anthropic",
+            "claude-3-5-sonnet@20241022",
+            true,
+        );
+        assert_eq!(
+            url_streaming,
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet@20241022:streamRawPredict"
         );
     }
 

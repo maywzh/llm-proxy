@@ -171,7 +171,7 @@ impl Database {
     pub async fn load_providers(&self) -> Result<Vec<ProviderEntity>, sqlx::Error> {
         let providers = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
             FROM providers
             WHERE is_enabled = true
             ORDER BY id
@@ -186,7 +186,7 @@ impl Database {
     pub async fn load_all_providers(&self) -> Result<Vec<ProviderEntity>, sqlx::Error> {
         let providers = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
             FROM providers
             ORDER BY id
             "#,
@@ -200,7 +200,7 @@ impl Database {
     pub async fn get_provider(&self, id: i32) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let provider = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
             FROM providers
             WHERE id = $1
             "#,
@@ -218,7 +218,7 @@ impl Database {
     ) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let provider = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
             FROM providers
             WHERE provider_key = $1
             "#,
@@ -236,9 +236,9 @@ impl Database {
     ) -> Result<ProviderEntity, sqlx::Error> {
         let entity = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            INSERT INTO providers (provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
+            INSERT INTO providers (provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, provider_params)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
             "#,
         )
         .bind(&provider.provider_key)
@@ -248,6 +248,7 @@ impl Database {
         .bind(sqlx::types::Json(&provider.model_mapping))
         .bind(provider.weight)
         .bind(provider.is_enabled)
+        .bind(sqlx::types::Json(&provider.provider_params))
         .fetch_one(&self.pool)
         .await?;
         Ok(entity)
@@ -268,9 +269,10 @@ impl Database {
                 model_mapping = COALESCE($5, model_mapping),
                 weight = COALESCE($6, weight),
                 is_enabled = COALESCE($7, is_enabled),
+                provider_params = COALESCE($8, provider_params),
                 updated_at = NOW()
             WHERE id = $1
-            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, created_at, updated_at
+            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
             "#,
         )
         .bind(id)
@@ -280,6 +282,7 @@ impl Database {
         .bind(update.model_mapping.as_ref().map(sqlx::types::Json))
         .bind(update.weight)
         .bind(update.is_enabled)
+        .bind(update.provider_params.as_ref().map(sqlx::types::Json))
         .fetch_optional(&self.pool)
         .await?;
         Ok(entity)
@@ -431,6 +434,7 @@ impl Database {
     "model_mapping": {"gpt-4": "gpt-4-turbo"},
     "weight": 1,
     "is_enabled": true,
+    "provider_params": {},
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
 }))]
@@ -453,6 +457,10 @@ pub struct ProviderEntity {
     pub weight: i32,
     /// Whether this provider is enabled
     pub is_enabled: bool,
+    /// Provider-specific parameters (e.g., GCP project, location, publisher)
+    #[serde(default)]
+    #[schema(value_type = HashMap<String, serde_json::Value>)]
+    pub provider_params: sqlx::types::Json<HashMap<String, serde_json::Value>>,
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
     /// Last update timestamp
@@ -468,7 +476,8 @@ pub struct ProviderEntity {
     "api_key": "sk-your-api-key",
     "model_mapping": {"gpt-4": "gpt-4-turbo"},
     "weight": 1,
-    "is_enabled": true
+    "is_enabled": true,
+    "provider_params": {}
 }))]
 pub struct CreateProvider {
     /// Unique provider key identifier
@@ -488,6 +497,9 @@ pub struct CreateProvider {
     /// Whether this provider is enabled (default: true)
     #[serde(default = "default_true")]
     pub is_enabled: bool,
+    /// Provider-specific parameters (e.g., GCP project, location, publisher)
+    #[serde(default)]
+    pub provider_params: HashMap<String, serde_json::Value>,
 }
 
 /// Update provider request
@@ -495,7 +507,8 @@ pub struct CreateProvider {
 #[schema(example = json!({
     "api_base": "https://api.openai.com/v1",
     "weight": 2,
-    "is_enabled": false
+    "is_enabled": false,
+    "provider_params": {}
 }))]
 pub struct UpdateProvider {
     /// Provider type (e.g., "openai", "azure", "anthropic")
@@ -510,6 +523,8 @@ pub struct UpdateProvider {
     pub weight: Option<i32>,
     /// Whether this provider is enabled
     pub is_enabled: Option<bool>,
+    /// Provider-specific parameters (e.g., GCP project, location, publisher)
+    pub provider_params: Option<HashMap<String, serde_json::Value>>,
 }
 
 /// Credential entity from database

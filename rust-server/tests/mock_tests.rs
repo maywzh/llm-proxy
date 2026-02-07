@@ -45,6 +45,7 @@ async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u6
             weight: 1,
             model_mapping,
             provider_type: "openai".to_string(),
+            provider_params: HashMap::new(),
         }],
         server: ServerConfig {
             host: "0.0.0.0".to_string(),

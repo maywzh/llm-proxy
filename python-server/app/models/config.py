@@ -10,7 +10,9 @@ class ModelMappingEntry(BaseModel):
     Supports rich model information including token limits, costs, and capabilities.
     """
 
-    mapped_model: str = Field(description="The actual model name to use for the provider")
+    mapped_model: str = Field(
+        description="The actual model name to use for the provider"
+    )
 
     # Token limits
     max_tokens: Optional[int] = Field(
@@ -84,7 +86,9 @@ def normalize_model_mapping(
         elif isinstance(value, ModelMappingEntry):
             result[key] = value
         else:
-            raise ValueError(f"Invalid model_mapping value type for key '{key}': {type(value)}")
+            raise ValueError(
+                f"Invalid model_mapping value type for key '{key}': {type(value)}"
+            )
     return result
 
 
@@ -104,8 +108,28 @@ class ProviderConfig(BaseModel):
     weight: int = Field(default=1, ge=1)
     model_mapping: Dict[str, ModelMappingValue] = Field(default_factory=dict)
     provider_type: str = Field(
-        default="openai", description="Provider type (openai, anthropic, etc.)"
+        default="openai",
+        description="Provider type (openai, anthropic, gcp-vertex, etc.)",
     )
+    provider_params: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-specific parameters (e.g., GCP Vertex settings)",
+    )
+
+    @property
+    def gcp_project(self) -> Optional[str]:
+        """Get GCP project ID from provider_params."""
+        return self.provider_params.get("gcp_project")
+
+    @property
+    def gcp_location(self) -> str:
+        """Get GCP location from provider_params, defaults to us-central1."""
+        return self.provider_params.get("gcp_location", "us-central1")
+
+    @property
+    def gcp_publisher(self) -> str:
+        """Get GCP publisher from provider_params, defaults to anthropic."""
+        return self.provider_params.get("gcp_publisher", "anthropic")
 
     @field_validator("model_mapping", mode="before")
     @classmethod

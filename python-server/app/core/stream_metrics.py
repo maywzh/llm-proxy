@@ -11,12 +11,23 @@ Records:
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from app.core.metrics import TOKENS_PER_SECOND, TTFT, TOKEN_USAGE
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class StreamingUsageTracker:
+    """Tracks token usage and timing during streaming for metrics recording at exit."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    usage_from_provider: bool = False
+    start_time: float = field(default_factory=time.time)
+    first_token_time: Optional[float] = None
 
 
 @dataclass(frozen=True)

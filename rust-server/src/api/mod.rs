@@ -8,6 +8,7 @@ pub mod auth;
 pub mod claude;
 pub mod claude_models;
 pub mod disconnect;
+pub mod gcp_vertex;
 pub mod gemini3;
 pub mod handlers;
 pub mod health;
@@ -23,6 +24,7 @@ pub use claude_models::{
     ClaudeErrorResponse, ClaudeMessagesRequest, ClaudeResponse, ClaudeTokenCountRequest,
     ClaudeTokenCountResponse, ClaudeUsage,
 };
+pub use gcp_vertex::gcp_vertex_proxy;
 pub use handlers::{
     chat_completions, completions, list_model_info, list_models, metrics_handler, AppState,
 };

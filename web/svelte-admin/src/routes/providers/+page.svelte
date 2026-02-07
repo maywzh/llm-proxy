@@ -5,7 +5,7 @@
   import { debounce } from '$lib/debounce';
   import JsonEditor from '$lib/components/JsonEditor.svelte';
   import TableSkeleton from '$lib/components/TableSkeleton.svelte';
-  import type { Provider, ProviderFormData } from '$lib/types';
+  import type { Provider, ProviderFormData, ProviderUpdate } from '$lib/types';
   import {
     Plus,
     Pencil,
@@ -31,6 +31,9 @@
     api_key: '',
     model_mapping: {},
     is_enabled: true,
+    gcp_project: '',
+    gcp_location: '',
+    gcp_publisher: '',
   });
   let modelMappingError = $state<string | null>(null);
 
@@ -74,6 +77,9 @@
       api_key: '',
       model_mapping: {},
       is_enabled: true,
+      gcp_project: '',
+      gcp_location: '',
+      gcp_publisher: '',
     };
     modelMappingError = null;
     editingProvider = null;
@@ -102,6 +108,9 @@
       api_key: '', // Don't populate existing key for security
       model_mapping: provider.model_mapping,
       is_enabled: provider.is_enabled,
+      gcp_project: (provider.provider_params?.gcp_project as string) || '',
+      gcp_location: (provider.provider_params?.gcp_location as string) || '',
+      gcp_publisher: (provider.provider_params?.gcp_publisher as string) || '',
     };
     modelMappingError = null;
     showCreateForm = true;
@@ -110,9 +119,21 @@
   async function handleSubmit() {
     if (modelMappingError) return;
 
+    // Validate gcp_project is required when provider_type is gcp-vertex
+    if (
+      formData.provider_type === 'gcp-vertex' &&
+      !formData.gcp_project.trim()
+    ) {
+      errors.update(state => ({
+        ...state,
+        providers: 'GCP Project ID is required for GCP Vertex provider',
+      }));
+      return;
+    }
+
     if (editingProvider) {
       // Update existing provider
-      const updateData: Record<string, unknown> = {
+      const updateData: ProviderUpdate = {
         provider_type: formData.provider_type,
         api_base: formData.api_base,
         model_mapping: formData.model_mapping,
@@ -124,6 +145,17 @@
         updateData.api_key = formData.api_key;
       }
 
+      // Include provider_params for GCP Vertex
+      if (formData.provider_type === 'gcp-vertex') {
+        updateData.provider_params = {
+          gcp_project: formData.gcp_project,
+          gcp_location: formData.gcp_location.trim() || 'us-central1',
+          gcp_publisher: formData.gcp_publisher.trim() || 'anthropic',
+        };
+      } else {
+        updateData.provider_params = {};
+      }
+
       const success = await actions.updateProvider(
         editingProvider.id,
         updateData
@@ -133,7 +165,19 @@
       }
     } else {
       // Create new provider
-      const success = await actions.createProvider(formData);
+      const createData: ProviderFormData = {
+        provider_key: formData.provider_key,
+        provider_type: formData.provider_type,
+        api_base: formData.api_base,
+        api_key: formData.api_key,
+        model_mapping: formData.model_mapping,
+        is_enabled: formData.is_enabled,
+        gcp_project: formData.gcp_project,
+        gcp_location: formData.gcp_location,
+        gcp_publisher: formData.gcp_publisher,
+      };
+
+      const success = await actions.createProvider(createData);
       if (success) {
         resetForm();
       }
@@ -276,6 +320,7 @@
                 <option value="azure">Azure OpenAI</option>
                 <option value="anthropic">Anthropic</option>
                 <option value="google">Google</option>
+                <option value="gcp-vertex">GCP Vertex AI</option>
                 <option value="custom">Custom</option>
               </select>
             </div>
@@ -288,10 +333,64 @@
               type="url"
               bind:value={formData.api_base}
               class="input"
-              placeholder="https://api.openai.com/v1"
+              placeholder={formData.provider_type === 'gcp-vertex'
+                ? 'https://us-central1-aiplatform.googleapis.com'
+                : 'https://api.openai.com/v1'}
               required
             />
           </div>
+
+          <!-- GCP Vertex AI specific fields -->
+          {#if formData.provider_type === 'gcp-vertex'}
+            <div
+              class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
+            >
+              <div>
+                <label for="gcp_project" class="label">
+                  GCP Project ID <span class="text-red-500">*</span>
+                </label>
+                <input
+                  id="gcp_project"
+                  type="text"
+                  bind:value={formData.gcp_project}
+                  class="input"
+                  placeholder="my-project-id"
+                  required
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Your GCP project identifier
+                </p>
+              </div>
+
+              <div>
+                <label for="gcp_location" class="label"> GCP Location </label>
+                <input
+                  id="gcp_location"
+                  type="text"
+                  bind:value={formData.gcp_location}
+                  class="input"
+                  placeholder="us-central1"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Default: us-central1
+                </p>
+              </div>
+
+              <div>
+                <label for="gcp_publisher" class="label"> GCP Publisher </label>
+                <input
+                  id="gcp_publisher"
+                  type="text"
+                  bind:value={formData.gcp_publisher}
+                  class="input"
+                  placeholder="anthropic"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Default: anthropic
+                </p>
+              </div>
+            </div>
+          {/if}
 
           <div>
             <label for="api_key" class="label">
