@@ -26,7 +26,7 @@ export function ChatMessageActions({
   onRegenerate,
 }: Props) {
   return (
-    <div className="mt-1 px-4 flex items-center gap-2 text-gray-500 dark:text-gray-300 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+    <div className="mt-2 flex items-center gap-1 text-gray-400 dark:text-gray-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
       <div className="relative group/copy">
         <button
           type="button"

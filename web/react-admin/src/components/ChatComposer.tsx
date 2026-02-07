@@ -6,7 +6,7 @@ import {
   StopCircle,
   X,
 } from 'lucide-react';
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 
 type ModelOption = {
   value: string;
@@ -62,6 +62,15 @@ export function ChatComposer({
   modelOptions,
   onOpenSettings,
 }: Props) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
+  }, [input]);
+
   return (
     <div className="px-4 py-3">
       <div className="mx-auto w-full max-w-3xl">
@@ -71,9 +80,9 @@ export function ChatComposer({
           </p>
         ) : null}
 
-        <div className="rounded-2xl bg-gray-50 dark:bg-gray-700/30 ring-1 ring-gray-200/80 dark:ring-gray-600 shadow-sm p-3">
+        <div className="rounded-2xl bg-gray-50 dark:bg-gray-700/30 ring-1 ring-gray-200/80 dark:ring-gray-600 shadow-sm">
           {imageDataUrl ? (
-            <div className="mb-2">
+            <div className="px-3 pt-3">
               <div className="relative inline-block">
                 <img
                   src={imageDataUrl}
@@ -93,17 +102,18 @@ export function ChatComposer({
           ) : null}
 
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={e => onInputChange(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
-            className="w-full bg-transparent text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-400 focus:outline-none resize-none"
-            rows={3}
+            placeholder="Message..."
+            className="w-full bg-transparent text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none resize-none px-4 py-3 min-h-11"
+            rows={1}
             disabled={isLoading}
           />
 
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <div className="flex items-center space-x-2">
+          <div className="flex items-center justify-between gap-2 px-3 pb-3">
+            <div className="flex items-center gap-1.5">
               <input
                 ref={imageInputRef}
                 type="file"
@@ -116,10 +126,11 @@ export function ChatComposer({
                   type="button"
                   onClick={onPickImage}
                   disabled={isLoading}
-                  className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-200/60 dark:hover:bg-gray-600/50 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   title="Attach image"
+                  aria-label="Attach image"
                 >
-                  <ImagePlus className="w-5 h-5" />
+                  <ImagePlus className="w-4 h-4" />
                 </button>
               ) : null}
             </div>
@@ -129,11 +140,11 @@ export function ChatComposer({
                 value={selectedModel}
                 onChange={e => onSelectModel(e.target.value)}
                 disabled={isLoading || modelOptions.length === 0}
-                className="h-10 w-40 sm:w-56 bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 text-gray-900 dark:text-white rounded-full focus:ring-2 focus:ring-primary-500 focus:outline-none px-3 text-sm"
+                className="h-8 w-36 sm:w-48 bg-transparent text-gray-500 dark:text-gray-400 rounded-lg focus:ring-1 focus:ring-primary-500 focus:outline-none px-2 text-xs border-none"
                 title="Model"
               >
                 {modelOptions.length === 0 ? (
-                  <option value="">Set credential key in Settings</option>
+                  <option value="">Set credential key</option>
                 ) : null}
                 {modelOptions.map(model => (
                   <option key={model.value} value={model.value}>
@@ -145,32 +156,34 @@ export function ChatComposer({
               <button
                 type="button"
                 onClick={onOpenSettings}
-                className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-white dark:bg-gray-800 ring-1 ring-gray-200 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                title="Settings (set credential key)"
+                className="h-8 w-8 inline-flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-200/60 dark:hover:bg-gray-600/50 focus:outline-none transition-colors"
+                title="Settings"
                 aria-label="Settings"
               >
-                <Settings className="w-5 h-5" />
+                <Settings className="w-4 h-4" />
               </button>
 
               {isStreaming ? (
                 <button
                   onClick={onStop}
-                  className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Stop Generation"
+                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title="Stop"
+                  aria-label="Stop generation"
                 >
-                  <StopCircle className="w-5 h-5" />
+                  <StopCircle className="w-4 h-4" />
                 </button>
               ) : (
                 <button
                   onClick={onSend}
                   disabled={sendDisabled}
-                  className="h-10 w-10 inline-flex items-center justify-center rounded-full bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Send Message"
+                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  title="Send"
+                  aria-label="Send message"
                 >
                   {isLoading ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
-                    <Send className="w-5 h-5" />
+                    <Send className="w-4 h-4" />
                   )}
                 </button>
               )}

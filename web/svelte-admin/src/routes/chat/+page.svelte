@@ -10,7 +10,15 @@
   import ChatComposer from '$lib/components/ChatComposer.svelte';
   import ChatMessageActions from '$lib/components/ChatMessageActions.svelte';
   import TypingIndicator from '$lib/components/TypingIndicator.svelte';
-  import { Trash2, Zap, X, User, Bot, SquarePen } from 'lucide-svelte';
+  import {
+    Trash2,
+    X,
+    SquarePen,
+    Sparkles,
+    Code,
+    Bug,
+    FileText,
+  } from 'lucide-svelte';
   import type {
     ChatMessage,
     ChatRequest,
@@ -454,6 +462,33 @@
   function getAllModels() {
     return models.map(m => ({ value: m.id, label: m.id }));
   }
+
+  const suggestions = [
+    {
+      icon: Sparkles,
+      label: 'Explain how this API works',
+      prompt: 'Explain how this API works',
+    },
+    {
+      icon: Code,
+      label: 'Write a Python script for...',
+      prompt: 'Write a Python script for ',
+    },
+    {
+      icon: Bug,
+      label: 'Debug this error message',
+      prompt: 'Debug this error message:\n',
+    },
+    {
+      icon: FileText,
+      label: 'Summarize the key points',
+      prompt: 'Summarize the key points of ',
+    },
+  ];
+
+  function handleSuggestionClick(prompt: string) {
+    input = prompt;
+  }
 </script>
 
 <div class="mx-auto">
@@ -472,62 +507,75 @@
         <SquarePen class="w-5 h-5" />
       </button>
     {/if}
-    <div class="flex-1 overflow-y-auto px-4 py-4">
-      <div class="mx-auto w-full max-w-3xl h-full">
+    <div class="flex-1 overflow-y-auto">
+      <div class="mx-auto w-full max-w-3xl h-full px-4 py-4">
         {#if messages.length === 0}
-          <div
-            class="h-full flex flex-col items-center justify-center text-gray-500 dark:text-gray-400"
-          >
-            <Zap class="w-16 h-16 mb-4" />
-            <p class="text-lg">Start a conversation</p>
-            <p class="text-sm">Select a model and type your message below</p>
+          <div class="h-full flex flex-col items-center justify-center">
+            <h1
+              class="text-2xl font-semibold text-gray-900 dark:text-white mb-8"
+            >
+              What can I help with?
+            </h1>
+            <div class="grid grid-cols-2 gap-3 w-full max-w-md">
+              {#each suggestions as s (s.label)}
+                <button
+                  type="button"
+                  onclick={() => handleSuggestionClick(s.prompt)}
+                  disabled={!$chatSettings.credentialKey.trim() ||
+                    !$chatSettings.selectedModel}
+                  class="flex items-start gap-3 p-4 rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700/40 hover:bg-gray-50 dark:hover:bg-gray-700 text-left transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <s.icon
+                    class="w-5 h-5 text-gray-400 dark:text-gray-500 shrink-0 mt-0.5"
+                  />
+                  <span
+                    class="text-sm text-gray-700 dark:text-gray-300 leading-snug"
+                  >
+                    {s.label}
+                  </span>
+                </button>
+              {/each}
+            </div>
+            {#if !$chatSettings.credentialKey.trim()}
+              <p class="mt-6 text-xs text-gray-400 dark:text-gray-500">
+                Set a credential key in Settings to get started
+              </p>
+            {/if}
           </div>
         {:else}
-          <div class="space-y-6">
+          <div class="divide-y divide-gray-100 dark:divide-gray-700/50">
             {#each messages as msg, msgIndex (msg)}
-              <div
-                class="flex gap-3 {msg.role === 'user'
-                  ? 'flex-row-reverse'
-                  : 'flex-row'}"
-              >
-                <div
-                  class="shrink-0 w-8 h-8 rounded-full flex items-center justify-center {msg.role ===
-                  'user'
-                    ? 'bg-primary-600 text-white'
-                    : 'bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300'}"
-                >
-                  {#if msg.role === 'user'}
-                    <User class="w-4 h-4" />
-                  {:else}
-                    <Bot class="w-4 h-4" />
-                  {/if}
-                </div>
-                <div class="group relative max-w-[85%]">
+              <div class="py-6 first:pt-2">
+                <div class="group relative">
                   <div
-                    class="rounded-2xl px-4 py-3 {msg.role === 'user'
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'}"
+                    class="mb-1 text-xs font-medium text-gray-500 dark:text-gray-400 select-none"
                   >
+                    {msg.role === 'user' ? 'You' : 'Assistant'}
+                  </div>
+                  <div class="text-gray-900 dark:text-white">
                     {#if msg.role === 'assistant' && msg.thinking?.trim()}
-                      <details
-                        class="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10 {isStreaming &&
-                        msgIndex === messages.length - 1
+                      <div
+                        class={isStreaming && msgIndex === messages.length - 1
                           ? 'thinking-border'
-                          : ''}"
-                        open={isStreaming && msgIndex === messages.length - 1}
+                          : ''}
                       >
-                        <summary
-                          class="cursor-pointer select-none px-3 py-2 text-xs text-gray-600 dark:text-gray-300"
+                        <details
+                          class="mb-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-800/50"
+                          open={isStreaming && msgIndex === messages.length - 1}
                         >
-                          Thinking
-                        </summary>
-                        <div
-                          class="px-3 pb-3 markdown break-words text-sm text-gray-700 dark:text-gray-200"
-                        >
-                          <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
-                          {@html renderMarkdownToHtml(msg.thinking)}
-                        </div>
-                      </details>
+                          <summary
+                            class="cursor-pointer select-none px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400"
+                          >
+                            Thinking
+                          </summary>
+                          <div
+                            class="px-3 pb-3 markdown break-words text-sm text-gray-600 dark:text-gray-300"
+                          >
+                            <!-- eslint-disable-next-line svelte/no-at-html-tags --><!-- Sanitized by DOMPurify in renderMarkdownToHtml -->
+                            {@html renderMarkdownToHtml(msg.thinking)}
+                          </div>
+                        </details>
+                      </div>
                     {/if}
                     {#if isContentString(msg.content)}
                       {#if msg.content}
