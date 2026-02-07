@@ -732,17 +732,13 @@ impl Transformer for ResponseApiTransformer {
                 }
             }
             ChunkType::ContentBlockDelta => {
-                if let Some(ref delta) = chunk.delta {
-                    if let UnifiedContent::Text { text } = delta {
-                        json!({
-                            "type": "response.output_text.delta",
-                            "item_id": format!("item_{}", chunk.index),
-                            "output_index": chunk.index,
-                            "delta": text
-                        })
-                    } else {
-                        return Ok(String::new());
-                    }
+                if let Some(UnifiedContent::Text { text }) = chunk.delta.as_ref() {
+                    json!({
+                        "type": "response.output_text.delta",
+                        "item_id": format!("item_{}", chunk.index),
+                        "output_index": chunk.index,
+                        "delta": text
+                    })
                 } else {
                     return Ok(String::new());
                 }

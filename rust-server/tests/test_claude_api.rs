@@ -8,6 +8,7 @@ use llm_proxy_rust::api::claude_models::{
     ClaudeMessageContent, ClaudeMessagesRequest, ClaudeResponse, ClaudeSystemPrompt, ClaudeTool,
     ClaudeUsage,
 };
+use llm_proxy_rust::core::config::ModelMappingValue;
 use llm_proxy_rust::services::{claude_to_openai_request, openai_to_claude_response};
 use serde_json::json;
 use std::collections::HashMap;
@@ -103,11 +104,8 @@ fn test_claude_to_openai_with_model_mapping() {
         thinking: None,
     };
 
-    let mut model_mapping = HashMap::new();
-    model_mapping.insert(
-        "claude-3-opus".to_string(),
-        "gpt-4-turbo-preview".to_string(),
-    );
+    let mut model_mapping: HashMap<String, ModelMappingValue> = HashMap::new();
+    model_mapping.insert("claude-3-opus".to_string(), "gpt-4-turbo-preview".into());
 
     let openai_request = claude_to_openai_request(&request, Some(&model_mapping), 1, 8192);
 
@@ -251,7 +249,7 @@ fn test_openai_to_claude_with_tool_calls() {
         openai_to_claude_response(&openai_response, "claude-3-opus-20240229").unwrap();
 
     assert_eq!(claude_response.stop_reason, Some("tool_use".to_string()));
-    assert!(claude_response.content.len() >= 1);
+    assert!(!claude_response.content.is_empty());
 
     // Check for tool use content block
     let has_tool_use = claude_response
@@ -665,9 +663,9 @@ fn test_langfuse_model_parameters_partial() {
 
     // Only max_tokens should be present
     assert_eq!(model_parameters.get("max_tokens"), Some(&json!(1024)));
-    assert!(model_parameters.get("temperature").is_none());
-    assert!(model_parameters.get("top_p").is_none());
-    assert!(model_parameters.get("stop").is_none());
+    assert!(!model_parameters.contains_key("temperature"));
+    assert!(!model_parameters.contains_key("top_p"));
+    assert!(!model_parameters.contains_key("stop"));
 }
 
 #[test]

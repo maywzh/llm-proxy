@@ -361,13 +361,21 @@ pub async fn create_message(
                 let api_key_name = get_api_key_name();
 
                 // Log provider request to JSONL
-                let provider_endpoint = if is_anthropic { "/v1/messages" } else { "/chat/completions" };
+                let provider_endpoint = if is_anthropic {
+                    "/v1/messages"
+                } else {
+                    "/chat/completions"
+                };
                 log_provider_request(
                     &request_id,
                     &provider.name,
                     &provider.api_base,
                     provider_endpoint,
-                    if is_anthropic { &claude_request_value } else { &openai_request },
+                    if is_anthropic {
+                        &claude_request_value
+                    } else {
+                        &openai_request
+                    },
                 );
 
                 // Build and send request based on provider_type
@@ -387,7 +395,8 @@ pub async fn create_message(
                     req = req.header("anthropic-version", anthropic_version);
 
                     // Forward anthropic-beta header if provided by client
-                    if let Some(beta) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
+                    if let Some(beta) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok())
+                    {
                         req = req.header("anthropic-beta", beta);
                     }
 
@@ -404,8 +413,7 @@ pub async fn create_message(
                         .await
                 };
 
-                let response = match response
-                {
+                let response = match response {
                     Ok(resp) => resp,
                     Err(e) => {
                         tracing::error!(
@@ -567,11 +575,8 @@ async fn handle_streaming_response(
     let start_time = std::time::Instant::now();
 
     // Convert OpenAI streaming to Claude streaming format
-    let claude_stream = convert_openai_streaming_to_claude(
-        Box::pin(stream),
-        original_model,
-        fallback_input_tokens,
-    );
+    let claude_stream =
+        convert_openai_streaming_to_claude(Box::pin(stream), original_model, fallback_input_tokens);
 
     // Wrap the stream to capture output for Langfuse and JSONL logging
     let model_label_clone = model_label.clone();
@@ -888,15 +893,33 @@ async fn handle_non_streaming_response(
             let metrics = get_metrics();
             metrics
                 .token_usage
-                .with_label_values(&[&model_label, &provider_name, "prompt", &api_key_name, &client])
+                .with_label_values(&[
+                    &model_label,
+                    &provider_name,
+                    "prompt",
+                    &api_key_name,
+                    &client,
+                ])
                 .inc_by(prompt_tokens);
             metrics
                 .token_usage
-                .with_label_values(&[&model_label, &provider_name, "completion", &api_key_name, &client])
+                .with_label_values(&[
+                    &model_label,
+                    &provider_name,
+                    "completion",
+                    &api_key_name,
+                    &client,
+                ])
                 .inc_by(completion_tokens);
             metrics
                 .token_usage
-                .with_label_values(&[&model_label, &provider_name, "total", &api_key_name, &client])
+                .with_label_values(&[
+                    &model_label,
+                    &provider_name,
+                    "total",
+                    &api_key_name,
+                    &client,
+                ])
                 .inc_by(prompt_tokens + completion_tokens);
         }
     }
@@ -1096,13 +1119,8 @@ fn calculate_claude_input_tokens(request: &ClaudeMessagesRequest) -> Option<usiz
     let messages_value = build_claude_messages_for_token_count(&request.system, &request.messages);
     let tools_value = build_openai_tools_for_token_count(&request.tools);
     let tool_choice = request.tool_choice.as_ref();
-    calculate_message_tokens_with_tools(
-        &messages_value,
-        model,
-        tools_value.as_deref(),
-        tool_choice,
-    )
-    .ok()
+    calculate_message_tokens_with_tools(&messages_value, model, tools_value.as_deref(), tool_choice)
+        .ok()
 }
 
 // ============================================================================

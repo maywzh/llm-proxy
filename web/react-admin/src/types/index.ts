@@ -3,13 +3,33 @@ export interface ApiError {
   detail: string;
 }
 
+// Model Mapping Types
+export interface ModelMappingEntry {
+  mapped_model: string;
+  max_tokens?: number;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  input_cost_per_1k_tokens?: number;
+  output_cost_per_1k_tokens?: number;
+  supports_vision?: boolean;
+  supports_function_calling?: boolean;
+  supports_streaming?: boolean;
+  supports_response_schema?: boolean;
+  supports_reasoning?: boolean;
+  supports_computer_use?: boolean;
+  supports_pdf_input?: boolean;
+  mode?: 'chat' | 'completion' | 'embedding' | 'image_generation';
+}
+
+export type ModelMappingValue = string | ModelMappingEntry;
+
 // Provider Types
 export interface Provider {
   id: number;
   provider_key: string;
   provider_type: string;
   api_base: string;
-  model_mapping: Record<string, string>;
+  model_mapping: Record<string, ModelMappingValue>;
   is_enabled: boolean;
 }
 
@@ -18,14 +38,14 @@ export interface ProviderCreate {
   provider_type: string;
   api_base: string;
   api_key: string;
-  model_mapping?: Record<string, string>;
+  model_mapping?: Record<string, ModelMappingValue>;
 }
 
 export interface ProviderUpdate {
   provider_type?: string;
   api_base?: string;
   api_key?: string;
-  model_mapping?: Record<string, string>;
+  model_mapping?: Record<string, ModelMappingValue>;
   is_enabled?: boolean;
 }
 
@@ -142,7 +162,7 @@ export interface ProviderFormData {
   provider_type: string;
   api_base: string;
   api_key: string;
-  model_mapping: Record<string, string>;
+  model_mapping: Record<string, ModelMappingValue>;
   is_enabled: boolean;
 }
 

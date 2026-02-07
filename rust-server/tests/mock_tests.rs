@@ -28,14 +28,14 @@ async fn create_test_app_with_mock(mock_server: &MockServer) -> Router {
 
 /// Create a test app with mocked provider and custom timeout
 async fn create_test_app_with_timeout(mock_server: &MockServer, timeout_secs: u64) -> Router {
-    use llm_proxy_rust::core::config::{ProviderConfig, ServerConfig};
+    use llm_proxy_rust::core::config::{ModelMappingValue, ProviderConfig, ServerConfig};
     use llm_proxy_rust::core::RateLimiter;
     use std::collections::HashMap;
 
     init_metrics();
 
-    let mut model_mapping = HashMap::new();
-    model_mapping.insert("gpt-4".to_string(), "test-gpt-4".to_string());
+    let mut model_mapping: HashMap<String, ModelMappingValue> = HashMap::new();
+    model_mapping.insert("gpt-4".to_string(), "test-gpt-4".into());
 
     let config = AppConfig {
         providers: vec![ProviderConfig {

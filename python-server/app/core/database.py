@@ -7,7 +7,9 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Dict, Optional
+
+from app.models.config import ModelMappingValue, normalize_model_mapping
 from urllib.parse import quote
 
 from loguru import logger
@@ -64,9 +66,9 @@ class ProviderModel(Base):
         onupdate=func.now(),
     )
 
-    def get_model_mapping(self) -> dict[str, str]:
-        """Get model_mapping dict"""
-        return self.model_mapping or {}
+    def get_model_mapping(self) -> Dict[str, ModelMappingValue]:
+        """Get model_mapping dict (normalized to support both simple and extended formats)"""
+        return normalize_model_mapping(self.model_mapping or {})
 
 
 class CredentialModel(Base):

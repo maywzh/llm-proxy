@@ -3,9 +3,9 @@
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use llm_proxy_rust::api::gemini3::{
-    encode_tool_call_id_with_signature, extract_thought_signature_from_tool_call,
-    is_gemini3_model, normalize_request_payload, normalize_response_payload,
-    strip_gemini3_provider_fields, THOUGHT_SIGNATURE_SEPARATOR,
+    encode_tool_call_id_with_signature, extract_thought_signature_from_tool_call, is_gemini3_model,
+    normalize_request_payload, normalize_response_payload, strip_gemini3_provider_fields,
+    THOUGHT_SIGNATURE_SEPARATOR,
 };
 use serde_json::json;
 
@@ -58,15 +58,18 @@ fn test_normalize_request_adds_dummy_signature() {
     assert!(changed);
 
     let expected_dummy = BASE64_STANDARD.encode("skip_thought_signature_validator");
-    let thought_signature = payload["messages"][0]["tool_calls"][0]["provider_specific_fields"]["thought_signature"]
+    let thought_signature = payload["messages"][0]["tool_calls"][0]["provider_specific_fields"]
+        ["thought_signature"]
         .as_str()
         .unwrap();
     assert_eq!(thought_signature, expected_dummy);
-    let fn_signature = payload["messages"][0]["tool_calls"][0]["function"]["provider_specific_fields"]["thought_signature"]
+    let fn_signature = payload["messages"][0]["tool_calls"][0]["function"]
+        ["provider_specific_fields"]["thought_signature"]
         .as_str()
         .unwrap();
     assert_eq!(fn_signature, expected_dummy);
-    let extra_signature = payload["messages"][0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"]
+    let extra_signature = payload["messages"][0]["tool_calls"][0]["extra_content"]["google"]
+        ["thought_signature"]
         .as_str()
         .unwrap();
     assert_eq!(extra_signature, expected_dummy);
@@ -202,7 +205,8 @@ fn test_extra_content_roundtrip_preserved() {
     let serialized = serde_json::to_string(&original).unwrap();
     let deserialized: serde_json::Value = serde_json::from_str(&serialized).unwrap();
     assert_eq!(
-        deserialized["choices"][0]["message"]["tool_calls"][0]["extra_content"]["google"]["thought_signature"],
+        deserialized["choices"][0]["message"]["tool_calls"][0]["extra_content"]["google"]
+            ["thought_signature"],
         "CvcQAdHN2OekY10ClPFkYA=="
     );
 }

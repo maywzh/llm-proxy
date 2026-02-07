@@ -135,6 +135,7 @@ struct StreamState {
 }
 
 impl StreamState {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
         input_tokens: usize,
@@ -743,8 +744,8 @@ fn calculate_tiles_needed(
     tile_width: u32,
     tile_height: u32,
 ) -> u32 {
-    let tiles_across = (resized_width + tile_width - 1) / tile_width;
-    let tiles_down = (resized_height + tile_height - 1) / tile_height;
+    let tiles_across = resized_width.div_ceil(tile_width);
+    let tiles_down = resized_height.div_ceil(tile_height);
     tiles_across * tiles_down
 }
 
@@ -2035,9 +2036,8 @@ mod tests {
         );
 
         // Send two complete events in one chunk
-        let multi_chunk = Bytes::from(
-            "data: {\"content\":\"Hello\"}\n\ndata: {\"content\":\"World\"}\n\n",
-        );
+        let multi_chunk =
+            Bytes::from("data: {\"content\":\"Hello\"}\n\ndata: {\"content\":\"World\"}\n\n");
         let output = process_chunk(&mut state, multi_chunk);
 
         // Should contain both events

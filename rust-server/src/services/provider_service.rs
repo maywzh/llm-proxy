@@ -185,8 +185,16 @@ impl ProviderService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::{ProviderConfig, ServerConfig};
+    use crate::core::config::{ModelMappingValue, ProviderConfig, ServerConfig};
     use std::collections::HashMap;
+
+    /// Helper to create a simple string model mapping (for backward compatibility in tests)
+    fn simple_mapping(entries: &[(&str, &str)]) -> HashMap<String, ModelMappingValue> {
+        entries
+            .iter()
+            .map(|(k, v)| (k.to_string(), ModelMappingValue::Simple(v.to_string())))
+            .collect()
+    }
 
     fn create_test_config() -> AppConfig {
         AppConfig {
@@ -196,11 +204,7 @@ mod tests {
                     api_base: "http://localhost:8000".to_string(),
                     api_key: "key1".to_string(),
                     weight: 2,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert("model1".to_string(), "provider1-model1".to_string());
-                        map
-                    },
+                    model_mapping: simple_mapping(&[("model1", "provider1-model1")]),
                     provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
@@ -208,11 +212,7 @@ mod tests {
                     api_base: "http://localhost:8001".to_string(),
                     api_key: "key2".to_string(),
                     weight: 1,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert("model2".to_string(), "provider2-model2".to_string());
-                        map
-                    },
+                    model_mapping: simple_mapping(&[("model2", "provider2-model2")]),
                     provider_type: "openai".to_string(),
                 },
             ],
@@ -327,12 +327,14 @@ mod tests {
     fn test_get_all_models_with_duplicates() {
         let mut config = create_test_config();
         // Add same model to both providers
-        config.providers[0]
-            .model_mapping
-            .insert("shared-model".to_string(), "provider1-shared".to_string());
-        config.providers[1]
-            .model_mapping
-            .insert("shared-model".to_string(), "provider2-shared".to_string());
+        config.providers[0].model_mapping.insert(
+            "shared-model".to_string(),
+            ModelMappingValue::Simple("provider1-shared".to_string()),
+        );
+        config.providers[1].model_mapping.insert(
+            "shared-model".to_string(),
+            ModelMappingValue::Simple("provider2-shared".to_string()),
+        );
 
         let service = ProviderService::new(config);
         let models = service.get_all_models();
@@ -475,13 +477,21 @@ mod tests {
 
         let provider1 = providers.iter().find(|p| p.name == "Provider1").unwrap();
         assert_eq!(
-            provider1.model_mapping.get("model1").unwrap(),
+            provider1
+                .model_mapping
+                .get("model1")
+                .unwrap()
+                .mapped_model(),
             "provider1-model1"
         );
 
         let provider2 = providers.iter().find(|p| p.name == "Provider2").unwrap();
         assert_eq!(
-            provider2.model_mapping.get("model2").unwrap(),
+            provider2
+                .model_mapping
+                .get("model2")
+                .unwrap()
+                .mapped_model(),
             "provider2-model2"
         );
     }
@@ -540,12 +550,14 @@ mod tests {
     fn test_get_next_provider_with_shared_model() {
         // Create config where both providers have the same model
         let mut config = create_test_config();
-        config.providers[0]
-            .model_mapping
-            .insert("shared-model".to_string(), "provider1-shared".to_string());
-        config.providers[1]
-            .model_mapping
-            .insert("shared-model".to_string(), "provider2-shared".to_string());
+        config.providers[0].model_mapping.insert(
+            "shared-model".to_string(),
+            ModelMappingValue::Simple("provider1-shared".to_string()),
+        );
+        config.providers[1].model_mapping.insert(
+            "shared-model".to_string(),
+            ModelMappingValue::Simple("provider2-shared".to_string()),
+        );
 
         let service = ProviderService::new(config);
 
@@ -580,14 +592,7 @@ mod tests {
                     api_base: "https://api.claude.com".to_string(),
                     api_key: "key1".to_string(),
                     weight: 1,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert(
-                            "claude-opus-4-5-.*".to_string(),
-                            "claude-opus-mapped".to_string(),
-                        );
-                        map
-                    },
+                    model_mapping: simple_mapping(&[("claude-opus-4-5-.*", "claude-opus-mapped")]),
                     provider_type: "anthropic".to_string(),
                 },
                 ProviderConfig {
@@ -595,11 +600,7 @@ mod tests {
                     api_base: "https://api.openai.com".to_string(),
                     api_key: "key2".to_string(),
                     weight: 1,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert("gpt-4".to_string(), "gpt-4-turbo".to_string());
-                        map
-                    },
+                    model_mapping: simple_mapping(&[("gpt-4", "gpt-4-turbo")]),
                     provider_type: "openai".to_string(),
                 },
             ],
@@ -653,11 +654,7 @@ mod tests {
                 api_base: "https://api.gemini.com".to_string(),
                 api_key: "key1".to_string(),
                 weight: 1,
-                model_mapping: {
-                    let mut map = HashMap::new();
-                    map.insert("gemini-*".to_string(), "gemini-pro".to_string());
-                    map
-                },
+                model_mapping: simple_mapping(&[("gemini-*", "gemini-pro")]),
                 provider_type: "openai".to_string(),
             }],
             server: ServerConfig::default(),
@@ -694,12 +691,10 @@ mod tests {
                 api_base: "https://api1.com".to_string(),
                 api_key: "key1".to_string(),
                 weight: 1,
-                model_mapping: {
-                    let mut map = HashMap::new();
-                    map.insert("claude-.*".to_string(), "claude-pattern".to_string());
-                    map.insert("claude-opus".to_string(), "claude-opus-exact".to_string());
-                    map
-                },
+                model_mapping: simple_mapping(&[
+                    ("claude-.*", "claude-pattern"),
+                    ("claude-opus", "claude-opus-exact"),
+                ]),
                 provider_type: "anthropic".to_string(),
             }],
             server: ServerConfig::default(),
@@ -735,14 +730,7 @@ mod tests {
                     api_base: "https://api1.com".to_string(),
                     api_key: "key1".to_string(),
                     weight: 2,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert(
-                            "claude-opus-4-5-.*".to_string(),
-                            "provider1-claude".to_string(),
-                        );
-                        map
-                    },
+                    model_mapping: simple_mapping(&[("claude-opus-4-5-.*", "provider1-claude")]),
                     provider_type: "anthropic".to_string(),
                 },
                 ProviderConfig {
@@ -750,14 +738,7 @@ mod tests {
                     api_base: "https://api2.com".to_string(),
                     api_key: "key2".to_string(),
                     weight: 1,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert(
-                            "claude-opus-4-5-.*".to_string(),
-                            "provider2-claude".to_string(),
-                        );
-                        map
-                    },
+                    model_mapping: simple_mapping(&[("claude-opus-4-5-.*", "provider2-claude")]),
                     provider_type: "anthropic".to_string(),
                 },
             ],
@@ -805,16 +786,11 @@ mod tests {
                     api_base: "https://api1.com".to_string(),
                     api_key: "key1".to_string(),
                     weight: 1,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert("gpt-4".to_string(), "gpt-4-turbo".to_string()); // Exact match
-                        map.insert(
-                            "claude-opus-4-5-.*".to_string(),
-                            "claude-mapped".to_string(),
-                        ); // Regex pattern
-                        map.insert("gemini-*".to_string(), "gemini-pro".to_string()); // Simple wildcard
-                        map
-                    },
+                    model_mapping: simple_mapping(&[
+                        ("gpt-4", "gpt-4-turbo"),                // Exact match
+                        ("claude-opus-4-5-.*", "claude-mapped"), // Regex pattern
+                        ("gemini-*", "gemini-pro"),              // Simple wildcard
+                    ]),
                     provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
@@ -822,15 +798,10 @@ mod tests {
                     api_base: "https://api2.com".to_string(),
                     api_key: "key2".to_string(),
                     weight: 1,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert(
-                            "gpt-3.5-turbo".to_string(),
-                            "gpt-3.5-turbo-0125".to_string(),
-                        ); // Exact match
-                        map.insert("claude-.*".to_string(), "claude-default".to_string()); // Regex pattern
-                        map
-                    },
+                    model_mapping: simple_mapping(&[
+                        ("gpt-3.5-turbo", "gpt-3.5-turbo-0125"), // Exact match
+                        ("claude-.*", "claude-default"),         // Regex pattern
+                    ]),
                     provider_type: "openai".to_string(),
                 },
             ],

@@ -11,9 +11,11 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use utoipa::{OpenApi, ToSchema};
 
+use crate::core::config::ModelMappingValue;
 use crate::core::database::{
     create_key_preview, CreateCredential, CreateProvider, CredentialEntity, DynamicConfig,
     ProviderEntity, UpdateCredential, UpdateProvider,
@@ -299,8 +301,8 @@ pub struct ProviderResponse {
     pub provider_type: String,
     /// Base URL for the provider API
     pub api_base: String,
-    /// Model name mapping (request model -> provider model)
-    pub model_mapping: std::collections::HashMap<String, String>,
+    /// Model name mapping (request model -> provider model or extended entry)
+    pub model_mapping: HashMap<String, ModelMappingValue>,
     /// Weight for load balancing (higher = more traffic)
     pub weight: i32,
     /// Whether this provider is enabled
@@ -347,9 +349,9 @@ pub struct CreateProviderRequest {
     pub api_base: String,
     /// API key for authentication
     pub api_key: String,
-    /// Model name mapping (request model -> provider model)
+    /// Model name mapping (request model -> provider model or extended entry)
     #[serde(default)]
-    pub model_mapping: std::collections::HashMap<String, String>,
+    pub model_mapping: HashMap<String, ModelMappingValue>,
     /// Weight for load balancing (default: 1, higher = more traffic)
     #[serde(default = "default_weight")]
     pub weight: i32,
@@ -372,8 +374,8 @@ pub struct UpdateProviderRequest {
     pub api_base: Option<String>,
     /// API key for authentication
     pub api_key: Option<String>,
-    /// Model name mapping (request model -> provider model)
-    pub model_mapping: Option<std::collections::HashMap<String, String>>,
+    /// Model name mapping (request model -> provider model or extended entry)
+    pub model_mapping: Option<HashMap<String, ModelMappingValue>>,
     /// Weight for load balancing (higher = more traffic)
     pub weight: Option<i32>,
     /// Whether this provider is enabled

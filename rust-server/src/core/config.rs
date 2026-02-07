@@ -5,8 +5,133 @@
 //! Dynamic configuration is loaded from the database.
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
+use utoipa::ToSchema;
+
+/// Extended model mapping entry with metadata.
+///
+/// Supports rich model information including token limits, costs, and capabilities.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+pub struct ModelMappingEntry {
+    /// The actual model name to use for the provider
+    pub mapped_model: String,
+
+    /// Maximum context window (input + output)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+
+    /// Maximum input tokens
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u32>,
+
+    /// Maximum output tokens
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+
+    /// Cost per 1K input tokens in USD
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_cost_per_1k_tokens: Option<f64>,
+
+    /// Cost per 1K output tokens in USD
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_cost_per_1k_tokens: Option<f64>,
+
+    /// Whether model supports image input
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_vision: Option<bool>,
+
+    /// Whether model supports function/tool calling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_function_calling: Option<bool>,
+
+    /// Whether model supports streaming responses
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_streaming: Option<bool>,
+
+    /// Whether model supports JSON schema responses
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_response_schema: Option<bool>,
+
+    /// Whether model supports extended thinking/reasoning
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning: Option<bool>,
+
+    /// Whether model supports computer use
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_computer_use: Option<bool>,
+
+    /// Whether model supports PDF input
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_pdf_input: Option<bool>,
+
+    /// Model operation mode (chat, completion, embedding, image_generation)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+/// Union type for backward-compatible model mapping.
+///
+/// Supports both simple string format (e.g., "gpt-4-turbo") and
+/// extended object format with metadata.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum ModelMappingValue {
+    /// Simple string mapping (backward compatible)
+    Simple(String),
+    /// Extended mapping with metadata
+    Extended(ModelMappingEntry),
+}
+
+impl<'de> Deserialize<'de> for ModelMappingValue {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(s) => Ok(ModelMappingValue::Simple(s)),
+            serde_json::Value::Object(_) => {
+                let entry: ModelMappingEntry =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(ModelMappingValue::Extended(entry))
+            }
+            _ => Err(serde::de::Error::custom(
+                "expected string or object for model mapping value",
+            )),
+        }
+    }
+}
+
+impl ModelMappingValue {
+    /// Get the mapped model name from either format.
+    pub fn mapped_model(&self) -> &str {
+        match self {
+            ModelMappingValue::Simple(s) => s,
+            ModelMappingValue::Extended(e) => &e.mapped_model,
+        }
+    }
+
+    /// Get metadata if available (None for simple string format).
+    pub fn metadata(&self) -> Option<&ModelMappingEntry> {
+        match self {
+            ModelMappingValue::Simple(_) => None,
+            ModelMappingValue::Extended(e) => Some(e),
+        }
+    }
+}
+
+impl From<String> for ModelMappingValue {
+    fn from(s: String) -> Self {
+        ModelMappingValue::Simple(s)
+    }
+}
+
+impl From<&str> for ModelMappingValue {
+    fn from(s: &str) -> Self {
+        ModelMappingValue::Simple(s.to_string())
+    }
+}
 
 /// Main application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,9 +235,9 @@ pub struct ProviderConfig {
     #[serde(default = "default_weight")]
     pub weight: u32,
 
-    /// Model name mappings (client model -> provider model)
+    /// Model name mappings (client model -> provider model or extended entry)
     #[serde(default)]
-    pub model_mapping: HashMap<String, String>,
+    pub model_mapping: HashMap<String, ModelMappingValue>,
 
     /// Provider type (e.g., "openai", "azure", "anthropic")
     #[serde(default = "default_provider_type")]

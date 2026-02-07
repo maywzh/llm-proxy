@@ -4,11 +4,19 @@
 //! for all inputs, particularly focusing on the provider selection algorithm.
 
 use llm_proxy_rust::{
-    core::config::{AppConfig, ProviderConfig, ServerConfig},
+    core::config::{AppConfig, ModelMappingValue, ProviderConfig, ServerConfig},
     services::ProviderService,
 };
 use proptest::prelude::*;
 use std::collections::HashMap;
+
+/// Helper to create a simple model mapping
+fn simple_mapping(entries: &[(&str, &str)]) -> HashMap<String, ModelMappingValue> {
+    entries
+        .iter()
+        .map(|(k, v)| (k.to_string(), ModelMappingValue::Simple(v.to_string())))
+        .collect()
+}
 
 /// Generate a valid provider config with random weight
 fn provider_config_strategy() -> impl Strategy<Value = ProviderConfig> {
@@ -180,8 +188,8 @@ proptest! {
         model_name in "[a-z]{3,10}",
         mapped_name in "[a-z]{3,10}",
     ) {
-        let mut model_mapping = HashMap::new();
-        model_mapping.insert(model_name.clone(), mapped_name.clone());
+        let mut model_mapping: HashMap<String, ModelMappingValue> = HashMap::new();
+        model_mapping.insert(model_name.clone(), mapped_name.clone().into());
 
         let config = AppConfig {
             providers: vec![
@@ -210,9 +218,10 @@ proptest! {
         prop_assert_eq!(providers.len(), 1);
         let provider = &providers[0];
 
+        // Check that the mapped model name is correct
         prop_assert_eq!(
-            provider.model_mapping.get(&model_name),
-            Some(&mapped_name)
+            provider.model_mapping.get(&model_name).map(|v| v.mapped_model()),
+            Some(mapped_name.as_str())
         );
     }
 
@@ -438,13 +447,11 @@ mod complex_multi_provider_tests {
                     api_base: "https://api0.com".to_string(),
                     api_key: "key0".to_string(),
                     weight: 2,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert("model-a".to_string(), "provider0-model-a".to_string());
-                        map.insert("model-b".to_string(), "provider0-model-b".to_string());
-                        map.insert("model-c".to_string(), "provider0-model-c".to_string());
-                        map
-                    },
+                    model_mapping: simple_mapping(&[
+                        ("model-a", "provider0-model-a"),
+                        ("model-b", "provider0-model-b"),
+                        ("model-c", "provider0-model-c"),
+                    ]),
                     provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
@@ -452,13 +459,11 @@ mod complex_multi_provider_tests {
                     api_base: "https://api1.com".to_string(),
                     api_key: "key1".to_string(),
                     weight: 3,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert("model-a".to_string(), "provider1-model-a".to_string());
-                        map.insert("model-b".to_string(), "provider1-model-b".to_string());
-                        map.insert("model-d".to_string(), "provider1-model-d".to_string());
-                        map
-                    },
+                    model_mapping: simple_mapping(&[
+                        ("model-a", "provider1-model-a"),
+                        ("model-b", "provider1-model-b"),
+                        ("model-d", "provider1-model-d"),
+                    ]),
                     provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
@@ -466,12 +471,10 @@ mod complex_multi_provider_tests {
                     api_base: "https://api2.com".to_string(),
                     api_key: "key2".to_string(),
                     weight: 1,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert("model-b".to_string(), "provider2-model-b".to_string());
-                        map.insert("model-d".to_string(), "provider2-model-d".to_string());
-                        map
-                    },
+                    model_mapping: simple_mapping(&[
+                        ("model-b", "provider2-model-b"),
+                        ("model-d", "provider2-model-d"),
+                    ]),
                     provider_type: "openai".to_string(),
                 },
                 ProviderConfig {
@@ -479,11 +482,7 @@ mod complex_multi_provider_tests {
                     api_base: "https://api3.com".to_string(),
                     api_key: "key3".to_string(),
                     weight: 4,
-                    model_mapping: {
-                        let mut map = HashMap::new();
-                        map.insert("model-c".to_string(), "provider3-model-c".to_string());
-                        map
-                    },
+                    model_mapping: simple_mapping(&[("model-c", "provider3-model-c")]),
                     provider_type: "openai".to_string(),
                 },
             ],
