@@ -1,11 +1,19 @@
+# Stage 1: Install bun
+FROM cndevops-base-docker-local.arf.tesla.cn/base/node:20-alpine AS bun-installer
+
+USER root
+RUN npm install -g bun --registry=https://mirrors.tesla.cn/npm/
+
+# Stage 2: Builder stage
 FROM cndevops-base-docker-local.arf.tesla.cn/base/node:20-alpine AS builder
+
+COPY --from=bun-installer /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=bun-installer /usr/local/lib/node_modules/bun /usr/local/lib/node_modules/bun
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
-
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+COPY package.json bun.lockb* ./
+RUN bun install --frozen-lockfile
 
 COPY . .
 
@@ -18,7 +26,7 @@ ENV PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL=${PUBLIC_GRAFANA_PUBLIC_DASHBOARD_URL}
 ARG VITE_CHAT_VISION_MODEL_ALLOWLIST=
 ENV VITE_CHAT_VISION_MODEL_ALLOWLIST=${VITE_CHAT_VISION_MODEL_ALLOWLIST}
 
-RUN pnpm build
+RUN bun run build
 
 FROM cndevops-base-docker-local.arf.tesla.cn/base/node:20-alpine AS runner
 

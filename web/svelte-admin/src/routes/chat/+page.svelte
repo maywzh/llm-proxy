@@ -7,6 +7,7 @@
     updateChatSettings,
   } from '$lib/chat-settings';
   import { renderMarkdownToHtml } from '$lib/markdown';
+  import { renderMermaidBlocks } from '$lib/mermaid';
   import ChatComposer from '$lib/components/ChatComposer.svelte';
   import ChatMessageActions from '$lib/components/ChatMessageActions.svelte';
   import TypingIndicator from '$lib/components/TypingIndicator.svelte';
@@ -79,6 +80,7 @@
   let sharedIndex = $state<number | null>(null);
   let shareResetTimer: number | null = $state(null);
   let messagesEnd = $state<HTMLElement | null>(null);
+  let messagesArea = $state<HTMLElement | null>(null);
   let credentialKeyInput: HTMLInputElement | null = $state(null);
   let imageInput: HTMLInputElement | null = $state(null);
 
@@ -113,6 +115,14 @@
 
   $effect(() => {
     scrollToBottom();
+  });
+
+  $effect(() => {
+    void messages;
+    void isStreaming;
+    if (!isStreaming) {
+      requestAnimationFrame(() => renderMermaidBlocks(messagesArea));
+    }
   });
 
   $effect(() => {
@@ -507,7 +517,7 @@
         <SquarePen class="w-5 h-5" />
       </button>
     {/if}
-    <div class="flex-1 overflow-y-auto">
+    <div class="flex-1 overflow-y-auto" bind:this={messagesArea}>
       <div class="mx-auto w-full max-w-3xl h-full px-4 py-4">
         {#if messages.length === 0}
           <div class="h-full flex flex-col items-center justify-center">
