@@ -1,7 +1,6 @@
 """Tests for Prometheus metrics"""
 
 import pytest
-from prometheus_client import REGISTRY
 
 from app.core.metrics import (
     REQUEST_COUNT,

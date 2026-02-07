@@ -54,7 +54,6 @@ class TestV2InputTokenCalculation:
 
     def test_calculate_with_images(self):
         """Calculate tokens with image content"""
-        from app.utils.streaming import calculate_image_tokens
 
         base64_png_1x1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII="
         messages = [

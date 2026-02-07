@@ -1,6 +1,5 @@
 """Tests for shared utility functions."""
 
-import pytest
 from unittest.mock import patch
 
 from app.core.utils import strip_provider_suffix

@@ -4,7 +4,11 @@ from typing import Any, Dict, Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.dependencies import verify_auth, get_provider_svc, model_matches_allowed_list
+from app.api.dependencies import (
+    verify_auth,
+    get_provider_svc,
+    model_matches_allowed_list,
+)
 from app.models.config import CredentialConfig, ModelMappingEntry, get_mapped_model_name
 from app.models.provider import _compile_pattern, _is_pattern
 from app.services.provider_service import ProviderService

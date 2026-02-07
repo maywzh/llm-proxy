@@ -1,7 +1,7 @@
 """Tests for streaming utilities"""
 
 import json
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -448,6 +448,7 @@ class TestSSELineBuffering:
     @pytest.mark.asyncio
     async def test_fragmented_sse_chunks_reassembled(self):
         """Test that SSE events split across TCP packets are correctly reassembled"""
+
         # Simulate TCP fragmentation: one JSON split across multiple lines/packets
         async def mock_aiter_lines():
             # First packet: partial data line
@@ -485,6 +486,7 @@ class TestSSELineBuffering:
     @pytest.mark.asyncio
     async def test_multiline_sse_event_buffered(self):
         """Test that multi-line SSE events are properly buffered"""
+
         async def mock_aiter_lines():
             # SSE event with event type line
             yield "event: message"
@@ -504,6 +506,7 @@ class TestSSELineBuffering:
     @pytest.mark.asyncio
     async def test_truncated_json_not_emitted_early(self):
         """Test that incomplete JSON is buffered until complete"""
+
         # This simulates the exact bug scenario from the user report
         async def mock_aiter_lines():
             # Line with complete JSON - will be buffered
@@ -531,6 +534,7 @@ class TestSSELineBuffering:
     @pytest.mark.asyncio
     async def test_buffer_flushed_at_stream_end(self):
         """Test that remaining buffer content is flushed when stream ends"""
+
         async def mock_aiter_lines():
             yield 'data: {"model":"gpt-4-0613","content":"final"}'
             # No blank line - stream ends with data in buffer
@@ -552,6 +556,7 @@ class TestSSELineBuffering:
     @pytest.mark.asyncio
     async def test_consecutive_events_handled(self):
         """Test rapid consecutive SSE events are handled correctly"""
+
         async def mock_aiter_lines():
             for i in range(5):
                 yield f'data: {{"model":"gpt-4-0613","index":{i}}}'

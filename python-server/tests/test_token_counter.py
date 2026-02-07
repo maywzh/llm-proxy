@@ -1,7 +1,5 @@
 """Tests for the OutboundTokenCounter module."""
 
-import pytest
-
 from app.core.token_counter import OutboundTokenCounter
 
 

@@ -6,10 +6,9 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from .base import Transformer, TransformContext
+from .base import TransformContext
 from .registry import TransformerRegistry
 from .unified import (
-    Protocol,
     UnifiedRequest,
     UnifiedResponse,
     UnifiedStreamChunk,

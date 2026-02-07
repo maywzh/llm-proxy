@@ -1,7 +1,7 @@
 """Tests for stream metrics module."""
 
 import time
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -103,7 +103,9 @@ class TestRecordStreamMetrics:
     @patch("app.core.stream_metrics.TOKENS_PER_SECOND")
     @patch("app.core.stream_metrics.TTFT")
     @patch("app.core.stream_metrics.TOKEN_USAGE")
-    def test_no_tps_when_no_first_token_time(self, mock_token_usage, mock_ttft, mock_tps):
+    def test_no_tps_when_no_first_token_time(
+        self, mock_token_usage, mock_ttft, mock_tps
+    ):
         """Test TPS is not recorded when first_token_time is None."""
         stats = StreamStats(
             model="gpt-4",
@@ -124,7 +126,9 @@ class TestRecordStreamMetrics:
     @patch("app.core.stream_metrics.TOKENS_PER_SECOND")
     @patch("app.core.stream_metrics.TTFT")
     @patch("app.core.stream_metrics.TOKEN_USAGE")
-    def test_no_tps_when_zero_output_tokens(self, mock_token_usage, mock_ttft, mock_tps):
+    def test_no_tps_when_zero_output_tokens(
+        self, mock_token_usage, mock_ttft, mock_tps
+    ):
         """Test TPS is not recorded when output_tokens is 0."""
         stats = StreamStats(
             model="gpt-4",
@@ -176,7 +180,9 @@ class TestRecordStreamMetrics:
     @patch("app.core.stream_metrics.TOKENS_PER_SECOND")
     @patch("app.core.stream_metrics.TTFT")
     @patch("app.core.stream_metrics.TOKEN_USAGE")
-    def test_no_ttft_when_no_first_token_time(self, mock_token_usage, mock_ttft, mock_tps):
+    def test_no_ttft_when_no_first_token_time(
+        self, mock_token_usage, mock_ttft, mock_tps
+    ):
         """Test TTFT is not recorded when first_token_time is None."""
         stats = StreamStats(
             model="gpt-4",
@@ -227,7 +233,9 @@ class TestRecordStreamMetrics:
     @patch("app.core.stream_metrics.TOKENS_PER_SECOND")
     @patch("app.core.stream_metrics.TTFT")
     @patch("app.core.stream_metrics.TOKEN_USAGE")
-    def test_no_token_usage_when_zero_tokens(self, mock_token_usage, mock_ttft, mock_tps):
+    def test_no_token_usage_when_zero_tokens(
+        self, mock_token_usage, mock_ttft, mock_tps
+    ):
         """Test token usage is not recorded when both input and output are 0."""
         stats = StreamStats(
             model="gpt-4",

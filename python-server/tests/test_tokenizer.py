@@ -1,7 +1,5 @@
 """Tests for the tokenizer module."""
 
-import pytest
-
 from app.core.tokenizer import (
     TokenizerType,
     count_tokens,
