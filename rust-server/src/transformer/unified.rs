@@ -68,7 +68,7 @@ impl std::str::FromStr for Protocol {
 pub fn provider_type_to_protocol(provider_type: &str) -> Protocol {
     match provider_type.to_lowercase().as_str() {
         "anthropic" | "claude" => Protocol::Anthropic,
-        "openai" | "azure" | _ => Protocol::OpenAI,
+        _ => Protocol::OpenAI,
     }
 }
 
@@ -77,19 +77,14 @@ pub fn provider_type_to_protocol(provider_type: &str) -> Protocol {
 // ============================================================================
 
 /// Unified message role.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
+    #[default]
     User,
     Assistant,
     Tool,
-}
-
-impl Default for Role {
-    fn default() -> Self {
-        Role::User
-    }
 }
 
 impl std::fmt::Display for Role {
@@ -500,9 +495,10 @@ impl UnifiedRequest {
 // ============================================================================
 
 /// Stop reason enum.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
+    #[default]
     EndTurn,
     MaxTokens,
     StopSequence,
@@ -510,12 +506,6 @@ pub enum StopReason {
     ContentFilter,
     /// Length limit reached (OpenAI style)
     Length,
-}
-
-impl Default for StopReason {
-    fn default() -> Self {
-        StopReason::EndTurn
-    }
 }
 
 impl std::fmt::Display for StopReason {

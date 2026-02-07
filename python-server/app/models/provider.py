@@ -3,7 +3,14 @@
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
+
+from app.models.config import (
+    ModelMappingEntry,
+    ModelMappingValue,
+    get_mapped_model_name,
+    normalize_model_mapping,
+)
 
 
 def _is_pattern(key: str) -> bool:
@@ -77,16 +84,16 @@ def _compile_pattern(pattern: str) -> re.Pattern:
 
 
 def match_model_pattern(
-    model: str, model_mapping: Dict[str, str]
-) -> Optional[Tuple[str, str]]:
+    model: str, model_mapping: Dict[str, ModelMappingValue]
+) -> Optional[Tuple[str, ModelMappingValue]]:
     """Match a model name against model_mapping keys, supporting wildcards/regex.
 
     Args:
         model: The model name to match (e.g., "claude-opus-4-5-20240620")
-        model_mapping: Dict of pattern -> mapped_model (e.g., {"claude-opus-4-5-.*": "claude-opus"})
+        model_mapping: Dict of pattern -> ModelMappingValue (str or ModelMappingEntry)
 
     Returns:
-        Tuple of (matched_pattern, mapped_model) if found, None otherwise.
+        Tuple of (matched_pattern, ModelMappingValue) if found, None otherwise.
         Exact matches take priority over pattern matches.
     """
     # First, try exact match (highest priority)
@@ -94,12 +101,12 @@ def match_model_pattern(
         return (model, model_mapping[model])
 
     # Then, try pattern matching
-    for pattern, mapped_model in model_mapping.items():
+    for pattern, value in model_mapping.items():
         if _is_pattern(pattern):
             try:
                 compiled = _compile_pattern(pattern)
                 if compiled.match(model):
-                    return (pattern, mapped_model)
+                    return (pattern, value)
             except re.error:
                 # Invalid regex, skip this pattern
                 continue
@@ -107,12 +114,12 @@ def match_model_pattern(
     return None
 
 
-def model_matches_mapping(model: str, model_mapping: Dict[str, str]) -> bool:
+def model_matches_mapping(model: str, model_mapping: Dict[str, ModelMappingValue]) -> bool:
     """Check if a model matches any key in model_mapping (exact or pattern).
 
     Args:
         model: The model name to check
-        model_mapping: Dict of pattern -> mapped_model
+        model_mapping: Dict of pattern -> ModelMappingValue
 
     Returns:
         True if model matches any key (exact or pattern), False otherwise
@@ -120,20 +127,41 @@ def model_matches_mapping(model: str, model_mapping: Dict[str, str]) -> bool:
     return match_model_pattern(model, model_mapping) is not None
 
 
-def get_mapped_model(model: str, model_mapping: Dict[str, str]) -> str:
+def get_mapped_model(model: str, model_mapping: Dict[str, ModelMappingValue]) -> str:
     """Get the mapped model name for a given model.
 
     Args:
         model: The model name to map
-        model_mapping: Dict of pattern -> mapped_model
+        model_mapping: Dict of pattern -> ModelMappingValue
 
     Returns:
         The mapped model name if found, otherwise the original model name
     """
     result = match_model_pattern(model, model_mapping)
     if result:
-        return result[1]
+        _, value = result
+        return get_mapped_model_name(value)
     return model
+
+
+def get_model_metadata(
+    model: str, model_mapping: Dict[str, ModelMappingValue]
+) -> Optional[ModelMappingEntry]:
+    """Get the model metadata for a given model if available.
+
+    Args:
+        model: The model name to look up
+        model_mapping: Dict of pattern -> ModelMappingValue
+
+    Returns:
+        ModelMappingEntry with metadata if model uses extended format, None otherwise
+    """
+    result = match_model_pattern(model, model_mapping)
+    if result:
+        _, value = result
+        if isinstance(value, ModelMappingEntry):
+            return value
+    return None
 
 
 @dataclass
@@ -144,7 +172,7 @@ class Provider:
     api_base: str
     api_key: str
     weight: int
-    model_mapping: Dict[str, str] = field(default_factory=dict)
+    model_mapping: Dict[str, ModelMappingValue] = field(default_factory=dict)
     provider_type: str = field(default="openai")
 
     def supports_model(self, model: str) -> bool:
@@ -154,3 +182,7 @@ class Provider:
     def get_mapped_model(self, model: str) -> str:
         """Get the mapped model name for the given model."""
         return get_mapped_model(model, self.model_mapping)
+
+    def get_model_metadata(self, model: str) -> Optional[ModelMappingEntry]:
+        """Get the model metadata for the given model if available."""
+        return get_model_metadata(model, self.model_mapping)

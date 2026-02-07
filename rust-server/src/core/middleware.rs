@@ -128,10 +128,7 @@ pub fn extract_client(headers: &HeaderMap) -> String {
     }
 
     // Fallback: extract first token (before space or slash) and truncate to 30 chars
-    let first_token = raw
-        .split(|c: char| c == ' ' || c == '/')
-        .next()
-        .unwrap_or(raw);
+    let first_token = raw.split([' ', '/']).next().unwrap_or(raw);
 
     let cleaned: String = first_token
         .chars()

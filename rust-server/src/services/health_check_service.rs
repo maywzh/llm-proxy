@@ -271,7 +271,7 @@ impl HealthCheckService {
             .model_mapping
             .0
             .get(model)
-            .map(|s| s.as_str())
+            .map(|v| v.mapped_model())
             .unwrap_or(model);
 
         // Prepare test request (minimal tokens to reduce cost)
@@ -525,7 +525,15 @@ pub async fn check_providers_health(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::ModelMappingValue;
     use std::collections::HashMap;
+
+    fn simple_mapping(entries: &[(&str, &str)]) -> HashMap<String, ModelMappingValue> {
+        entries
+            .iter()
+            .map(|(k, v)| (k.to_string(), ModelMappingValue::Simple(v.to_string())))
+            .collect()
+    }
 
     fn create_test_provider() -> ProviderEntity {
         ProviderEntity {
@@ -547,12 +555,12 @@ mod tests {
         let client = Client::new();
         let service = HealthCheckService::new(client, 10);
         let mut provider = create_test_provider();
-        let mut mapping = HashMap::new();
-        mapping.insert("model1".to_string(), "provider-model1".to_string());
-        mapping.insert("model2".to_string(), "provider-model2".to_string());
-        mapping.insert("model3".to_string(), "provider-model3".to_string());
-        mapping.insert("model4".to_string(), "provider-model4".to_string());
-        provider.model_mapping = sqlx::types::Json(mapping);
+        provider.model_mapping = sqlx::types::Json(simple_mapping(&[
+            ("model1", "provider-model1"),
+            ("model2", "provider-model2"),
+            ("model3", "provider-model3"),
+            ("model4", "provider-model4"),
+        ]));
 
         let models = service.get_default_test_models(&provider);
         assert_eq!(models.len(), 4);
@@ -808,10 +816,10 @@ mod tests {
         let client = Client::new();
         let service = HealthCheckService::new(client, 10);
         let mut provider = create_test_provider();
-        let mut mapping = HashMap::new();
-        mapping.insert("gpt-4".to_string(), "gpt-4-turbo".to_string());
-        mapping.insert("gpt-3.5-turbo".to_string(), "gpt-35-turbo".to_string());
-        provider.model_mapping = sqlx::types::Json(mapping);
+        provider.model_mapping = sqlx::types::Json(simple_mapping(&[
+            ("gpt-4", "gpt-4-turbo"),
+            ("gpt-3.5-turbo", "gpt-35-turbo"),
+        ]));
 
         let models = service.get_all_mapped_models(&provider);
         assert_eq!(models.len(), 2);

@@ -3,8 +3,15 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models.config import ProviderConfig, ServerConfig, AppConfig
-from app.models.provider import Provider
+from app.models.config import (
+    ProviderConfig,
+    ServerConfig,
+    AppConfig,
+    ModelMappingEntry,
+    get_mapped_model_name,
+    normalize_model_mapping,
+)
+from app.models.provider import Provider, get_model_metadata
 
 
 @pytest.mark.unit
@@ -434,3 +441,251 @@ class TestModelIntegration:
         assert len(providers) == 2
         assert providers[0].weight == 2
         assert providers[1].weight == 1
+
+
+@pytest.mark.unit
+class TestModelMappingExtended:
+    """Test extended model mapping with metadata"""
+
+    def test_model_mapping_entry_creation(self):
+        """Test creating ModelMappingEntry with all fields"""
+        entry = ModelMappingEntry(
+            mapped_model="claude-3-sonnet",
+            max_tokens=200000,
+            max_input_tokens=200000,
+            max_output_tokens=4096,
+            input_cost_per_1k_tokens=0.003,
+            output_cost_per_1k_tokens=0.015,
+            supports_vision=True,
+            supports_function_calling=True,
+            supports_streaming=True,
+            supports_response_schema=True,
+            supports_reasoning=False,
+            mode="chat",
+        )
+
+        assert entry.mapped_model == "claude-3-sonnet"
+        assert entry.max_tokens == 200000
+        assert entry.max_output_tokens == 4096
+        assert entry.input_cost_per_1k_tokens == 0.003
+        assert entry.supports_vision is True
+        assert entry.mode == "chat"
+
+    def test_model_mapping_entry_minimal(self):
+        """Test ModelMappingEntry with only required field"""
+        entry = ModelMappingEntry(mapped_model="gpt-4-turbo")
+
+        assert entry.mapped_model == "gpt-4-turbo"
+        assert entry.max_tokens is None
+        assert entry.supports_vision is None
+
+    def test_simple_string_format_backward_compat(self):
+        """Test backward compatible string format in ProviderConfig"""
+        provider = ProviderConfig(
+            name="test",
+            api_base="https://api.test.com",
+            api_key="key",
+            model_mapping={"gpt-4": "gpt-4-turbo"},
+        )
+
+        # Simple string format should still work
+        assert "gpt-4" in provider.model_mapping
+        value = provider.model_mapping["gpt-4"]
+        assert isinstance(value, str)
+        assert value == "gpt-4-turbo"
+
+    def test_extended_object_format(self):
+        """Test extended object format with metadata"""
+        provider = ProviderConfig(
+            name="test",
+            api_base="https://api.test.com",
+            api_key="key",
+            model_mapping={
+                "claude-3": {
+                    "mapped_model": "claude-3-sonnet",
+                    "max_tokens": 200000,
+                    "supports_vision": True,
+                }
+            },
+        )
+
+        entry = provider.model_mapping["claude-3"]
+        assert isinstance(entry, ModelMappingEntry)
+        assert entry.mapped_model == "claude-3-sonnet"
+        assert entry.max_tokens == 200000
+        assert entry.supports_vision is True
+
+    def test_mixed_formats(self):
+        """Test mixed simple and extended formats in same provider"""
+        provider = ProviderConfig(
+            name="test",
+            api_base="https://api.test.com",
+            api_key="key",
+            model_mapping={
+                "gpt-4": "gpt-4-turbo",  # Simple format
+                "claude-3": {  # Extended format
+                    "mapped_model": "claude-3-sonnet",
+                    "max_tokens": 200000,
+                },
+            },
+        )
+
+        # Check simple format
+        assert isinstance(provider.model_mapping["gpt-4"], str)
+        assert provider.model_mapping["gpt-4"] == "gpt-4-turbo"
+
+        # Check extended format
+        assert isinstance(provider.model_mapping["claude-3"], ModelMappingEntry)
+        assert provider.model_mapping["claude-3"].mapped_model == "claude-3-sonnet"
+
+    def test_get_mapped_model_name_from_string(self):
+        """Test extracting mapped_model from simple string"""
+        assert get_mapped_model_name("gpt-4-turbo") == "gpt-4-turbo"
+
+    def test_get_mapped_model_name_from_entry(self):
+        """Test extracting mapped_model from ModelMappingEntry"""
+        entry = ModelMappingEntry(mapped_model="claude-3-sonnet", max_tokens=200000)
+        assert get_mapped_model_name(entry) == "claude-3-sonnet"
+
+    def test_normalize_model_mapping(self):
+        """Test normalize_model_mapping function"""
+        raw = {
+            "gpt-4": "gpt-4-turbo",
+            "claude-3": {"mapped_model": "claude-3-sonnet", "max_tokens": 200000},
+        }
+
+        normalized = normalize_model_mapping(raw)
+
+        assert isinstance(normalized["gpt-4"], str)
+        assert isinstance(normalized["claude-3"], ModelMappingEntry)
+
+    def test_provider_with_extended_mapping(self):
+        """Test Provider dataclass with extended model mapping"""
+        mapping = {
+            "gpt-4": "gpt-4-turbo",
+            "claude-3": ModelMappingEntry(
+                mapped_model="claude-3-sonnet",
+                max_tokens=200000,
+                supports_vision=True,
+            ),
+        }
+
+        provider = Provider(
+            name="test",
+            api_base="https://api.test.com",
+            api_key="key",
+            weight=1,
+            model_mapping=mapping,
+        )
+
+        # Test supports_model with both formats
+        assert provider.supports_model("gpt-4") is True
+        assert provider.supports_model("claude-3") is True
+
+        # Test get_mapped_model with both formats
+        assert provider.get_mapped_model("gpt-4") == "gpt-4-turbo"
+        assert provider.get_mapped_model("claude-3") == "claude-3-sonnet"
+
+    def test_provider_get_model_metadata(self):
+        """Test Provider.get_model_metadata method"""
+        mapping = {
+            "gpt-4": "gpt-4-turbo",  # Simple format - no metadata
+            "claude-3": ModelMappingEntry(
+                mapped_model="claude-3-sonnet",
+                max_tokens=200000,
+                supports_vision=True,
+            ),
+        }
+
+        provider = Provider(
+            name="test",
+            api_base="https://api.test.com",
+            api_key="key",
+            weight=1,
+            model_mapping=mapping,
+        )
+
+        # Simple format returns None
+        assert provider.get_model_metadata("gpt-4") is None
+
+        # Extended format returns metadata
+        metadata = provider.get_model_metadata("claude-3")
+        assert metadata is not None
+        assert metadata.max_tokens == 200000
+        assert metadata.supports_vision is True
+
+    def test_pattern_matching_with_extended_format(self):
+        """Test pattern matching works with extended format"""
+        mapping = {
+            "claude-opus-4-5-.*": ModelMappingEntry(
+                mapped_model="claude-opus-mapped",
+                max_tokens=128000,
+                supports_reasoning=True,
+            ),
+        }
+
+        provider = Provider(
+            name="test",
+            api_base="https://api.test.com",
+            api_key="key",
+            weight=1,
+            model_mapping=mapping,
+        )
+
+        # Pattern should match
+        assert provider.supports_model("claude-opus-4-5-20240620") is True
+        assert provider.get_mapped_model("claude-opus-4-5-20240620") == "claude-opus-mapped"
+
+        # Metadata should be available through pattern match
+        metadata = provider.get_model_metadata("claude-opus-4-5-20240620")
+        assert metadata is not None
+        assert metadata.max_tokens == 128000
+        assert metadata.supports_reasoning is True
+
+    def test_model_mapping_entry_serialization(self):
+        """Test ModelMappingEntry serialization excludes None values"""
+        entry = ModelMappingEntry(
+            mapped_model="test-model",
+            max_tokens=100000,
+            # All other fields are None
+        )
+
+        data = entry.model_dump(exclude_none=True)
+        assert data == {"mapped_model": "test-model", "max_tokens": 100000}
+        assert "supports_vision" not in data
+
+    def test_provider_config_from_db_format(self):
+        """Test ProviderConfig can parse database JSONB format"""
+        # Simulating data from PostgreSQL JSONB
+        db_data = {
+            "name": "db-provider",
+            "api_base": "https://api.test.com",
+            "api_key": "key",
+            "model_mapping": {
+                "gpt-4": "gpt-4-turbo",
+                "claude-3": {
+                    "mapped_model": "claude-3-sonnet",
+                    "max_tokens": 200000,
+                    "max_output_tokens": 4096,
+                    "input_cost_per_1k_tokens": 0.003,
+                    "output_cost_per_1k_tokens": 0.015,
+                    "supports_vision": True,
+                    "supports_function_calling": True,
+                    "mode": "chat",
+                },
+            },
+        }
+
+        provider = ProviderConfig(**db_data)
+
+        # Verify simple format
+        assert provider.model_mapping["gpt-4"] == "gpt-4-turbo"
+
+        # Verify extended format
+        claude = provider.model_mapping["claude-3"]
+        assert isinstance(claude, ModelMappingEntry)
+        assert claude.mapped_model == "claude-3-sonnet"
+        assert claude.max_tokens == 200000
+        assert claude.input_cost_per_1k_tokens == 0.003
+        assert claude.supports_vision is True
+        assert claude.mode == "chat"

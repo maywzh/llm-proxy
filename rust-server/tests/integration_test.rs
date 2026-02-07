@@ -78,7 +78,7 @@ fn create_test_app(config: AppConfig) -> Router {
 
 /// Create a test config without authentication
 fn create_test_config_no_auth() -> AppConfig {
-    use llm_proxy_rust::core::config::{ProviderConfig, ServerConfig};
+    use llm_proxy_rust::core::config::{ModelMappingValue, ProviderConfig, ServerConfig};
     use std::collections::HashMap;
 
     AppConfig {
@@ -89,9 +89,9 @@ fn create_test_config_no_auth() -> AppConfig {
                 api_key: "test_key_1".to_string(),
                 weight: 2,
                 model_mapping: {
-                    let mut map = HashMap::new();
-                    map.insert("gpt-4".to_string(), "test-gpt-4".to_string());
-                    map.insert("gpt-3.5-turbo".to_string(), "test-gpt-3.5".to_string());
+                    let mut map: HashMap<String, ModelMappingValue> = HashMap::new();
+                    map.insert("gpt-4".to_string(), "test-gpt-4".into());
+                    map.insert("gpt-3.5-turbo".to_string(), "test-gpt-3.5".into());
                     map
                 },
                 provider_type: "openai".to_string(),
@@ -102,8 +102,8 @@ fn create_test_config_no_auth() -> AppConfig {
                 api_key: "test_key_2".to_string(),
                 weight: 1,
                 model_mapping: {
-                    let mut map = HashMap::new();
-                    map.insert("claude-3".to_string(), "test-claude-3".to_string());
+                    let mut map: HashMap<String, ModelMappingValue> = HashMap::new();
+                    map.insert("claude-3".to_string(), "test-claude-3".into());
                     map
                 },
                 provider_type: "anthropic".to_string(),
@@ -216,7 +216,10 @@ async fn test_list_model_info_endpoint() {
         .find(|m| m["model_name"].as_str() == Some("gpt-4"))
         .unwrap();
     assert_eq!(gpt4_entry["litellm_params"]["model"], "test-gpt-4");
-    assert_eq!(gpt4_entry["litellm_params"]["custom_llm_provider"], "openai");
+    assert_eq!(
+        gpt4_entry["litellm_params"]["custom_llm_provider"],
+        "openai"
+    );
 }
 
 #[tokio::test]

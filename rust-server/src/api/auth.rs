@@ -309,13 +309,16 @@ mod tests {
 
     #[test]
     fn test_model_matches_allowed_list_regex_pattern() {
-        let allowed = vec![
-            "claude-opus-4-5-.*".to_string(),
-            "gpt-4-.*".to_string(),
-        ];
+        let allowed = vec!["claude-opus-4-5-.*".to_string(), "gpt-4-.*".to_string()];
 
-        assert!(model_matches_allowed_list("claude-opus-4-5-20240620", &allowed));
-        assert!(model_matches_allowed_list("claude-opus-4-5-latest", &allowed));
+        assert!(model_matches_allowed_list(
+            "claude-opus-4-5-20240620",
+            &allowed
+        ));
+        assert!(model_matches_allowed_list(
+            "claude-opus-4-5-latest",
+            &allowed
+        ));
         assert!(model_matches_allowed_list("gpt-4-turbo", &allowed));
         assert!(model_matches_allowed_list("gpt-4-0125-preview", &allowed));
         // These should NOT match because .* requires at least one character after the prefix

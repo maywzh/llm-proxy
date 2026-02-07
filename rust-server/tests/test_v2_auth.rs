@@ -21,7 +21,7 @@ use llm_proxy_rust::{
         responses_v2, AppState, ProxyState,
     },
     core::{
-        config::{CredentialConfig, ProviderConfig, ServerConfig},
+        config::{CredentialConfig, ModelMappingValue, ProviderConfig, ServerConfig},
         database::hash_key,
         init_metrics, RateLimiter,
     },
@@ -41,9 +41,9 @@ use wiremock::{
 
 /// Create a test config without authentication (no credentials)
 fn create_test_config_no_auth(mock_server_uri: &str) -> llm_proxy_rust::core::AppConfig {
-    let mut model_mapping = HashMap::new();
-    model_mapping.insert("gpt-4".to_string(), "test-gpt-4".to_string());
-    model_mapping.insert("claude-3-opus".to_string(), "test-claude-3".to_string());
+    let mut model_mapping: HashMap<String, ModelMappingValue> = HashMap::new();
+    model_mapping.insert("gpt-4".to_string(), "test-gpt-4".into());
+    model_mapping.insert("claude-3-opus".to_string(), "test-claude-3".into());
 
     llm_proxy_rust::core::AppConfig {
         providers: vec![ProviderConfig {

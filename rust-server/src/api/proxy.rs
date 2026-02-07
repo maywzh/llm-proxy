@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -22,7 +22,8 @@ use crate::api::claude_models::{ClaudeTokenCountRequest, ClaudeTokenCountRespons
 use crate::api::gemini3::{normalize_request_payload, strip_gemini3_provider_fields};
 use crate::api::handlers::AppState;
 use crate::api::models::{
-    LiteLlmParams, ModelInfo, ModelInfoDetails, ModelInfoEntry, ModelInfoList, ModelList,
+    LiteLlmParams, ModelInfo, ModelInfoDetails, ModelInfoEntry, ModelInfoListV1,
+    ModelInfoQueryParams, ModelInfoQueryParamsV1, ModelList, PaginatedModelInfoList,
 };
 use crate::api::streaming::{calculate_message_tokens_with_tools, create_sse_stream};
 use crate::core::config::CredentialConfig;
@@ -863,9 +864,10 @@ async fn handle_streaming_proxy_response(
 
                                     // Transform unified chunks to client format
                                     for chunk in processed_chunks {
-                                        if let Ok(formatted) = client_t
-                                            .transform_stream_chunk_out(&chunk, state.client_protocol)
-                                        {
+                                        if let Ok(formatted) = client_t.transform_stream_chunk_out(
+                                            &chunk,
+                                            state.client_protocol,
+                                        ) {
                                             output.push_str(&formatted);
                                         }
                                     }
@@ -1241,11 +1243,94 @@ pub async fn list_models_v2(
         .await
 }
 
+/// List model deployments in LiteLLM v1 format (no pagination).
+///
+/// Returns all model entries without pagination.
+/// Supports filtering by model name and litellm_model_id only.
+pub async fn list_model_info_v1(
+    State(state): State<Arc<ProxyState>>,
+    headers: HeaderMap,
+    Query(query): Query<ModelInfoQueryParamsV1>,
+) -> Result<Json<ModelInfoListV1>> {
+    let request_id = generate_request_id();
+
+    REQUEST_ID
+        .scope(request_id.clone(), async move {
+            let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+
+            tracing::debug!(
+                request_id = %request_id,
+                "Listing model info (V1)"
+            );
+
+            let allowed_models = key_config
+                .as_ref()
+                .map(|config| config.allowed_models.clone())
+                .unwrap_or_default();
+
+            let provider_service = state.app_state.get_provider_service();
+            let providers = provider_service.get_all_providers();
+
+            let mut data = Vec::new();
+            for provider in providers {
+                let mut model_keys: Vec<String> = provider.model_mapping.keys().cloned().collect();
+                model_keys.sort();
+                for model_name in model_keys {
+                    if !model_allowed_for_info(&model_name, &allowed_models) {
+                        continue;
+                    }
+
+                    let value = provider.model_mapping.get(&model_name);
+                    let mapped_model = value
+                        .map(|v| v.mapped_model().to_string())
+                        .unwrap_or_default();
+
+                    let mut model_info = ModelInfoDetails::new(
+                        provider.name.clone(),
+                        provider.provider_type.clone(),
+                        provider.weight,
+                        crate::api::models::is_pattern(&model_name),
+                    );
+
+                    if let Some(metadata) = value.and_then(|v| v.metadata()) {
+                        model_info = model_info.with_metadata(metadata);
+                    }
+
+                    data.push(ModelInfoEntry {
+                        model_name: model_name.clone(),
+                        litellm_params: LiteLlmParams {
+                            model: mapped_model,
+                            api_base: provider.api_base.clone(),
+                            custom_llm_provider: provider.provider_type.clone(),
+                        },
+                        model_info,
+                    });
+                }
+            }
+
+            // Apply v1 filters (only model and litellm_model_id)
+
+            // 1. Exact match by model name
+            if let Some(ref model) = query.model {
+                data.retain(|entry| entry.model_name == *model);
+            }
+
+            // 2. Filter by litellm_model_id (mapped model) - v1 naming convention
+            if let Some(ref model_id) = query.litellm_model_id {
+                data.retain(|entry| entry.litellm_params.model == *model_id);
+            }
+
+            Ok(Json(ModelInfoListV1 { data }))
+        })
+        .await
+}
+
 /// List model deployments in LiteLLM-compatible format (V2).
 pub async fn list_model_info_v2(
     State(state): State<Arc<ProxyState>>,
     headers: HeaderMap,
-) -> Result<Json<ModelInfoList>> {
+    Query(query): Query<ModelInfoQueryParams>,
+) -> Result<Json<PaginatedModelInfoList>> {
     let request_id = generate_request_id();
 
     REQUEST_ID
@@ -1273,11 +1358,26 @@ pub async fn list_model_info_v2(
                     if !model_allowed_for_info(&model_name, &allowed_models) {
                         continue;
                     }
-                    let mapped_model = provider
-                        .model_mapping
-                        .get(&model_name)
-                        .cloned()
+
+                    // Get value from model_mapping
+                    let value = provider.model_mapping.get(&model_name);
+                    let mapped_model = value
+                        .map(|v| v.mapped_model().to_string())
                         .unwrap_or_default();
+
+                    // Build base model_info
+                    let mut model_info = ModelInfoDetails::new(
+                        provider.name.clone(),
+                        provider.provider_type.clone(),
+                        provider.weight,
+                        crate::api::models::is_pattern(&model_name),
+                    );
+
+                    // Apply extended metadata if available
+                    if let Some(metadata) = value.and_then(|v| v.metadata()) {
+                        model_info = model_info.with_metadata(metadata);
+                    }
+
                     data.push(ModelInfoEntry {
                         model_name: model_name.clone(),
                         litellm_params: LiteLlmParams {
@@ -1285,17 +1385,81 @@ pub async fn list_model_info_v2(
                             api_base: provider.api_base.clone(),
                             custom_llm_provider: provider.provider_type.clone(),
                         },
-                        model_info: ModelInfoDetails {
-                            provider_name: provider.name.clone(),
-                            provider_type: provider.provider_type.clone(),
-                            weight: provider.weight,
-                            is_pattern: crate::api::models::is_pattern(&model_name),
-                        },
+                        model_info,
                     });
                 }
             }
 
-            Ok(Json(ModelInfoList { data }))
+            // Apply filters
+
+            // 1. Exact match by model name
+            if let Some(ref model) = query.model {
+                data.retain(|entry| entry.model_name == *model);
+            }
+
+            // 2. Filter by modelId (mapped model)
+            if let Some(ref model_id) = query.model_id {
+                data.retain(|entry| entry.litellm_params.model == *model_id);
+            }
+
+            // 3. Fuzzy search in model_name
+            if let Some(ref search) = query.search {
+                let search_lower = search.to_lowercase();
+                data.retain(|entry| entry.model_name.to_lowercase().contains(&search_lower));
+            }
+
+            // Apply sorting (only if sortBy is specified)
+            if let Some(ref sort_by) = query.sort_by {
+                let sort_asc = query.sort_order.to_lowercase() != "desc";
+                match sort_by.as_str() {
+                    "provider_name" => {
+                        if sort_asc {
+                            data.sort_by(|a, b| {
+                                a.model_info.provider_name.cmp(&b.model_info.provider_name)
+                            });
+                        } else {
+                            data.sort_by(|a, b| {
+                                b.model_info.provider_name.cmp(&a.model_info.provider_name)
+                            });
+                        }
+                    }
+                    "weight" => {
+                        if sort_asc {
+                            data.sort_by(|a, b| a.model_info.weight.cmp(&b.model_info.weight));
+                        } else {
+                            data.sort_by(|a, b| b.model_info.weight.cmp(&a.model_info.weight));
+                        }
+                    }
+                    _ => {
+                        // Default: sort by model_name
+                        if sort_asc {
+                            data.sort_by(|a, b| a.model_name.cmp(&b.model_name));
+                        } else {
+                            data.sort_by(|a, b| b.model_name.cmp(&a.model_name));
+                        }
+                    }
+                }
+            }
+
+            // Apply pagination
+            let total = data.len();
+            let page = query.page.max(1);
+            let size = query.size.clamp(1, 100);
+            let total_pages = if total == 0 { 0 } else { total.div_ceil(size) };
+            let start = (page - 1) * size;
+            let paginated_data: Vec<ModelInfoEntry> = if start < total {
+                data.into_iter().skip(start).take(size).collect()
+            } else {
+                Vec::new()
+            };
+
+            Ok(Json(PaginatedModelInfoList {
+                data: paginated_data,
+                total_count: total,
+                current_page: page,
+                size,
+                total_pages,
+            }))
         })
         .await
 }
@@ -1734,7 +1898,9 @@ mod tests {
 
         let tool_call = &payload["messages"][0]["tool_calls"][0];
         assert!(tool_call.get("provider_specific_fields").is_none());
-        assert!(tool_call["function"].get("provider_specific_fields").is_none());
+        assert!(tool_call["function"]
+            .get("provider_specific_fields")
+            .is_none());
         assert!(tool_call.get("extra_content").is_none());
     }
 }

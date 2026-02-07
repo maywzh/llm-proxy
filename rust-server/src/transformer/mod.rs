@@ -178,12 +178,9 @@ impl TransformerRegistry {
     /// Detect the protocol and get the appropriate transformer.
     pub fn detect_and_get(&self, raw: &serde_json::Value) -> Option<&Arc<dyn Transformer>> {
         // Try each transformer to see which one can handle the request
-        for transformer in self.transformers.values() {
-            if transformer.can_handle(raw) {
-                return Some(transformer);
-            }
-        }
-        None
+        self.transformers
+            .values()
+            .find(|transformer| transformer.can_handle(raw))
     }
 
     /// List all registered protocols.

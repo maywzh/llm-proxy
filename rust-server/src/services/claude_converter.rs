@@ -9,6 +9,7 @@ use crate::api::claude_models::{
     ClaudeResponse, ClaudeSystemPrompt, ClaudeTool, ClaudeUsage,
 };
 use crate::api::models::get_mapped_model;
+use crate::core::config::ModelMappingValue;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use lazy_static::lazy_static;
@@ -48,7 +49,7 @@ fn strip_billing_header(text: &str) -> String {
 /// OpenAI-compatible request as JSON Value
 pub fn claude_to_openai_request(
     claude_request: &ClaudeMessagesRequest,
-    model_mapping: Option<&HashMap<String, String>>,
+    model_mapping: Option<&HashMap<String, ModelMappingValue>>,
     min_tokens_limit: u32,
     max_tokens_limit: u32,
 ) -> Value {
@@ -461,7 +462,8 @@ pub fn convert_openai_streaming_to_claude(
                                             if !state.usage_found && !reasoning.is_empty() {
                                                 use crate::api::streaming::count_tokens;
                                                 state.usage_data.output_tokens +=
-                                                    count_tokens(reasoning, &state.original_model) as i32;
+                                                    count_tokens(reasoning, &state.original_model)
+                                                        as i32;
                                             }
 
                                             // Emit thinking delta
@@ -518,7 +520,8 @@ pub fn convert_openai_streaming_to_claude(
                                             if !state.usage_found && !content.is_empty() {
                                                 use crate::api::streaming::count_tokens;
                                                 state.usage_data.output_tokens +=
-                                                    count_tokens(content, &state.original_model) as i32;
+                                                    count_tokens(content, &state.original_model)
+                                                        as i32;
                                             }
 
                                             // Send text delta even if empty to match Python/claude-code-proxy behavior

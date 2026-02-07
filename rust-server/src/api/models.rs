@@ -3,6 +3,7 @@
 //! This module defines all data structures used in the API, including
 //! chat completion requests/responses, health checks, and model listings.
 
+use crate::core::config::{ModelMappingEntry, ModelMappingValue};
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -89,20 +90,23 @@ pub fn compile_pattern(pattern: &str) -> Option<Regex> {
 
 /// Match a model name against model_mapping keys, supporting wildcards/regex.
 ///
-/// Returns the mapped model name if found, None otherwise.
+/// Returns the ModelMappingValue if found, None otherwise.
 /// Exact matches take priority over pattern matches.
-pub fn match_model_pattern(model: &str, model_mapping: &HashMap<String, String>) -> Option<String> {
+pub fn match_model_pattern(
+    model: &str,
+    model_mapping: &HashMap<String, ModelMappingValue>,
+) -> Option<ModelMappingValue> {
     // First, try exact match (highest priority)
-    if let Some(mapped) = model_mapping.get(model) {
-        return Some(mapped.clone());
+    if let Some(value) = model_mapping.get(model) {
+        return Some(value.clone());
     }
 
     // Then, try pattern matching
-    for (pattern, mapped_model) in model_mapping.iter() {
+    for (pattern, value) in model_mapping.iter() {
         if is_pattern(pattern) {
             if let Some(regex) = compile_pattern(pattern) {
                 if regex.is_match(model) {
-                    return Some(mapped_model.clone());
+                    return Some(value.clone());
                 }
             }
         }
@@ -112,7 +116,10 @@ pub fn match_model_pattern(model: &str, model_mapping: &HashMap<String, String>)
 }
 
 /// Check if a model matches any key in model_mapping (exact or pattern).
-pub fn model_matches_mapping(model: &str, model_mapping: &HashMap<String, String>) -> bool {
+pub fn model_matches_mapping(
+    model: &str,
+    model_mapping: &HashMap<String, ModelMappingValue>,
+) -> bool {
     // First, try exact match
     if model_mapping.contains_key(model) {
         return true;
@@ -135,8 +142,20 @@ pub fn model_matches_mapping(model: &str, model_mapping: &HashMap<String, String
 /// Get the mapped model name for a given model.
 ///
 /// Returns the mapped model name if found, otherwise the original model name.
-pub fn get_mapped_model(model: &str, model_mapping: &HashMap<String, String>) -> String {
-    match_model_pattern(model, model_mapping).unwrap_or_else(|| model.to_string())
+pub fn get_mapped_model(model: &str, model_mapping: &HashMap<String, ModelMappingValue>) -> String {
+    match_model_pattern(model, model_mapping)
+        .map(|v| v.mapped_model().to_string())
+        .unwrap_or_else(|| model.to_string())
+}
+
+/// Get the model metadata for a given model if available.
+///
+/// Returns ModelMappingEntry with metadata if model uses extended format, None otherwise.
+pub fn get_model_metadata(
+    model: &str,
+    model_mapping: &HashMap<String, ModelMappingValue>,
+) -> Option<ModelMappingEntry> {
+    match_model_pattern(model, model_mapping).and_then(|v| v.metadata().cloned())
 }
 
 /// Provider information for internal use.
@@ -146,7 +165,7 @@ pub struct Provider {
     pub api_base: String,
     pub api_key: String,
     pub weight: u32,
-    pub model_mapping: HashMap<String, String>,
+    pub model_mapping: HashMap<String, ModelMappingValue>,
     /// Provider type (e.g., "openai", "azure", "anthropic")
     #[serde(default = "default_provider_type")]
     pub provider_type: String,
@@ -165,6 +184,11 @@ impl Provider {
     /// Get the mapped model name for the given model.
     pub fn get_mapped_model(&self, model: &str) -> String {
         get_mapped_model(model, &self.model_mapping)
+    }
+
+    /// Get the model metadata for the given model if available.
+    pub fn get_model_metadata(&self, model: &str) -> Option<ModelMappingEntry> {
+        get_model_metadata(model, &self.model_mapping)
     }
 }
 
@@ -335,18 +359,84 @@ pub struct LiteLlmParams {
 }
 
 /// LiteLLM-compatible model info for /v1/model/info.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
     "provider_name": "provider1",
     "provider_type": "openai",
     "weight": 2,
-    "is_pattern": false
+    "is_pattern": false,
+    "max_tokens": 128000,
+    "supports_vision": true
 }))]
 pub struct ModelInfoDetails {
     pub provider_name: String,
     pub provider_type: String,
     pub weight: u32,
     pub is_pattern: bool,
+
+    // Extended metadata fields (all optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_cost_per_1k_tokens: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_cost_per_1k_tokens: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_vision: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_function_calling: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_streaming: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_response_schema: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_computer_use: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_pdf_input: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+impl ModelInfoDetails {
+    /// Create a new ModelInfoDetails with base fields only.
+    pub fn new(
+        provider_name: String,
+        provider_type: String,
+        weight: u32,
+        is_pattern: bool,
+    ) -> Self {
+        Self {
+            provider_name,
+            provider_type,
+            weight,
+            is_pattern,
+            ..Default::default()
+        }
+    }
+
+    /// Apply metadata from ModelMappingEntry.
+    pub fn with_metadata(mut self, entry: &ModelMappingEntry) -> Self {
+        self.max_tokens = entry.max_tokens;
+        self.max_input_tokens = entry.max_input_tokens;
+        self.max_output_tokens = entry.max_output_tokens;
+        self.input_cost_per_1k_tokens = entry.input_cost_per_1k_tokens;
+        self.output_cost_per_1k_tokens = entry.output_cost_per_1k_tokens;
+        self.supports_vision = entry.supports_vision;
+        self.supports_function_calling = entry.supports_function_calling;
+        self.supports_streaming = entry.supports_streaming;
+        self.supports_response_schema = entry.supports_response_schema;
+        self.supports_reasoning = entry.supports_reasoning;
+        self.supports_computer_use = entry.supports_computer_use;
+        self.supports_pdf_input = entry.supports_pdf_input;
+        self.mode = entry.mode.clone();
+        self
+    }
 }
 
 /// LiteLLM-compatible model entry for /v1/model/info.
@@ -393,6 +483,111 @@ pub struct ModelInfoEntry {
 }))]
 pub struct ModelInfoList {
     pub data: Vec<ModelInfoEntry>,
+}
+
+/// Query parameters for /model/info endpoint (LiteLLM v2 compatible)
+#[derive(Debug, Clone, Deserialize, ToSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfoQueryParams {
+    /// Filter by exact model name
+    pub model: Option<String>,
+    /// Filter by model ID (mapped model name) - LiteLLM v2 compatible
+    pub model_id: Option<String>,
+    /// Fuzzy search in model_name
+    pub search: Option<String>,
+    /// Sort field: model_name, created_at, updated_at, costs, status
+    #[serde(default = "default_sort_by")]
+    pub sort_by: Option<String>,
+    /// Sort order: asc, desc
+    #[serde(default = "default_sort_order")]
+    pub sort_order: String,
+    /// Page number (1-indexed)
+    #[serde(default = "default_page")]
+    pub page: usize,
+    /// Page size (default 50)
+    #[serde(default = "default_size")]
+    pub size: usize,
+}
+
+fn default_sort_by() -> Option<String> {
+    None
+}
+
+fn default_sort_order() -> String {
+    "asc".to_string()
+}
+
+fn default_page() -> usize {
+    1
+}
+
+fn default_size() -> usize {
+    50
+}
+
+/// Paginated model info response (LiteLLM v2 compatible)
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "data": [
+        {
+            "model_name": "gpt-4",
+            "litellm_params": {
+                "model": "gpt-4-0613",
+                "api_base": "https://api.provider1.com/v1",
+                "custom_llm_provider": "openai"
+            },
+            "model_info": {
+                "provider_name": "provider1",
+                "provider_type": "openai",
+                "weight": 2,
+                "is_pattern": false
+            }
+        }
+    ],
+    "total_count": 100,
+    "current_page": 1,
+    "size": 50,
+    "total_pages": 5
+}))]
+pub struct PaginatedModelInfoList {
+    pub data: Vec<ModelInfoEntry>,
+    pub total_count: usize,
+    pub current_page: usize,
+    pub size: usize,
+    pub total_pages: usize,
+}
+
+/// LiteLLM v1 compatible model info list (no pagination)
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "data": [
+        {
+            "model_name": "gpt-4",
+            "litellm_params": {
+                "model": "gpt-4-0613",
+                "api_base": "https://api.provider1.com/v1",
+                "custom_llm_provider": "openai"
+            },
+            "model_info": {
+                "provider_name": "provider1",
+                "provider_type": "openai",
+                "weight": 2,
+                "is_pattern": false
+            }
+        }
+    ]
+}))]
+pub struct ModelInfoListV1 {
+    pub data: Vec<ModelInfoEntry>,
+}
+
+/// Query parameters for /v1/model/info endpoint (LiteLLM v1 compatible)
+#[derive(Debug, Clone, Deserialize, ToSchema, Default)]
+pub struct ModelInfoQueryParamsV1 {
+    /// Filter by exact model name
+    pub model: Option<String>,
+    /// Filter by model ID (mapped model name) - LiteLLM v1 uses litellm_model_id
+    pub litellm_model_id: Option<String>,
 }
 
 /// Error response for API errors.
@@ -539,6 +734,14 @@ pub struct ModelHealthResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper to create a simple model mapping for tests
+    fn simple_mapping(entries: &[(&str, &str)]) -> HashMap<String, ModelMappingValue> {
+        entries
+            .iter()
+            .map(|(k, v)| (k.to_string(), ModelMappingValue::Simple(v.to_string())))
+            .collect()
+    }
 
     #[test]
     fn test_message_serialization() {
@@ -753,12 +956,10 @@ mod tests {
 
     #[test]
     fn test_wildcard_model_mapping_exact_match() {
-        let mut mapping = HashMap::new();
-        mapping.insert("gpt-4".to_string(), "gpt-4-exact".to_string());
-        mapping.insert(
-            "claude-opus-4-5-.*".to_string(),
-            "claude-opus-mapped".to_string(),
-        );
+        let mapping = simple_mapping(&[
+            ("gpt-4", "gpt-4-exact"),
+            ("claude-opus-4-5-.*", "claude-opus-mapped"),
+        ]);
 
         // Exact match should work
         assert!(model_matches_mapping("gpt-4", &mapping));
@@ -767,11 +968,7 @@ mod tests {
 
     #[test]
     fn test_wildcard_model_mapping_regex_pattern() {
-        let mut mapping = HashMap::new();
-        mapping.insert(
-            "claude-opus-4-5-.*".to_string(),
-            "claude-opus-mapped".to_string(),
-        );
+        let mapping = simple_mapping(&[("claude-opus-4-5-.*", "claude-opus-mapped")]);
 
         // Regex pattern should match
         assert!(model_matches_mapping("claude-opus-4-5-20240620", &mapping));
@@ -793,8 +990,7 @@ mod tests {
 
     #[test]
     fn test_wildcard_model_mapping_simple_wildcard() {
-        let mut mapping = HashMap::new();
-        mapping.insert("gemini-*".to_string(), "gemini-mapped".to_string());
+        let mapping = simple_mapping(&[("gemini-*", "gemini-mapped")]);
 
         // Simple wildcard (*) should be converted to regex (.*)
         assert!(model_matches_mapping("gemini-pro", &mapping));
@@ -806,9 +1002,10 @@ mod tests {
 
     #[test]
     fn test_wildcard_model_mapping_exact_priority() {
-        let mut mapping = HashMap::new();
-        mapping.insert("claude-.*".to_string(), "claude-pattern".to_string());
-        mapping.insert("claude-opus".to_string(), "claude-opus-exact".to_string());
+        let mapping = simple_mapping(&[
+            ("claude-.*", "claude-pattern"),
+            ("claude-opus", "claude-opus-exact"),
+        ]);
 
         // Exact match should take priority over pattern
         assert_eq!(
@@ -825,12 +1022,10 @@ mod tests {
 
     #[test]
     fn test_provider_supports_model_with_patterns() {
-        let mut mapping = HashMap::new();
-        mapping.insert("gpt-4".to_string(), "gpt-4-mapped".to_string());
-        mapping.insert(
-            "claude-opus-4-5-.*".to_string(),
-            "claude-mapped".to_string(),
-        );
+        let mapping = simple_mapping(&[
+            ("gpt-4", "gpt-4-mapped"),
+            ("claude-opus-4-5-.*", "claude-mapped"),
+        ]);
 
         let provider = Provider {
             name: "test".to_string(),

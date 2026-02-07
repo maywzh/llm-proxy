@@ -510,7 +510,10 @@
                   >
                     {#if msg.role === 'assistant' && msg.thinking?.trim()}
                       <details
-                        class="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10 {isStreaming && msgIndex === messages.length - 1 ? 'thinking-border' : ''}"
+                        class="mb-2 rounded-md border border-gray-200 dark:border-gray-600 bg-white/60 dark:bg-black/10 {isStreaming &&
+                        msgIndex === messages.length - 1
+                          ? 'thinking-border'
+                          : ''}"
                         open={isStreaming && msgIndex === messages.length - 1}
                       >
                         <summary

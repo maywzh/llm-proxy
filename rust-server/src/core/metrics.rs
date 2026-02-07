@@ -201,13 +201,7 @@ mod tests {
         metrics
             .request_count
             .with_label_values(&[
-                "GET",
-                "/test",
-                "model",
-                "provider",
-                "200",
-                "test-key",
-                "unknown",
+                "GET", "/test", "model", "provider", "200", "test-key", "unknown",
             ])
             .inc();
 

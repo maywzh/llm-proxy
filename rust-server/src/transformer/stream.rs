@@ -11,23 +11,12 @@ use crate::core::OutboundTokenCounter;
 // ============================================================================
 
 /// SSE event parsed from stream.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SseEvent {
     pub event: Option<String>,
     pub data: Option<String>,
     pub id: Option<String>,
     pub retry: Option<u64>,
-}
-
-impl Default for SseEvent {
-    fn default() -> Self {
-        SseEvent {
-            event: None,
-            data: None,
-            id: None,
-            retry: None,
-        }
-    }
 }
 
 /// SSE parser state.
@@ -225,7 +214,7 @@ impl Default for CrossProtocolStreamState {
             model: String::new(),
             message_id: format!(
                 "msg_{}",
-                uuid::Uuid::new_v4().to_string().replace("-", "")[..24].to_string()
+                &uuid::Uuid::new_v4().to_string().replace("-", "")[..24]
             ),
             token_counter: OutboundTokenCounter::new_lazy(""),
             stop_reason: None,
@@ -439,32 +428,30 @@ impl CrossProtocolStreamState {
     fn cache_tool_info(&mut self, chunk: &UnifiedStreamChunk) {
         // Cache tool info from ContentBlockStart
         if chunk.chunk_type == super::ChunkType::ContentBlockStart {
-            if let Some(ref content_block) = chunk.content_block {
-                if let super::UnifiedContent::ToolUse { id, name, .. } = content_block {
-                    self.tool_info_cache.insert(
-                        chunk.index,
-                        ToolInfo {
-                            id: id.clone(),
-                            name: name.clone(),
-                        },
-                    );
-                }
+            if let Some(super::UnifiedContent::ToolUse { id, name, .. }) =
+                chunk.content_block.as_ref()
+            {
+                self.tool_info_cache.insert(
+                    chunk.index,
+                    ToolInfo {
+                        id: id.clone(),
+                        name: name.clone(),
+                    },
+                );
             }
         }
 
         // Also cache from ToolInputDelta if it contains tool info
         if chunk.chunk_type == super::ChunkType::ContentBlockDelta {
-            if let Some(ref delta) = chunk.delta {
-                if let super::UnifiedContent::ToolInputDelta {
-                    index: tool_idx, ..
-                } = delta
-                {
-                    // If we have a tool index, it might help correlate tool calls
-                    // Store the index mapping for potential future use
-                    if *tool_idx > 0 && !self.tool_info_cache.contains_key(&chunk.index) {
-                        // We don't have full info yet, but mark that this index is a tool
-                        // The actual info might come from a previous ContentBlockStart
-                    }
+            if let Some(super::UnifiedContent::ToolInputDelta {
+                index: tool_idx, ..
+            }) = chunk.delta.as_ref()
+            {
+                // If we have a tool index, it might help correlate tool calls
+                // Store the index mapping for potential future use
+                if *tool_idx > 0 && !self.tool_info_cache.contains_key(&chunk.index) {
+                    // We don't have full info yet, but mark that this index is a tool
+                    // The actual info might come from a previous ContentBlockStart
                 }
             }
         }
@@ -521,7 +508,7 @@ impl CrossProtocolStreamState {
                     super::UnifiedContent::tool_use(
                         format!(
                             "toolu_{}",
-                            uuid::Uuid::new_v4().to_string().replace("-", "")[..24].to_string()
+                            &uuid::Uuid::new_v4().to_string().replace("-", "")[..24]
                         ),
                         "unknown_tool",
                         serde_json::json!({}),

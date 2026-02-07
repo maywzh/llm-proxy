@@ -14,9 +14,9 @@ use llm_proxy_rust::{
     admin_router,
     api::{
         chat_completions, chat_completions_v2, claude_count_tokens, claude_create_message,
-        completions, completions_v2, count_tokens_v2, list_model_info_v2, list_models,
-        list_models_v2, messages_v2, metrics_handler, responses_v2, AdminState, AppState,
-        ProxyState,
+        completions, completions_v2, count_tokens_v2, list_model_info_v1, list_model_info_v2,
+        list_models, list_models_v2, messages_v2, metrics_handler, responses_v2, AdminState,
+        AppState, ProxyState,
     },
     combined_openapi,
     core::{
@@ -271,6 +271,14 @@ fn build_router(
         .route("/v2/responses", post(responses_v2))
         .route("/v2/models", get(list_models_v2))
         .route("/v2/model/info", get(list_model_info_v2))
+        // Root API routes (map to v2 handlers)
+        .route("/chat/completions", post(chat_completions_v2))
+        .route("/messages", post(messages_v2))
+        .route("/responses", post(responses_v2))
+        // LiteLLM v1 compatible endpoint (no pagination)
+        .route("/v1/model/info", get(list_model_info_v1))
+        // Default /model/info uses v2 format (with pagination)
+        .route("/model/info", get(list_model_info_v2))
         .layer(axum::middleware::from_fn(MetricsMiddleware::track_metrics))
         .layer(axum::middleware::from_fn_with_state(
             proxy_state.clone(),

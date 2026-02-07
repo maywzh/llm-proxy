@@ -1,23 +1,26 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { ModelMappingEntry, ModelMappingValue } from '../types';
 
 type JsonEditorProps = {
   id: string;
   label: string;
-  value: Record<string, string>;
-  onChange: (next: Record<string, string>) => void;
+  value: Record<string, ModelMappingValue>;
+  onChange: (next: Record<string, ModelMappingValue>) => void;
   onErrorChange?: (error: string | null) => void;
   placeholder?: string;
   helperText?: string;
   rows?: number;
 };
 
-function toPrettyJson(value: Record<string, string>): string {
+function toPrettyJson(value: Record<string, ModelMappingValue>): string {
   return JSON.stringify(value ?? {}, null, 2);
 }
 
 function tryParseModelMapping(
   text: string
-): { ok: true; value: Record<string, string> } | { ok: false; error: string } {
+):
+  | { ok: true; value: Record<string, ModelMappingValue> }
+  | { ok: false; error: string } {
   const trimmed = text.trim();
   if (!trimmed) return { ok: true, value: {} };
 
@@ -32,14 +35,33 @@ function tryParseModelMapping(
     return { ok: false, error: 'JSON must be an object' };
   }
 
-  const mapping: Record<string, string> = {};
+  const mapping: Record<string, ModelMappingValue> = {};
   for (const [key, value] of Object.entries(
     parsed as Record<string, unknown>
   )) {
-    if (typeof value !== 'string') {
-      return { ok: false, error: 'All values must be strings' };
+    if (typeof value === 'string') {
+      // Simple format: "gpt-4": "gpt-4-turbo"
+      mapping[key] = value;
+    } else if (
+      typeof value === 'object' &&
+      value !== null &&
+      !Array.isArray(value)
+    ) {
+      // Extended format: check for mapped_model field
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.mapped_model !== 'string') {
+        return {
+          ok: false,
+          error: `Entry "${key}" must have a string "mapped_model" field`,
+        };
+      }
+      mapping[key] = entry as unknown as ModelMappingEntry;
+    } else {
+      return {
+        ok: false,
+        error: `Value for "${key}" must be a string or an object with mapped_model`,
+      };
     }
-    mapping[key] = value;
   }
 
   return { ok: true, value: mapping };

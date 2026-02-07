@@ -3,6 +3,7 @@
 //! PostgreSQL only - optimized for production use.
 //! Migrations are managed externally by golang-migrate.
 
+use crate::core::config::ModelMappingValue;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -445,9 +446,9 @@ pub struct ProviderEntity {
     /// API key for authentication (stored encrypted)
     #[schema(value_type = String)]
     pub api_key: String,
-    /// Model name mapping (request model -> provider model)
-    #[schema(value_type = HashMap<String, String>)]
-    pub model_mapping: sqlx::types::Json<HashMap<String, String>>,
+    /// Model name mapping (request model -> provider model or extended entry)
+    #[schema(value_type = HashMap<String, serde_json::Value>)]
+    pub model_mapping: sqlx::types::Json<HashMap<String, ModelMappingValue>>,
     /// Weight for load balancing (higher = more traffic)
     pub weight: i32,
     /// Whether this provider is enabled
@@ -478,9 +479,9 @@ pub struct CreateProvider {
     pub api_base: String,
     /// API key for authentication
     pub api_key: String,
-    /// Model name mapping (request model -> provider model)
+    /// Model name mapping (request model -> provider model or extended entry)
     #[serde(default)]
-    pub model_mapping: HashMap<String, String>,
+    pub model_mapping: HashMap<String, ModelMappingValue>,
     /// Weight for load balancing (default: 1, higher = more traffic)
     #[serde(default = "default_weight")]
     pub weight: i32,
@@ -503,8 +504,8 @@ pub struct UpdateProvider {
     pub api_base: Option<String>,
     /// API key for authentication
     pub api_key: Option<String>,
-    /// Model name mapping (request model -> provider model)
-    pub model_mapping: Option<HashMap<String, String>>,
+    /// Model name mapping (request model -> provider model or extended entry)
+    pub model_mapping: Option<HashMap<String, ModelMappingValue>>,
     /// Weight for load balancing (higher = more traffic)
     pub weight: Option<i32>,
     /// Whether this provider is enabled

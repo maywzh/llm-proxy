@@ -253,7 +253,7 @@
         <div
           class="fixed inset-0 bg-black/50 dark:bg-black/70 z-40 animate-fade-in"
           onclick={() => (isMobileMenuOpen = false)}
-          onkeydown={(e) => e.key === 'Escape' && (isMobileMenuOpen = false)}
+          onkeydown={e => e.key === 'Escape' && (isMobileMenuOpen = false)}
           role="button"
           tabindex="0"
           aria-label="Close menu"
@@ -342,7 +342,7 @@
               <h1
                 class="text-xl font-semibold text-gray-900 dark:text-gray-100"
               >
-                {navItems.find((item) => item.href === $page.url.pathname)
+                {navItems.find(item => item.href === $page.url.pathname)
                   ?.label || 'Admin'}
               </h1>
             </div>
@@ -372,8 +372,8 @@
                 {#if showThemeMenu}
                   <div
                     class="absolute right-0 mt-2 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 animate-fade-in"
-                    onclick={(e) => e.stopPropagation()}
-                    onkeydown={(e) => e.stopPropagation()}
+                    onclick={e => e.stopPropagation()}
+                    onkeydown={e => e.stopPropagation()}
                     role="menu"
                     tabindex="-1"
                   >
@@ -461,7 +461,11 @@
         </div>
       {/if}
 
-      <main id="main-content" class="flex-1 py-6 px-4 sm:px-6 lg:px-8" tabindex="-1">
+      <main
+        id="main-content"
+        class="flex-1 py-6 px-4 sm:px-6 lg:px-8"
+        tabindex="-1"
+      >
         {@render children()}
       </main>
     </div>
