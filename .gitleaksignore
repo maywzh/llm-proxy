@@ -30,3 +30,7 @@ adc248a45758f41b88736d2e0331d3ec1e5b99ee:python-server/tests/test_rate_limiting.
 # Test script - verify_auth.sh (InvalidFormat is a test case for auth validation)
 b40d395b13d7dbd55b0b1b9d5d44740d2b5db84a:scripts/verify_auth.sh:curl-auth-header:143
 c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:scripts/verify_auth.sh:curl-auth-header:143
+
+# GCP Vertex test fixtures - mock OAuth access tokens
+1754fd0253c9f592bcefdfdfe6b1f596e1d76822:python-server/tests/test_gcp_vertex.py:generic-api-key:868
+1754fd0253c9f592bcefdfdfe6b1f596e1d76822:rust-server/tests/test_gcp_vertex.rs:generic-api-key:795

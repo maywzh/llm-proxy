@@ -11,7 +11,7 @@ from app.models.config import (
     get_mapped_model_name,
     normalize_model_mapping,
 )
-from app.models.provider import Provider, get_model_metadata
+from app.models.provider import Provider
 
 
 @pytest.mark.unit
@@ -634,7 +634,10 @@ class TestModelMappingExtended:
 
         # Pattern should match
         assert provider.supports_model("claude-opus-4-5-20240620") is True
-        assert provider.get_mapped_model("claude-opus-4-5-20240620") == "claude-opus-mapped"
+        assert (
+            provider.get_mapped_model("claude-opus-4-5-20240620")
+            == "claude-opus-mapped"
+        )
 
         # Metadata should be available through pattern match
         metadata = provider.get_model_metadata("claude-opus-4-5-20240620")
