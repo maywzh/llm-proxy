@@ -45,6 +45,9 @@ pub struct Metrics {
 
     /// Total number of cross-protocol requests (protocol transformation required)
     pub cross_protocol_requests: IntCounterVec,
+
+    /// Total number of client disconnects
+    pub client_disconnects_total: prometheus::IntCounter,
 }
 
 static METRICS: OnceLock<Metrics> = OnceLock::new();
@@ -164,6 +167,12 @@ pub fn init_metrics() -> &'static Metrics {
         )
         .expect("Failed to register cross_protocol_requests metric");
 
+        let client_disconnects_total = prometheus::register_int_counter!(
+            "llm_proxy_client_disconnects_total",
+            "Total number of client disconnects"
+        )
+        .expect("Failed to register client_disconnects_total metric");
+
         Metrics {
             request_count,
             request_duration,
@@ -176,6 +185,7 @@ pub fn init_metrics() -> &'static Metrics {
             bypass_requests,
             bypass_streaming_bytes,
             cross_protocol_requests,
+            client_disconnects_total,
         }
     })
 }

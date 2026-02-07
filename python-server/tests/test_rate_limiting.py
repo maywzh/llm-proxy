@@ -1,15 +1,11 @@
 """Tests for rate limiting functionality"""
 
-import time
-from typing import List
-
 import pytest
 from fastapi import HTTPException
 
-from app.models.config import CredentialConfig, RateLimitConfig, ServerConfig
+from app.models.config import CredentialConfig, RateLimitConfig
 from app.core.rate_limiter import RateLimiter
 from app.core.security import verify_credential_key
-from app.core.config import get_config
 from app.core.database import hash_key
 
 

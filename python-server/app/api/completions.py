@@ -15,7 +15,6 @@ from starlette.requests import ClientDisconnect
 from app.api.dependencies import verify_auth, get_provider_svc
 from app.core.jsonl_logger import (
     log_request,
-    log_response,
     log_provider_request,
     log_provider_response,
 )
@@ -35,7 +34,7 @@ from app.utils.gemini3 import (
     normalize_gemini3_response,
     strip_gemini3_provider_fields,
 )
-from app.core.config import get_config, get_env_config
+from app.core.config import get_config
 from app.core.exceptions import TTFTTimeoutError
 from app.core.http_client import get_http_client
 from app.core.metrics import TOKEN_USAGE
@@ -398,6 +397,7 @@ async def _handle_streaming_request(
             config.ttft_timeout_secs,
             generation_data=generation_data if trace_id else None,
             client=client,
+            disconnect_check=request.is_disconnected,
         )
         streaming_response.background = BackgroundTask(
             _close_stream_resources, stream_ctx

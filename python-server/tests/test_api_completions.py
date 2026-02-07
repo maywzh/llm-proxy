@@ -5,7 +5,6 @@ from unittest.mock import Mock, AsyncMock, MagicMock, patch
 import pytest
 import httpx
 import respx
-from fastapi import HTTPException
 
 from app.api.completions import (
     proxy_completion_request,

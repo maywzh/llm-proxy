@@ -5,7 +5,6 @@ import time
 from datetime import datetime
 from typing import Optional
 
-import httpx
 from loguru import logger
 
 from app.core.database import Database, ProviderModel, get_provider_by_id

@@ -1,6 +1,5 @@
 """Unit tests for Gemini 3 thought_signature support."""
 
-import pytest
 from unittest.mock import patch
 
 from app.utils.gemini3 import (
@@ -51,15 +50,19 @@ class TestLogGeminiResponseSignatures:
     def test_non_gemini3_provider_no_logging(self, mock_logger):
         """Should not log for non-Gemini 3 models."""
         response_data = {
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "extra_content": {
-                            "google": {"thought_signature": "test_signature"}
-                        }
-                    }]
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "extra_content": {
+                                    "google": {"thought_signature": "test_signature"}
+                                }
+                            }
+                        ]
+                    }
                 }
-            }]
+            ]
         }
         log_gemini_response_signatures(response_data, "gpt-4")
         mock_logger.debug.assert_not_called()
@@ -68,19 +71,25 @@ class TestLogGeminiResponseSignatures:
     def test_gemini3_provider_with_tool_call_signature(self, mock_logger):
         """Should log when thought_signature is found in tool_calls."""
         response_data = {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_123",
-                        "type": "function",
-                        "function": {"name": "read_file", "arguments": "{}"},
-                        "extra_content": {
-                            "google": {"thought_signature": "CvcQAdHN2OekY10ClPFkYA=="}
-                        }
-                    }]
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call_123",
+                                "type": "function",
+                                "function": {"name": "read_file", "arguments": "{}"},
+                                "extra_content": {
+                                    "google": {
+                                        "thought_signature": "CvcQAdHN2OekY10ClPFkYA=="
+                                    }
+                                },
+                            }
+                        ],
+                    }
                 }
-            }]
+            ]
         }
         log_gemini_response_signatures(response_data, "gemini-3-pro")
         mock_logger.debug.assert_called()
@@ -92,14 +101,16 @@ class TestLogGeminiResponseSignatures:
     def test_gemini3_provider_with_content_signature(self, mock_logger):
         """Should log when thought_signature is found at content level."""
         response_data = {
-            "choices": [{
-                "message": {
-                    "content": "I can help with that",
-                    "extra_content": {
-                        "google": {"thought_signature": "CrICAdHtim827fQ..."}
+            "choices": [
+                {
+                    "message": {
+                        "content": "I can help with that",
+                        "extra_content": {
+                            "google": {"thought_signature": "CrICAdHtim827fQ..."}
+                        },
                     }
                 }
-            }]
+            ]
         }
         log_gemini_response_signatures(response_data, "gemini-3-flash")
         mock_logger.debug.assert_called()
@@ -110,20 +121,24 @@ class TestLogGeminiResponseSignatures:
     def test_gemini3_provider_streaming_delta(self, mock_logger):
         """Should log when thought_signature is found in streaming delta."""
         response_data = {
-            "choices": [{
-                "delta": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "extra_content": {
-                            "google": {"thought_signature": "test_signature"}
-                        },
-                        "function": {"name": "get_weather"},
-                        "id": "call_456",
-                        "type": "function"
-                    }]
-                },
-                "index": 0
-            }]
+            "choices": [
+                {
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "extra_content": {
+                                    "google": {"thought_signature": "test_signature"}
+                                },
+                                "function": {"name": "get_weather"},
+                                "id": "call_456",
+                                "type": "function",
+                            }
+                        ],
+                    },
+                    "index": 0,
+                }
+            ]
         }
         log_gemini_response_signatures(response_data, "gemini-3-pro")
         mock_logger.debug.assert_called()
@@ -132,12 +147,7 @@ class TestLogGeminiResponseSignatures:
     def test_gemini3_provider_no_signature_no_logging(self, mock_logger):
         """Should not log when no thought_signature is present."""
         response_data = {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello!"
-                }
-            }]
+            "choices": [{"message": {"role": "assistant", "content": "Hello!"}}]
         }
         log_gemini_response_signatures(response_data, "gemini-3-pro")
         mock_logger.debug.assert_not_called()
@@ -146,24 +156,30 @@ class TestLogGeminiResponseSignatures:
     def test_gemini3_provider_multiple_signatures(self, mock_logger):
         """Should count multiple signatures correctly."""
         response_data = {
-            "choices": [{
-                "message": {
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "extra_content": {"google": {"thought_signature": "sig1"}}
-                        },
-                        {
-                            "id": "call_2",
-                            "extra_content": {"google": {"thought_signature": "sig2"}}
-                        },
-                        {
-                            "id": "call_3",
-                            # No extra_content
-                        }
-                    ]
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "extra_content": {
+                                    "google": {"thought_signature": "sig1"}
+                                },
+                            },
+                            {
+                                "id": "call_2",
+                                "extra_content": {
+                                    "google": {"thought_signature": "sig2"}
+                                },
+                            },
+                            {
+                                "id": "call_3",
+                                # No extra_content
+                            },
+                        ]
+                    }
                 }
-            }]
+            ]
         }
         log_gemini_response_signatures(response_data, "gemini-3-pro")
         mock_logger.debug.assert_called()
@@ -182,13 +198,9 @@ class TestLogGeminiResponseSignatures:
         mock_logger.debug.assert_not_called()
 
         # extra_content is not a dict
-        log_gemini_response_signatures({
-            "choices": [{
-                "message": {
-                    "extra_content": "invalid"
-                }
-            }]
-        }, "gemini-3-pro")
+        log_gemini_response_signatures(
+            {"choices": [{"message": {"extra_content": "invalid"}}]}, "gemini-3-pro"
+        )
         mock_logger.debug.assert_not_called()
 
 
@@ -199,12 +211,14 @@ class TestLogGeminiRequestSignatures:
     def test_non_gemini3_provider_no_logging(self, mock_logger):
         """Should not log for non-Gemini 3 models."""
         request_data = {
-            "messages": [{
-                "role": "assistant",
-                "tool_calls": [{
-                    "extra_content": {"google": {"thought_signature": "test"}}
-                }]
-            }]
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"extra_content": {"google": {"thought_signature": "test"}}}
+                    ],
+                }
+            ]
         }
         log_gemini_request_signatures(request_data, "gpt-4")
         mock_logger.debug.assert_not_called()
@@ -218,23 +232,27 @@ class TestLogGeminiRequestSignatures:
                 {
                     "role": "assistant",
                     "content": None,
-                    "tool_calls": [{
-                        "id": "call_123",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "NYC"}'
-                        },
-                        "extra_content": {
-                            "google": {"thought_signature": "CvcQAdHN2OekY10ClPFkYA=="}
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"location": "NYC"}',
+                            },
+                            "extra_content": {
+                                "google": {
+                                    "thought_signature": "CvcQAdHN2OekY10ClPFkYA=="
+                                }
+                            },
                         }
-                    }]
+                    ],
                 },
                 {
                     "role": "tool",
                     "tool_call_id": "call_123",
-                    "content": "72°F and sunny"
-                }
+                    "content": "72°F and sunny",
+                },
             ]
         }
         log_gemini_request_signatures(request_data, "gemini-3-pro")
@@ -249,7 +267,7 @@ class TestLogGeminiRequestSignatures:
         request_data = {
             "messages": [
                 {"role": "user", "content": "Hello!"},
-                {"role": "assistant", "content": "Hi there!"}
+                {"role": "assistant", "content": "Hi there!"},
             ]
         }
         log_gemini_request_signatures(request_data, "gemini-3-pro")
@@ -259,14 +277,16 @@ class TestLogGeminiRequestSignatures:
     def test_gemini3_request_multiple_signatures(self, mock_logger):
         """Should count multiple signatures in request."""
         request_data = {
-            "messages": [{
-                "role": "assistant",
-                "tool_calls": [
-                    {"extra_content": {"google": {"thought_signature": "sig1"}}},
-                    {"extra_content": {"google": {"thought_signature": "sig2"}}},
-                    {"extra_content": {"google": {"thought_signature": "sig3"}}},
-                ]
-            }]
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"extra_content": {"google": {"thought_signature": "sig1"}}},
+                        {"extra_content": {"google": {"thought_signature": "sig2"}}},
+                        {"extra_content": {"google": {"thought_signature": "sig3"}}},
+                    ],
+                }
+            ]
         }
         log_gemini_request_signatures(request_data, "gemini-3-pro")
         mock_logger.debug.assert_called()
@@ -285,9 +305,9 @@ class TestLogGeminiRequestSignatures:
         mock_logger.debug.assert_not_called()
 
         # tool_calls not a list
-        log_gemini_request_signatures({
-            "messages": [{"tool_calls": "invalid"}]
-        }, "gemini-3-pro")
+        log_gemini_request_signatures(
+            {"messages": [{"tool_calls": "invalid"}]}, "gemini-3-pro"
+        )
         mock_logger.debug.assert_not_called()
 
 
@@ -303,25 +323,29 @@ class TestExtraContentPreservation:
         import json
 
         original = {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": "call_123",
-                        "type": "function",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": '{"location": "NYC"}'
-                        },
-                        "extra_content": {
-                            "google": {
-                                "thought_signature": "CvcQAdHN2OekY10ClPFkYA=="
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_123",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_weather",
+                                    "arguments": '{"location": "NYC"}',
+                                },
+                                "extra_content": {
+                                    "google": {
+                                        "thought_signature": "CvcQAdHN2OekY10ClPFkYA=="
+                                    }
+                                },
                             }
-                        }
-                    }]
+                        ],
+                    }
                 }
-            }]
+            ]
         }
 
         # Simulate pass-through: serialize and deserialize
@@ -333,7 +357,10 @@ class TestExtraContentPreservation:
         assert "extra_content" in tool_call
         assert "google" in tool_call["extra_content"]
         assert "thought_signature" in tool_call["extra_content"]["google"]
-        assert tool_call["extra_content"]["google"]["thought_signature"] == "CvcQAdHN2OekY10ClPFkYA=="
+        assert (
+            tool_call["extra_content"]["google"]["thought_signature"]
+            == "CvcQAdHN2OekY10ClPFkYA=="
+        )
 
     def test_request_format_with_extra_content(self):
         """Verify the expected request format with extra_content."""
@@ -347,26 +374,28 @@ class TestExtraContentPreservation:
                 {
                     "role": "assistant",
                     "content": None,
-                    "tool_calls": [{
-                        "id": "function-call-5873527561210830497",
-                        "type": "function",
-                        "function": {
-                            "name": "get_current_weather",
-                            "arguments": '{"location":"Intercourse, PA","unit":"fahrenheit"}'
-                        },
-                        "extra_content": {
-                            "google": {
-                                "thought_signature": "CvcQAdHN2OekY10ClPFkYA=="
-                            }
+                    "tool_calls": [
+                        {
+                            "id": "function-call-5873527561210830497",
+                            "type": "function",
+                            "function": {
+                                "name": "get_current_weather",
+                                "arguments": '{"location":"Intercourse, PA","unit":"fahrenheit"}',
+                            },
+                            "extra_content": {
+                                "google": {
+                                    "thought_signature": "CvcQAdHN2OekY10ClPFkYA=="
+                                }
+                            },
                         }
-                    }]
+                    ],
                 },
                 {
                     "role": "tool",
                     "tool_call_id": "function-call-5873527561210830497",
-                    "content": "66°F and Sunny"
-                }
-            ]
+                    "content": "66°F and Sunny",
+                },
+            ],
         }
 
         # Verify structure is valid JSON
@@ -379,7 +408,10 @@ class TestExtraContentPreservation:
         assert len(assistant_msg["tool_calls"]) == 1
 
         tool_call = assistant_msg["tool_calls"][0]
-        assert tool_call["extra_content"]["google"]["thought_signature"] == "CvcQAdHN2OekY10ClPFkYA=="
+        assert (
+            tool_call["extra_content"]["google"]["thought_signature"]
+            == "CvcQAdHN2OekY10ClPFkYA=="
+        )
 
 
 class TestGemini3Normalization:
@@ -388,19 +420,26 @@ class TestGemini3Normalization:
     def test_normalize_request_adds_dummy_signature(self):
         request = {
             "model": "gemini-3-pro",
-            "messages": [{
-                "role": "assistant",
-                "tool_calls": [{
-                    "id": "call_123",
-                    "type": "function",
-                    "function": {"name": "get_weather", "arguments": "{}"}
-                }]
-            }]
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{}"},
+                        }
+                    ],
+                }
+            ],
         }
         changed = normalize_gemini3_request(request, request["model"])
         assert changed is True
         tool_call = request["messages"][0]["tool_calls"][0]
-        assert tool_call["provider_specific_fields"]["thought_signature"] == _get_dummy_thought_signature()
+        assert (
+            tool_call["provider_specific_fields"]["thought_signature"]
+            == _get_dummy_thought_signature()
+        )
         assert (
             tool_call["function"]["provider_specific_fields"]["thought_signature"]
             == _get_dummy_thought_signature()
@@ -415,20 +454,27 @@ class TestGemini3Normalization:
         encoded_id = _encode_tool_call_id_with_signature("call_abc", signature)
         request = {
             "model": "gemini-3-pro",
-            "messages": [{
-                "role": "assistant",
-                "tool_calls": [{
-                    "id": encoded_id,
-                    "type": "function",
-                    "function": {"name": "do", "arguments": "{}"}
-                }]
-            }]
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": encoded_id,
+                            "type": "function",
+                            "function": {"name": "do", "arguments": "{}"},
+                        }
+                    ],
+                }
+            ],
         }
         changed = normalize_gemini3_request(request, request["model"])
         assert changed is True
         tool_call = request["messages"][0]["tool_calls"][0]
         assert tool_call["provider_specific_fields"]["thought_signature"] == signature
-        assert tool_call["function"]["provider_specific_fields"]["thought_signature"] == signature
+        assert (
+            tool_call["function"]["provider_specific_fields"]["thought_signature"]
+            == signature
+        )
         assert tool_call["extra_content"]["google"]["thought_signature"] == signature
 
     def test_normalize_request_strips_signature_for_non_gemini(self):
@@ -439,18 +485,16 @@ class TestGemini3Normalization:
             "messages": [
                 {
                     "role": "assistant",
-                    "tool_calls": [{
-                        "id": encoded_id,
-                        "type": "function",
-                        "function": {"name": "do", "arguments": "{}"}
-                    }]
+                    "tool_calls": [
+                        {
+                            "id": encoded_id,
+                            "type": "function",
+                            "function": {"name": "do", "arguments": "{}"},
+                        }
+                    ],
                 },
-                {
-                    "role": "tool",
-                    "tool_call_id": encoded_id,
-                    "content": "ok"
-                }
-            ]
+                {"role": "tool", "tool_call_id": encoded_id, "content": "ok"},
+            ],
         }
         changed = normalize_gemini3_request(request, request["model"])
         assert changed is True
@@ -462,16 +506,22 @@ class TestGemini3Normalization:
     def test_normalize_response_embeds_signature(self):
         signature = "sig_resp"
         response = {
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "do", "arguments": "{}"},
-                        "extra_content": {"google": {"thought_signature": signature}}
-                    }]
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "do", "arguments": "{}"},
+                                "extra_content": {
+                                    "google": {"thought_signature": signature}
+                                },
+                            }
+                        ]
+                    }
                 }
-            }]
+            ]
         }
         changed = normalize_gemini3_response(response, "gemini-3-pro")
         assert changed is True
@@ -482,12 +532,14 @@ class TestGemini3Normalization:
     def test_normalize_response_sets_message_thought_signatures(self):
         signature = "sig_msg"
         response = {
-            "choices": [{
-                "message": {
-                    "content": "hello",
-                    "extra_content": {"google": {"thought_signature": signature}}
+            "choices": [
+                {
+                    "message": {
+                        "content": "hello",
+                        "extra_content": {"google": {"thought_signature": signature}},
+                    }
                 }
-            }]
+            ]
         }
         changed = normalize_gemini3_response(response, "gemini-3-pro")
         assert changed is True
@@ -605,14 +657,20 @@ class TestGemini3Normalization:
 
     def test_normalize_response_parses_parts_thinking_blocks(self):
         response = {
-            "choices": [{
-                "message": {
-                    "parts": [
-                        {"text": "hidden", "thought": True, "thoughtSignature": "sig1"},
-                        {"text": "visible"}
-                    ]
+            "choices": [
+                {
+                    "message": {
+                        "parts": [
+                            {
+                                "text": "hidden",
+                                "thought": True,
+                                "thoughtSignature": "sig1",
+                            },
+                            {"text": "visible"},
+                        ]
+                    }
                 }
-            }]
+            ]
         }
         changed = normalize_gemini3_response(response, "gemini-3-pro")
         assert changed is True

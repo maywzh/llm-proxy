@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """CLI entry point for LLM API Proxy (database mode only)"""
-import os
 
 import uvicorn
 
@@ -23,7 +22,7 @@ def main():
     host = env_config.host
     port = env_config.port
 
-    logger.info(f"Starting LLM API Proxy (database mode)")
+    logger.info("Starting LLM API Proxy (database mode)")
     logger.info(f"Listening on {host}:{port}")
 
     uvicorn.run(

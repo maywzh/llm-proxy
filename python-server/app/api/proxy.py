@@ -6,7 +6,7 @@ between different LLM API formats (OpenAI, Anthropic, Response API).
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 import json
 import time
 import uuid
@@ -27,17 +27,12 @@ from app.services.langfuse_service import (
     build_langfuse_tags,
     LangfuseService,
 )
-from app.core.config import get_config
-from app.core.exceptions import TTFTTimeoutError
 from app.core.http_client import get_http_client
 from app.core.utils import strip_provider_suffix
 from app.utils.client import extract_client
 from app.utils.gemini3 import normalize_gemini3_request, strip_gemini3_provider_fields
 from app.core.jsonl_logger import (
-    get_jsonl_logger,
     log_request,
-    log_response,
-    log_streaming_response,
     log_provider_request,
     log_provider_response,
     log_provider_streaming_response,
@@ -46,6 +41,7 @@ from app.core.metrics import (
     BYPASS_REQUESTS,
     BYPASS_STREAMING_BYTES,
     CROSS_PROTOCOL_REQUESTS,
+    CLIENT_DISCONNECTS,
 )
 from app.core.stream_metrics import StreamStats, record_stream_metrics
 from app.core.logging import (
@@ -54,6 +50,7 @@ from app.core.logging import (
     clear_provider_context,
     get_api_key_name,
 )
+from app.models.config import CredentialConfig
 from app.models.provider import Provider
 from app.transformer import (
     Protocol,
@@ -63,8 +60,6 @@ from app.transformer import (
     TransformerRegistry,
     CrossProtocolStreamState,
     SseParser,
-    format_sse_event,
-    format_sse_data,
     format_sse_done,
     OpenAITransformer,
     AnthropicTransformer,
@@ -146,7 +141,11 @@ def _normalize_gemini3_provider_payload(
 ) -> None:
     if ctx.provider_protocol != Protocol.OPENAI:
         return
-    model = provider_payload.get("model") if isinstance(provider_payload.get("model"), str) else None
+    model = (
+        provider_payload.get("model")
+        if isinstance(provider_payload.get("model"), str)
+        else None
+    )
     normalize_gemini3_request(provider_payload, model)
     strip_gemini3_provider_fields(provider_payload, model)
 
@@ -450,8 +449,22 @@ async def _create_cross_protocol_stream(
     input_tokens: int = 0,
     chunk_collector: Optional[list[str]] = None,
     usage_tracker: Optional[StreamingUsageTracker] = None,
+    disconnect_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ):
-    """Create a cross-protocol streaming response generator."""
+    """Create a cross-protocol streaming response generator.
+
+    Args:
+        response: HTTP response from provider
+        pipeline: Transform pipeline for protocol conversion
+        ctx: Transform context with metadata
+        generation_data: Generation data for Langfuse tracing
+        trace_id: Langfuse trace ID
+        langfuse_service: Langfuse service instance
+        input_tokens: Pre-calculated input tokens for usage fallback
+        chunk_collector: Optional list to collect chunks for logging
+        usage_tracker: Optional usage tracker for metrics recording
+        disconnect_check: Optional async callable that returns True if client disconnected
+    """
     client_protocol = ctx.client_protocol
     provider_protocol = ctx.provider_protocol
     model_label = ctx.original_model
@@ -480,6 +493,24 @@ async def _create_cross_protocol_stream(
             else:
                 # Continue accumulating lines
                 continue
+
+            # Only check disconnect on non-empty lines (skip SSE event boundaries)
+            # Check after getting the line but before processing it
+            if disconnect_check is not None:
+                try:
+                    if await disconnect_check():
+                        logger.debug(
+                            f"Client disconnected, stopping bypass stream from provider {provider_name} "
+                            f"model={model_label or 'unknown'}"
+                        )
+                        # Record client disconnect metric
+                        CLIENT_DISCONNECTS.labels(
+                            model=model_label or "unknown",
+                            provider=provider_name,
+                        ).inc()
+                        break
+                except Exception as e:
+                    logger.debug(f"Error checking client disconnect: {e}")
 
             chunk = chunk_str.encode("utf-8")
             # Track first token time
@@ -512,6 +543,24 @@ async def _create_cross_protocol_stream(
 
     # Use aiter_lines() to ensure complete lines (prevents JSON truncation)
     async for line in response.aiter_lines():
+        # Only check disconnect on non-empty lines (skip SSE event boundaries)
+        # Check after getting the line but before processing it
+        if line.strip() and disconnect_check is not None:
+            try:
+                if await disconnect_check():
+                    logger.debug(
+                        f"Client disconnected, stopping cross-protocol stream from provider {provider_name} "
+                        f"model={model_label or 'unknown'}"
+                    )
+                    # Record client disconnect metric
+                    CLIENT_DISCONNECTS.labels(
+                        model=model_label or "unknown",
+                        provider=provider_name,
+                    ).inc()
+                    break
+            except Exception as e:
+                logger.debug(f"Error checking client disconnect: {e}")
+
         try:
             # Track first token time
             if usage_tracker is not None and usage_tracker.first_token_time is None:
@@ -726,6 +775,7 @@ async def _handle_streaming_request(
                 input_tokens=input_tokens,
                 chunk_collector=chunk_collector,
                 usage_tracker=usage_tracker,
+                disconnect_check=request.is_disconnected,
             ):
                 yield chunk
 
@@ -752,7 +802,7 @@ async def _handle_streaming_request(
             streaming_response, request.state.model, provider.name
         )
 
-    except Exception as e:
+    except Exception:
         await stream_ctx.__aexit__(None, None, None)
         raise
 
@@ -1041,7 +1091,7 @@ async def handle_proxy_request(
         raise HTTPException(
             status_code=502, detail=f"Provider {provider.name} network error"
         )
-    except Exception as e:
+    except Exception:
         logger.exception(f"Unexpected error for provider {provider.name}")
         generation_data.is_error = True
         generation_data.error_message = "Internal server error"
@@ -1111,7 +1161,6 @@ async def list_models_v2(
     This endpoint is compatible with the OpenAI Models API.
     """
     from app.api.dependencies import model_matches_allowed_list
-    from app.models.config import CredentialConfig
 
     models_set = provider_svc.get_all_models()
 

@@ -42,7 +42,6 @@ from app.core.logging import (
     clear_provider_context,
     get_api_key_name,
 )
-from app.utils.client import extract_client
 
 router = APIRouter(prefix="/v1", tags=["claude"])
 logger = get_logger()
@@ -198,9 +197,6 @@ async def create_message(
     # Extract client metadata from headers for Langfuse tracing
     client_metadata = extract_client_metadata(request)
     user_agent = client_metadata.get("user_agent")
-
-    # Extract client from User-Agent header for metrics
-    client = extract_client(request)
 
     # Build tags for Langfuse (credential, user-agent)
     tags = build_langfuse_tags("messages", credential_name, user_agent)
@@ -363,7 +359,7 @@ async def create_message(
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error processing Claude request")
         generation_data.is_error = True
         generation_data.error_message = "Internal server error"
@@ -438,7 +434,12 @@ async def _handle_streaming_request(
     fallback_input_tokens = _calculate_claude_input_tokens(claude_request)
 
     async def stream_generator():
-        nonlocal accumulated_output, finish_reason, usage_data, first_token_received, first_token_time
+        nonlocal \
+            accumulated_output, \
+            finish_reason, \
+            usage_data, \
+            first_token_received, \
+            first_token_time
 
         try:
             async for event in convert_openai_streaming_to_claude(

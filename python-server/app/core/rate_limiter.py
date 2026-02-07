@@ -72,7 +72,7 @@ class RateLimiter:
             # No rate limit configured for this key - allow access
             # This is correct behavior: keys without rate limits should pass through
             logger.debug(
-                f"Rate limit check for unregistered key - allowing (no limit configured)"
+                "Rate limit check for unregistered key - allowing (no limit configured)"
             )
             return True
 

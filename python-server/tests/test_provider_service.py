@@ -1,7 +1,7 @@
 """Tests for provider service"""
 
 from collections import Counter
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
@@ -508,21 +508,21 @@ class TestComplexMultiProviderMultiModel:
 
         # Check ratios: provider0:provider1 should be 2:3
         ratio_b_01 = model_b_counts["provider0"] / model_b_counts["provider1"]
-        assert (
-            0.47 < ratio_b_01 < 0.87
-        ), f"Model B provider0:provider1 ratio was {ratio_b_01}, expected ~0.667"
+        assert 0.47 < ratio_b_01 < 0.87, (
+            f"Model B provider0:provider1 ratio was {ratio_b_01}, expected ~0.667"
+        )
 
         # Check ratios: provider0:provider2 should be 2:1
         ratio_b_02 = model_b_counts["provider0"] / model_b_counts["provider2"]
-        assert (
-            1.4 < ratio_b_02 < 2.6
-        ), f"Model B provider0:provider2 ratio was {ratio_b_02}, expected ~2.0"
+        assert 1.4 < ratio_b_02 < 2.6, (
+            f"Model B provider0:provider2 ratio was {ratio_b_02}, expected ~2.0"
+        )
 
         # Check ratios: provider1:provider2 should be 3:1
         ratio_b_12 = model_b_counts["provider1"] / model_b_counts["provider2"]
-        assert (
-            2.1 < ratio_b_12 < 3.9
-        ), f"Model B provider1:provider2 ratio was {ratio_b_12}, expected ~3.0"
+        assert 2.1 < ratio_b_12 < 3.9, (
+            f"Model B provider1:provider2 ratio was {ratio_b_12}, expected ~3.0"
+        )
 
         # Test 3: Model C - Provider0(2) and Provider3(4) participate, ratio 2:4 = 1:2
         model_c_selections = [

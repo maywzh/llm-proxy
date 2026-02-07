@@ -2,27 +2,20 @@
 
 import asyncio
 import os
-from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
-from fastapi import status
 
 from app.core.database import Database, ProviderModel
 from app.models.health import (
     CheckProviderHealthRequest,
     CheckProviderHealthResponse,
-    HealthCheckRequest,
-    HealthCheckResponse,
     HealthStatus,
     ModelHealthStatus,
-    ProviderHealthStatus,
     ProviderHealthSummary,
 )
 from app.services.health_check_service import (
     HealthCheckService,
-    check_providers_health,
 )
 
 
@@ -99,7 +92,9 @@ class TestHealthCheckService:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
+        with patch(
+            "app.services.health_check_service.get_http_client"
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -120,7 +115,9 @@ class TestHealthCheckService:
     @pytest.mark.asyncio
     async def test_check_provider_health_timeout(self, service, mock_provider):
         """Test health check with timeout"""
-        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
+        with patch(
+            "app.services.health_check_service.get_http_client"
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_client.post.side_effect = asyncio.TimeoutError()
             mock_get_client.return_value = mock_client
@@ -141,7 +138,9 @@ class TestHealthCheckService:
         mock_response.status_code = 401
         mock_response.json.return_value = {"error": {"message": "Invalid API key"}}
 
-        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
+        with patch(
+            "app.services.health_check_service.get_http_client"
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -367,7 +366,9 @@ class TestConcurrentHealthCheck:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
+        with patch(
+            "app.services.health_check_service.get_http_client"
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -402,7 +403,9 @@ class TestConcurrentHealthCheck:
                 mock_response.json.return_value = {"error": {"message": "Invalid key"}}
             return mock_response
 
-        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
+        with patch(
+            "app.services.health_check_service.get_http_client"
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_client.post = mock_post
             mock_get_client.return_value = mock_client
@@ -424,7 +427,9 @@ class TestConcurrentHealthCheck:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
+        with patch(
+            "app.services.health_check_service.get_http_client"
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_client.post.return_value = mock_response
             mock_get_client.return_value = mock_client
@@ -477,7 +482,9 @@ class TestConcurrentHealthCheck:
             mock_response.status_code = 200
             return mock_response
 
-        with patch("app.services.health_check_service.get_http_client") as mock_get_client:
+        with patch(
+            "app.services.health_check_service.get_http_client"
+        ) as mock_get_client:
             mock_client = AsyncMock()
             mock_client.post = mock_post
             mock_get_client.return_value = mock_client

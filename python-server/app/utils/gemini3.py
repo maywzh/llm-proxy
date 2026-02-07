@@ -19,9 +19,9 @@ from app.core.logging import get_logger
 logger = get_logger()
 
 THOUGHT_SIGNATURE_SEPARATOR = "__thought__"
-_DUMMY_THOUGHT_SIGNATURE = base64.b64encode(
-    b"skip_thought_signature_validator"
-).decode("utf-8")
+_DUMMY_THOUGHT_SIGNATURE = base64.b64encode(b"skip_thought_signature_validator").decode(
+    "utf-8"
+)
 _GEMINI3_UNSUPPORTED_PENALTY_PARAMS = ("frequency_penalty", "presence_penalty")
 
 
@@ -153,7 +153,9 @@ def _merge_thought_signatures(
     return True
 
 
-def _extract_parts_from_message(content: dict[str, Any]) -> Optional[list[dict[str, Any]]]:
+def _extract_parts_from_message(
+    content: dict[str, Any],
+) -> Optional[list[dict[str, Any]]]:
     parts = content.get("parts")
     if isinstance(parts, list):
         return parts
@@ -223,7 +225,9 @@ def _extract_thought_signature_from_tool_call(
     model: Optional[str],
     allow_dummy: bool,
 ) -> Optional[str]:
-    signature = _signature_from_provider_fields(tool_call.get("provider_specific_fields"))
+    signature = _signature_from_provider_fields(
+        tool_call.get("provider_specific_fields")
+    )
     if signature:
         return signature
 
@@ -323,7 +327,9 @@ def _check_and_log_signatures(content: dict[str, Any], location: str) -> int:
     return sig_count
 
 
-def log_gemini_response_signatures(response_data: dict[str, Any], model: Optional[str]) -> None:
+def log_gemini_response_signatures(
+    response_data: dict[str, Any], model: Optional[str]
+) -> None:
     """Log thought_signature presence in Gemini 3 response for debugging.
 
     This is for debugging only - no modifications are made here.
@@ -417,7 +423,10 @@ def normalize_gemini3_request(data: dict[str, Any], model: Optional[str]) -> boo
                         if not isinstance(tc, dict):
                             continue
                         tc_id = tc.get("id")
-                        if isinstance(tc_id, str) and THOUGHT_SIGNATURE_SEPARATOR in tc_id:
+                        if (
+                            isinstance(tc_id, str)
+                            and THOUGHT_SIGNATURE_SEPARATOR in tc_id
+                        ):
                             tc["id"] = _strip_signature_from_id(tc_id)
                             changed = True
             if message.get("role") == "tool":
@@ -564,7 +573,9 @@ def strip_gemini3_provider_fields(data: dict[str, Any], model: Optional[str]) ->
     return changed
 
 
-def normalize_gemini3_response(response_data: dict[str, Any], model: Optional[str]) -> bool:
+def normalize_gemini3_response(
+    response_data: dict[str, Any], model: Optional[str]
+) -> bool:
     """Normalize Gemini 3 response payload to align with LiteLLM handling."""
     if not is_gemini3_model(model):
         return False
@@ -610,8 +621,13 @@ def normalize_gemini3_response(response_data: dict[str, Any], model: Optional[st
                             changed = True
 
                         tc_id = tc.get("id")
-                        if isinstance(tc_id, str) and THOUGHT_SIGNATURE_SEPARATOR not in tc_id:
-                            tc["id"] = _encode_tool_call_id_with_signature(tc_id, signature)
+                        if (
+                            isinstance(tc_id, str)
+                            and THOUGHT_SIGNATURE_SEPARATOR not in tc_id
+                        ):
+                            tc["id"] = _encode_tool_call_id_with_signature(
+                                tc_id, signature
+                            )
                             changed = True
 
     return changed

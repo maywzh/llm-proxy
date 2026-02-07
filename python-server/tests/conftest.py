@@ -1,7 +1,6 @@
 """Shared test fixtures and configuration"""
 
-import os
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import Mock
 from contextlib import asynccontextmanager
 
 import pytest

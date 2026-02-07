@@ -104,9 +104,9 @@ if [[ ${#python_files[@]} -gt 0 ]]; then
 
   # Format check
   echo "   Running ruff format..."
-  if ! ruff format --check python-server 2>/dev/null; then
+  if ! uv run --directory python-server ruff format --check . 2>/dev/null; then
     echo "   ⚠️  Formatting issues found, auto-fixing..."
-    ruff format python-server
+    uv run --directory python-server ruff format .
     # Re-add formatted files
     for file in "${python_files[@]}"; do
       git add "$file"
@@ -116,7 +116,7 @@ if [[ ${#python_files[@]} -gt 0 ]]; then
 
   # Lint check
   echo "   Running ruff check..."
-  if ! ruff check python-server --fix 2>&1 | head -50; then
+  if ! uv run --directory python-server ruff check . --fix 2>&1 | head -50; then
     # Re-add if ruff fixed anything
     for file in "${python_files[@]}"; do
       git add "$file"
@@ -124,7 +124,7 @@ if [[ ${#python_files[@]} -gt 0 ]]; then
   fi
 
   # Final lint check (no fix, just report)
-  if ! ruff check python-server 2>/dev/null; then
+  if ! uv run --directory python-server ruff check . 2>/dev/null; then
     echo "   ❌ Ruff found unfixable issues"
     lint_failed=1
   else

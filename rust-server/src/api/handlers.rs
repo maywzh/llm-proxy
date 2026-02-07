@@ -3,6 +3,7 @@
 //! This module contains all endpoint handlers including chat completions,
 //! model listings, and metrics.
 
+use crate::api::disconnect::DisconnectStream;
 use crate::api::gemini3::{
     log_gemini_request_signatures, log_gemini_response_signatures, normalize_request_payload,
     normalize_response_payload, strip_gemini3_provider_fields,
@@ -23,10 +24,11 @@ use crate::core::middleware::{
     extract_client, ApiKeyName, HasCredentials, ModelName, ProviderName,
 };
 use crate::core::utils::{get_key_name, strip_provider_suffix};
-use crate::core::{AppError, RateLimiter, Result};
+use crate::core::{AppError, RateLimiter, Result, StreamCancelHandle};
 use crate::services::ProviderService;
 use crate::with_request_context;
 use axum::{
+    body::Body,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -685,6 +687,7 @@ async fn handle_streaming_response(
     request_id: String,
     request_payload: serde_json::Value,
     client: String,
+    cancel_handle: Option<StreamCancelHandle>,
 ) -> Result<Response> {
     // Only pass generation_data if trace_id is Some (Langfuse enabled and sampled)
     let langfuse_data = if trace_id.is_some() {
@@ -705,6 +708,7 @@ async fn handle_streaming_response(
         Some("/v1/chat/completions".to_string()),
         Some(request_payload),
         Some(client),
+        cancel_handle,
     )
     .await
     {
@@ -1026,6 +1030,14 @@ pub async fn chat_completions(
         let prompt_tokens_for_fallback = parsed.prompt_tokens_for_fallback;
         let gemini_model = gemini_model.clone();
 
+        // Create cancellation handle for streaming requests
+        let cancel_handle = if is_stream {
+            Some(StreamCancelHandle::new())
+        } else {
+            None
+        };
+        let cancel_handle_clone = cancel_handle.clone();
+
         PROVIDER_CONTEXT
             .scope(provider.name.clone(), async move {
                 // Log request info: DEBUG shows summary, TRACE shows full payload with size
@@ -1161,6 +1173,7 @@ pub async fn chat_completions(
                         request_id.clone(),
                         payload.clone(),
                         client.clone(),
+                        cancel_handle_clone,
                     )
                     .await?
                 } else {
@@ -1186,6 +1199,48 @@ pub async fn chat_completions(
                     provider.name,
                     api_key_name,
                 );
+
+                // If streaming, wrap the body to detect client disconnect
+                if is_stream {
+                    if let Some(handle) = cancel_handle {
+                        // We need to wrap the body to detect when it's dropped
+                        // Axum doesn't expose on_disconnect directly, but dropping the body
+                        // usually indicates the client disconnected or the stream finished.
+                        // Since we control the stream generation, we know when it finishes normally.
+                        // If the body is dropped before we finish, it's a disconnect.
+
+                        // However, axum::body::Body doesn't have a direct hook.
+                        // The cancellation logic is primarily handled in the stream generation
+                        // by checking if the channel is closed, but for explicit disconnect detection
+                        // we rely on the stream consumer (axum/hyper) dropping the stream.
+
+                        // The StreamCancelHandle is passed to create_sse_stream, but we need
+                        // something to trigger it.
+                        // In Rust/Axum, when the client disconnects, the stream polling stops
+                        // and the stream is dropped. We can use a Drop guard in the stream
+                        // to detect this, but we want to actively cancel upstream requests.
+
+                        // For now, we'll rely on the fact that if the client disconnects,
+                        // the stream consumer will stop polling. The `create_sse_stream`
+                        // implementation uses `stream::unfold` which will stop executing
+                        // when the output stream is dropped.
+
+                        // To actively detect disconnects and cancel upstream, we can use
+                        // a body wrapper or rely on the fact that the async task driving
+                        // the stream will be cancelled when the response body is dropped.
+
+                        // The `StreamCancelHandle` we added is useful if we have a separate
+                        // task monitoring the connection, but Axum doesn't provide that easily.
+                        // Instead, we'll use a custom Body wrapper that triggers the cancel handle on drop.
+
+                        let (parts, body) = final_response.into_parts();
+                        let new_body = Body::from_stream(DisconnectStream {
+                            stream: body.into_data_stream(),
+                            cancel_handle: handle,
+                        });
+                        final_response = Response::from_parts(parts, new_body);
+                    }
+                }
 
                 Ok(final_response)
             })

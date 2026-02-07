@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import os
-import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,7 +17,6 @@ from sqlalchemy import (
     DateTime,
     Integer,
     String,
-    Text,
     func,
     select,
     text,
@@ -439,12 +437,12 @@ class DynamicConfig:
         """Internal method to load config from database"""
         async with self.db.session() as session:
             provider_result = await session.execute(
-                select(ProviderModel).where(ProviderModel.is_enabled == True)
+                select(ProviderModel).where(ProviderModel.is_enabled.is_(True))
             )
             providers = list(provider_result.scalars().all())
 
             credential_result = await session.execute(
-                select(CredentialModel).where(CredentialModel.is_enabled == True)
+                select(CredentialModel).where(CredentialModel.is_enabled.is_(True))
             )
             credentials = list(credential_result.scalars().all())
 
@@ -470,12 +468,12 @@ async def load_config_from_db(db: Database) -> InitResult:
     logger.info("Loading configuration from database")
     async with db.session() as session:
         provider_result = await session.execute(
-            select(ProviderModel).where(ProviderModel.is_enabled == True)
+            select(ProviderModel).where(ProviderModel.is_enabled.is_(True))
         )
         providers = list(provider_result.scalars().all())
 
         credential_result = await session.execute(
-            select(CredentialModel).where(CredentialModel.is_enabled == True)
+            select(CredentialModel).where(CredentialModel.is_enabled.is_(True))
         )
         credentials = list(credential_result.scalars().all())
 
@@ -534,7 +532,7 @@ async def list_providers(
     async with db.session() as session:
         stmt = select(ProviderModel)
         if enabled_only:
-            stmt = stmt.where(ProviderModel.is_enabled == True)
+            stmt = stmt.where(ProviderModel.is_enabled.is_(True))
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
@@ -611,7 +609,7 @@ async def list_credentials(
     async with db.session() as session:
         stmt = select(CredentialModel)
         if enabled_only:
-            stmt = stmt.where(CredentialModel.is_enabled == True)
+            stmt = stmt.where(CredentialModel.is_enabled.is_(True))
         result = await session.execute(stmt)
         return list(result.scalars().all())
 

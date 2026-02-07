@@ -6,7 +6,15 @@ from prometheus_client import Counter, Histogram, Gauge, Info
 REQUEST_COUNT = Counter(
     "llm_proxy_requests_total",
     "Total number of requests",
-    ["method", "endpoint", "model", "provider", "status_code", "api_key_name", "client"],
+    [
+        "method",
+        "endpoint",
+        "model",
+        "provider",
+        "status_code",
+        "api_key_name",
+        "client",
+    ],
 )
 
 REQUEST_DURATION = Histogram(
@@ -73,6 +81,13 @@ CROSS_PROTOCOL_REQUESTS = Counter(
     "llm_proxy_cross_protocol_requests_total",
     "Total number of cross-protocol requests (protocol transformation required)",
     ["client_protocol", "provider_protocol", "provider"],
+)
+
+# Client disconnect metrics
+CLIENT_DISCONNECTS = Counter(
+    "llm_proxy_client_disconnects_total",
+    "Total number of client disconnections during streaming",
+    ["model", "provider"],
 )
 
 # Application info

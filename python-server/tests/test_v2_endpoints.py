@@ -5,7 +5,7 @@ by testing the verify_auth dependency directly.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from fastapi import HTTPException
 
 from app.api.dependencies import verify_auth, check_model_permission

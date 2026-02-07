@@ -55,7 +55,6 @@ class TestProviderSelectionProperties:
         counts = Counter(selections)
 
         # Calculate expected ratio
-        total_weight = weight1 + weight2
         expected_ratio = weight1 / weight2
         actual_ratio = counts["provider1"] / counts["provider2"]
 

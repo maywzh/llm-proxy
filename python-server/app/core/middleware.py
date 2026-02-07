@@ -1,4 +1,5 @@
 """Middleware for metrics collection and model permission checking"""
+
 import json
 import time
 from typing import Callable, Set
@@ -37,16 +38,21 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
         # LLM endpoints that should show detailed logging
         llm_endpoints = (
-            '/v1/chat/completions', '/v1/messages', '/v1/completions',
-            '/v2/chat/completions', '/v2/messages', '/v2/completions', '/v2/responses'
+            "/v1/chat/completions",
+            "/v1/messages",
+            "/v1/completions",
+            "/v2/chat/completions",
+            "/v2/messages",
+            "/v2/completions",
+            "/v2/responses",
         )
 
         # Skip metrics endpoint itself
-        if endpoint == '/metrics':
+        if endpoint == "/metrics":
             return await call_next(request)
 
         # Skip event_logging endpoint (Claude Code telemetry) - handled by endpoint itself
-        if endpoint == '/api/event_logging/batch':
+        if endpoint == "/api/event_logging/batch":
             return await call_next(request)
 
         # Increment active requests
@@ -61,14 +67,14 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
             # Get model and provider from request state (set by API handlers)
             # Get api_key_name from context (set by verify_auth dependency)
-            model = getattr(request.state, 'model', 'unknown')
-            provider = getattr(request.state, 'provider', 'unknown')
+            model = getattr(request.state, "model", "unknown")
+            provider = getattr(request.state, "provider", "unknown")
             api_key_name = get_api_key_name()
             status_code = response.status_code
 
             # Record metrics only for LLM requests (where provider is set)
             # Skip non-LLM endpoints like /v1/models, /health, etc.
-            if provider != 'unknown':
+            if provider != "unknown":
                 REQUEST_COUNT.labels(
                     method=method,
                     endpoint=endpoint,
@@ -76,7 +82,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                     provider=provider,
                     status_code=status_code,
                     api_key_name=api_key_name,
-                    client=client
+                    client=client,
                 ).inc()
 
                 REQUEST_DURATION.labels(
@@ -85,7 +91,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                     model=model,
                     provider=provider,
                     api_key_name=api_key_name,
-                    client=client
+                    client=client,
                 ).observe(duration)
 
             # Log request details - show model/provider/key/client for LLM endpoints
@@ -101,11 +107,13 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             duration = time.time() - start_time
             log_message = f"{method} {endpoint}"
             if endpoint in llm_endpoints:
-                model = getattr(request.state, 'model', 'unknown')
-                provider = getattr(request.state, 'provider', 'unknown')
+                model = getattr(request.state, "model", "unknown")
+                provider = getattr(request.state, "provider", "unknown")
                 api_key_name = get_api_key_name()
                 log_message += f" - client={client} key={api_key_name} model={model} provider={provider}"
-            log_message += f" - Error: {type(e).__name__}: {str(e)} duration={duration:.3f}s"
+            log_message += (
+                f" - Error: {type(e).__name__}: {str(e)} duration={duration:.3f}s"
+            )
             logger.error(log_message)
             raise
 
@@ -166,7 +174,9 @@ class ModelPermissionMiddleware(BaseHTTPMiddleware):
 
             # Check model permission
             if credential_config and credential_config.allowed_models:
-                if not model_matches_allowed_list(model, credential_config.allowed_models):
+                if not model_matches_allowed_list(
+                    model, credential_config.allowed_models
+                ):
                     logger.warning(
                         f"Model permission denied: model={model}, "
                         f"credential={credential_config.name}, "
@@ -177,11 +187,11 @@ class ModelPermissionMiddleware(BaseHTTPMiddleware):
                         content={
                             "error": {
                                 "message": f"Model '{model}' is not allowed for this credential. "
-                                           f"Allowed models: {credential_config.allowed_models}",
+                                f"Allowed models: {credential_config.allowed_models}",
                                 "type": "permission_error",
-                                "code": "model_not_allowed"
+                                "code": "model_not_allowed",
                             }
-                        }
+                        },
                     )
 
             return await call_next(request)

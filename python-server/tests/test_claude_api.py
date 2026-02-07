@@ -1,8 +1,5 @@
 """Tests for Claude API implementation."""
 
-import json
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
-
 import pytest
 import httpx
 import respx
@@ -970,15 +967,15 @@ class TestStreamingTermination:
         message_stop_count = sum(1 for e in events if "message_stop" in e)
 
         # Each should appear exactly once
-        assert (
-            content_block_stop_count == 1
-        ), f"content_block_stop appeared {content_block_stop_count} times"
-        assert (
-            message_delta_count == 1
-        ), f"message_delta appeared {message_delta_count} times"
-        assert (
-            message_stop_count == 1
-        ), f"message_stop appeared {message_stop_count} times"
+        assert content_block_stop_count == 1, (
+            f"content_block_stop appeared {content_block_stop_count} times"
+        )
+        assert message_delta_count == 1, (
+            f"message_delta appeared {message_delta_count} times"
+        )
+        assert message_stop_count == 1, (
+            f"message_stop appeared {message_stop_count} times"
+        )
 
         # Verify order: content_block_stop before message_delta before message_stop
         event_types = [e.split("\n")[0].replace("event: ", "") for e in events]

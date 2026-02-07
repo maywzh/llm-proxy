@@ -5,7 +5,6 @@ import pytest
 from app.core.config import (
     get_config,
     set_config,
-    clear_config_cache,
     get_env_config,
     EnvConfig,
 )

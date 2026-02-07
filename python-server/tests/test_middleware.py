@@ -1,11 +1,10 @@
 """Tests for middleware"""
 
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock
 import time
 
 import pytest
 from fastapi import Request, Response
-from starlette.middleware.base import RequestResponseEndpoint
 
 from app.core.middleware import MetricsMiddleware
 from app.utils.client import extract_client
@@ -42,7 +41,9 @@ class TestExtractClient:
     def test_extract_client_ai_sdk_openai(self):
         """Test extract_client identifies AI SDK OpenAI"""
         request = Mock(spec=Request)
-        request.headers = {"user-agent": "ai-sdk/openai-compatible/1.0.31 ai-sdk/provider-ut"}
+        request.headers = {
+            "user-agent": "ai-sdk/openai-compatible/1.0.31 ai-sdk/provider-ut"
+        }
         assert extract_client(request) == "ai-sdk-openai"
 
     def test_extract_client_openai_js(self):
@@ -66,7 +67,9 @@ class TestExtractClient:
     def test_extract_client_browser(self):
         """Test extract_client identifies browser"""
         request = Mock(spec=Request)
-        request.headers = {"user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+        request.headers = {
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+        }
         assert extract_client(request) == "browser"
 
     def test_extract_client_unknown_returns_first_token(self):
@@ -326,8 +329,6 @@ class TestMiddlewareIntegration:
             await asyncio.sleep(sleep_duration)
             return response
 
-        import asyncio
-
         start = time.time()
         await middleware.dispatch(request, mock_call_next)
         actual_duration = time.time() - start
@@ -397,7 +398,6 @@ class TestMiddlewareEdgeCases:
     @pytest.mark.asyncio
     async def test_middleware_concurrent_requests(self):
         """Test middleware handles concurrent requests"""
-        from app.core.metrics import ACTIVE_REQUESTS
         import asyncio
 
         middleware = MetricsMiddleware(app=Mock())

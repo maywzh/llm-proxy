@@ -153,7 +153,7 @@ def response_api_to_openai_request(
 
 
 def _convert_input_to_messages(
-    input_data: Union[str, List[Dict[str, Any]]]
+    input_data: Union[str, List[Dict[str, Any]]],
 ) -> List[Dict[str, Any]]:
     """Convert Response API input to OpenAI messages."""
     if isinstance(input_data, str):
@@ -190,7 +190,10 @@ def _convert_response_content_to_openai(content: Any) -> Any:
                 openai_parts.append({"type": "text", "text": part.get("text", "")})
             elif part_type == "input_image":
                 openai_parts.append(
-                    {"type": "image_url", "image_url": {"url": part.get("image_url", "")}}
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": part.get("image_url", "")},
+                    }
                 )
             # tool_use and tool_result are handled separately
 
@@ -203,7 +206,7 @@ def _convert_response_content_to_openai(content: Any) -> Any:
 
 
 def _convert_response_tools_to_openai(
-    tools: List[Dict[str, Any]]
+    tools: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """Convert Response API tools to OpenAI format."""
     openai_tools = []

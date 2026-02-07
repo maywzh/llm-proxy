@@ -41,12 +41,11 @@ from app.transformer.unified import (
     create_tool_result_content,
     create_refusal_content,
 )
-from app.transformer.base import TransformContext, Transformer
+from app.transformer.base import TransformContext
 from app.transformer.registry import TransformerRegistry
 from app.transformer.detector import ProtocolDetector
 from app.transformer.pipeline import (
     TransformPipeline,
-    FeatureTransformer,
     FeatureTransformerChain,
     ReasoningTransformer,
     TokenLimitTransformer,

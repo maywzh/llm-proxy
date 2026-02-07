@@ -258,10 +258,7 @@ async def convert_openai_streaming_to_claude(
     tool_block_counter = 0
     current_tool_calls: Dict[int, Dict[str, Any]] = {}
     final_stop_reason = ClaudeConstants.STOP_END_TURN
-    usage_data = {
-        "input_tokens": fallback_input_tokens or 0,
-        "output_tokens": 0
-    }
+    usage_data = {"input_tokens": fallback_input_tokens or 0, "output_tokens": 0}
     usage_found = False
     stream_done = False
 
@@ -351,7 +348,10 @@ async def convert_openai_streaming_to_claude(
                                         "content": [],
                                         "stop_reason": None,
                                         "stop_sequence": None,
-                                        "usage": {"input_tokens": usage_data["input_tokens"], "output_tokens": 0},
+                                        "usage": {
+                                            "input_tokens": usage_data["input_tokens"],
+                                            "output_tokens": 0,
+                                        },
                                     },
                                 },
                             )
@@ -405,7 +405,10 @@ async def convert_openai_streaming_to_claude(
                             # Accumulate output tokens if provider didn't provide usage
                             if not usage_found and text_content:
                                 from app.utils.streaming import count_tokens
-                                usage_data["output_tokens"] += count_tokens(text_content, original_model)
+
+                                usage_data["output_tokens"] += count_tokens(
+                                    text_content, original_model
+                                )
 
                             # On-demand synthesis: emit content_block_start for text if not yet emitted
                             if not text_block_started:
