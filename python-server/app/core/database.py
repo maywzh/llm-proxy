@@ -13,10 +13,12 @@ from urllib.parse import quote
 
 from loguru import logger
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     Integer,
     String,
+    Text,
     func,
     select,
     text,
@@ -108,6 +110,30 @@ class ConfigVersionModel(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class ErrorLogModel(Base):
+    __tablename__ = "error_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    request_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    error_category: Mapped[str] = mapped_column(String(50), nullable=False)
+    error_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    provider_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    credential_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    model_requested: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    model_mapped: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    endpoint: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    client_protocol: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    provider_protocol: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    is_streaming: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    request_body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    response_body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    total_duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
 def hash_key(key: str) -> str:

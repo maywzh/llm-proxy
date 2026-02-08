@@ -18,6 +18,7 @@ from app.core.jsonl_logger import (
     log_provider_request,
     log_provider_response,
 )
+from app.core.error_logger import log_error, ErrorCategory
 from app.services.provider_service import ProviderService
 from app.services.langfuse_service import (
     get_langfuse_service,
@@ -757,7 +758,9 @@ def _handle_request_error(
         generation_data.error_message = f"TTFT timeout: first token not received within {error.timeout_secs} seconds"
         if trace_id:
             langfuse_service.trace_generation(generation_data)
-        return HTTPException(
+        status_code = 504
+        category = ErrorCategory.TIMEOUT
+        http_exc = HTTPException(
             status_code=504,
             detail={
                 "error": {
@@ -768,7 +771,7 @@ def _handle_request_error(
             },
         )
 
-    if isinstance(error, httpx.RemoteProtocolError):
+    elif isinstance(error, httpx.RemoteProtocolError):
         logger.error(
             f"Remote protocol error for provider {provider.name}: {str(error)} - "
             f"Provider closed connection unexpectedly during request"
@@ -778,44 +781,76 @@ def _handle_request_error(
         )
         if trace_id:
             langfuse_service.trace_generation(generation_data)
-        return HTTPException(
+        status_code = 502
+        category = ErrorCategory.NETWORK_ERROR
+        http_exc = HTTPException(
             status_code=502,
             detail=f"Provider {provider.name} connection closed unexpectedly",
         )
 
-    if isinstance(error, httpx.TimeoutException):
+    elif isinstance(error, httpx.TimeoutException):
         logger.error(f"Timeout error for provider {provider.name}: {str(error)}")
         generation_data.error_message = "Gateway timeout"
         if trace_id:
             langfuse_service.trace_generation(generation_data)
-        return HTTPException(status_code=504, detail="Gateway timeout")
+        status_code = 504
+        category = ErrorCategory.TIMEOUT
+        http_exc = HTTPException(status_code=504, detail="Gateway timeout")
 
-    if isinstance(error, httpx.HTTPStatusError):
+    elif isinstance(error, httpx.HTTPStatusError):
         logger.error(
             f"HTTP error for provider {provider.name}: {error.response.status_code} - {str(error)}"
         )
         generation_data.error_message = str(error)
         if trace_id:
             langfuse_service.trace_generation(generation_data)
-        return HTTPException(status_code=error.response.status_code, detail=str(error))
+        status_code = error.response.status_code
+        category = (
+            ErrorCategory.PROVIDER_4XX
+            if status_code < 500
+            else ErrorCategory.PROVIDER_5XX
+        )
+        http_exc = HTTPException(
+            status_code=error.response.status_code, detail=str(error)
+        )
 
-    if isinstance(error, httpx.RequestError):
+    elif isinstance(error, httpx.RequestError):
         logger.error(
             f"Network request error for provider {provider.name}: {str(error)}"
         )
         generation_data.error_message = f"Provider {provider.name} network error"
         if trace_id:
             langfuse_service.trace_generation(generation_data)
-        return HTTPException(
+        status_code = 502
+        category = ErrorCategory.NETWORK_ERROR
+        http_exc = HTTPException(
             status_code=502, detail=f"Provider {provider.name} network error"
         )
 
-    # Unexpected error
-    logger.exception(f"Unexpected error for provider {provider.name}")
-    generation_data.error_message = "Internal server error"
-    if trace_id:
-        langfuse_service.trace_generation(generation_data)
-    return HTTPException(status_code=500, detail="Internal server error")
+    else:
+        logger.exception(f"Unexpected error for provider {provider.name}")
+        generation_data.error_message = "Internal server error"
+        if trace_id:
+            langfuse_service.trace_generation(generation_data)
+        status_code = 500
+        category = ErrorCategory.INTERNAL_ERROR
+        http_exc = HTTPException(status_code=500, detail="Internal server error")
+
+    if category == ErrorCategory.PROVIDER_4XX and status_code != 429:
+        log_error(
+            error_category=category,
+            error_code=status_code,
+            error_message=generation_data.error_message,
+            request_id=generation_data.request_id,
+            provider_name=provider.name,
+            credential_name=generation_data.credential_name,
+            model_requested=generation_data.original_model,
+            model_mapped=generation_data.mapped_model,
+            endpoint=generation_data.endpoint,
+            is_streaming=generation_data.is_streaming,
+        )
+
+    return http_exc
 
 
 async def proxy_completion_request(
