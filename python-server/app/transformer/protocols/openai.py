@@ -160,7 +160,44 @@ class OpenAITransformer(Transformer):
 
         # Add other messages
         for msg in unified.messages:
-            messages.append(self._unified_to_message(msg))
+            # Check if message contains ToolResult content blocks (from Anthropic format).
+            # Anthropic puts multiple tool_results in a single user message,
+            # but OpenAI requires each as a separate {role: "tool"} message.
+            has_tool_results = any(
+                isinstance(c, ToolResultContent) for c in msg.content
+            )
+
+            if has_tool_results:
+                # Emit non-tool-result content as a user message first (if any)
+                non_tool_parts = [
+                    self._unified_content_part_to_openai(c)
+                    for c in msg.content
+                    if not isinstance(c, ToolResultContent)
+                    and self._unified_content_part_to_openai(c) is not None
+                ]
+                if non_tool_parts:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": non_tool_parts,
+                        }
+                    )
+
+                # Emit each tool_result as an independent role: "tool" message
+                for c in msg.content:
+                    if isinstance(c, ToolResultContent):
+                        content_str = self._tool_result_content_to_string(
+                            c.content, c.is_error
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "content": content_str,
+                                "tool_call_id": c.tool_use_id,
+                            }
+                        )
+            else:
+                messages.append(self._unified_to_message(msg))
 
         request: dict[str, Any] = {
             "model": unified.model,
@@ -646,6 +683,31 @@ class OpenAITransformer(Transformer):
                 url = content.data
             return {"type": "image_url", "image_url": {"url": url}}
         return None
+
+    @staticmethod
+    def _tool_result_content_to_string(content: Any, is_error: bool) -> str:
+        """Convert Anthropic tool_result content to OpenAI-compatible string.
+
+        Anthropic tool_result content can be: string, None, or structured list
+        of content blocks like [{"type":"text","text":"..."}].
+        OpenAI tool messages only support string content.
+        """
+        if content is None:
+            text = ""
+        elif isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("text")
+            )
+        else:
+            text = json.dumps(content)
+
+        if is_error and text:
+            return f"[Error] {text}"
+        return text
 
     def _unified_content_to_openai(
         self, content: list[UnifiedContent]
