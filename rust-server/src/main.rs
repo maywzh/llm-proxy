@@ -19,9 +19,9 @@ use llm_proxy_rust::{
     },
     combined_openapi,
     core::{
-        admin_logging_middleware, init_jsonl_logger, init_langfuse_service, init_metrics,
-        model_permission_middleware, AppConfig, Database, DatabaseConfig, DynamicConfig,
-        MetricsMiddleware, RateLimiter, RuntimeConfig,
+        admin_logging_middleware, init_error_logger, init_jsonl_logger, init_langfuse_service,
+        init_metrics, model_permission_middleware, request_id_middleware, AppConfig, Database,
+        DatabaseConfig, DynamicConfig, MetricsMiddleware, RateLimiter, RuntimeConfig,
     },
     services::ProviderService,
 };
@@ -134,6 +134,9 @@ async fn async_main() -> Result<()> {
     }
 
     let db = Arc::new(db);
+
+    // Initialize error logger with database pool
+    init_error_logger(db.pool().clone());
 
     // Load configuration from database (empty config if database is empty)
     let runtime_config = if db.is_empty().await? {
@@ -302,6 +305,7 @@ fn build_router(
         .route("/metrics", get(metrics_handler))
         // Placeholder for Claude Code telemetry (returns 200 to suppress 404 noise)
         .route("/api/event_logging/batch", post(event_logging_placeholder))
+        .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
 }
