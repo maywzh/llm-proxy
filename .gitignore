@@ -1,6 +1,7 @@
 .analyse
 .debug
 .claude
+.worktrees
 .kilocode
 
 # Rust
