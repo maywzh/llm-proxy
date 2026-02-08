@@ -274,28 +274,84 @@ impl HealthCheckService {
             .map(|v| v.mapped_model())
             .unwrap_or(model);
 
-        // Prepare test request (minimal tokens to reduce cost)
-        let test_payload = json!({
-            "model": actual_model,
-            "messages": [{"role": "user", "content": "Hi"}],
-            "max_tokens": 5,
-            "temperature": 0,
-            "stream": false,
-        });
+        let provider_type = provider.provider_type.to_lowercase();
+
+        // Build URL and request based on provider type
+        let request_builder = if provider_type.contains("gcp-vertex")
+            || provider_type.contains("gcp_vertex")
+            || provider_type == "vertex"
+        {
+            // GCP Vertex AI: Anthropic Messages API via rawPredict endpoint
+            let gcp_project = provider
+                .provider_params
+                .get("gcp_project")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let gcp_location = provider
+                .provider_params
+                .get("gcp_location")
+                .and_then(|v| v.as_str())
+                .unwrap_or("us-central1");
+            let gcp_publisher = provider
+                .provider_params
+                .get("gcp_publisher")
+                .and_then(|v| v.as_str())
+                .unwrap_or("anthropic");
+
+            let url = format!(
+                "{}/v1/projects/{}/locations/{}/publishers/{}/models/{}:rawPredict",
+                provider.api_base, gcp_project, gcp_location, gcp_publisher, actual_model
+            );
+
+            let payload = json!({
+                "model": actual_model,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 5,
+                "stream": false,
+            });
+
+            client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", provider.api_key))
+                .header("Content-Type", "application/json")
+                .header("anthropic-version", "vertex-2023-10-16")
+                .json(&payload)
+        } else if provider_type == "anthropic" || provider_type == "claude" {
+            // Anthropic: x-api-key auth + /v1/messages endpoint
+            let url = format!("{}/v1/messages", provider.api_base);
+            let payload = json!({
+                "model": actual_model,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 5,
+                "stream": false,
+            });
+
+            client
+                .post(&url)
+                .header("x-api-key", &provider.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("Content-Type", "application/json")
+                .json(&payload)
+        } else {
+            // OpenAI-compatible (openai, azure, etc.): Bearer auth + /chat/completions
+            let url = format!("{}/chat/completions", provider.api_base);
+            let payload = json!({
+                "model": actual_model,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 5,
+                "stream": false,
+            });
+
+            client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", provider.api_key))
+                .json(&payload)
+        };
 
         let start_time = Instant::now();
 
         // Make the request with timeout
-        // Note: .json() automatically sets Content-Type: application/json
-        let result = timeout(
-            Duration::from_secs(timeout_secs),
-            client
-                .post(format!("{}/chat/completions", provider.api_base))
-                .header("Authorization", format!("Bearer {}", provider.api_key))
-                .json(&test_payload)
-                .send(),
-        )
-        .await;
+        let result = timeout(Duration::from_secs(timeout_secs), request_builder.send()).await;
 
         let elapsed_ms = start_time.elapsed().as_millis() as i32;
 
