@@ -361,6 +361,35 @@ impl OpenAITransformer {
         }
     }
 
+    /// Convert Anthropic tool_result content to OpenAI-compatible string.
+    ///
+    /// Anthropic tool_result content can be: string, null, or structured array
+    /// of content blocks like `[{type:"text",text:"..."}, {type:"image",...}]`.
+    /// OpenAI tool messages only support string content, so we serialize
+    /// structured content to preserve as much information as possible.
+    fn tool_result_content_to_string(content: &Value, is_error: bool) -> String {
+        let text = match content {
+            Value::String(s) => s.clone(),
+            Value::Null => String::new(),
+            Value::Array(arr) => arr
+                .iter()
+                .filter_map(|block| {
+                    block
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        if is_error && !text.is_empty() {
+            format!("[Error] {}", text)
+        } else {
+            text
+        }
+    }
+
     /// Convert OpenAI finish reason to unified stop reason.
     fn finish_reason_to_stop_reason(reason: &str) -> StopReason {
         match reason {
@@ -515,7 +544,57 @@ impl Transformer for OpenAITransformer {
 
         // Add other messages
         for msg in &unified.messages {
-            messages.push(Self::unified_to_message(msg));
+            // Check if message contains ToolResult content blocks (from Anthropic format).
+            // Anthropic puts multiple tool_results in a single user message,
+            // but OpenAI requires each as a separate {role: "tool"} message.
+            let has_tool_results = msg
+                .content
+                .iter()
+                .any(|c| matches!(c, UnifiedContent::ToolResult { .. }));
+
+            if has_tool_results {
+                // Emit non-tool-result content as a user message first (if any)
+                let non_tool_parts: Vec<OpenAIContentPart> = msg
+                    .content
+                    .iter()
+                    .filter(|c| !matches!(c, UnifiedContent::ToolResult { .. }))
+                    .filter_map(Self::unified_to_content_part)
+                    .collect();
+
+                if !non_tool_parts.is_empty() {
+                    messages.push(OpenAIMessage {
+                        role: "user".to_string(),
+                        content: Some(OpenAIContent::Parts(non_tool_parts)),
+                        reasoning_content: None,
+                        name: msg.name.clone(),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+
+                // Emit each tool_result as an independent role: "tool" message
+                for content in &msg.content {
+                    if let UnifiedContent::ToolResult {
+                        tool_use_id,
+                        content: result_content,
+                        is_error,
+                    } = content
+                    {
+                        let content_str =
+                            Self::tool_result_content_to_string(result_content, *is_error);
+                        messages.push(OpenAIMessage {
+                            role: "tool".to_string(),
+                            content: Some(OpenAIContent::Text(content_str)),
+                            reasoning_content: None,
+                            name: None,
+                            tool_calls: None,
+                            tool_call_id: Some(tool_use_id.clone()),
+                        });
+                    }
+                }
+            } else {
+                messages.push(Self::unified_to_message(msg));
+            }
         }
 
         // Convert tools
@@ -1563,5 +1642,199 @@ mod tests {
 
         // Verify Anthropic tool_choice format is correct
         assert_eq!(anthropic_req["tool_choice"]["type"], "auto");
+    }
+
+    #[test]
+    fn test_anthropic_tool_results_to_openai_single() {
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        // Simulate Anthropic request with tool_use in assistant + tool_result in user
+        let request = json!({
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Read the file"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Let me read that."},
+                    {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {"file": "a.rs"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "file content here"}
+                ]}
+            ]
+        });
+
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+
+        let messages = openai_req["messages"].as_array().unwrap();
+        // user, assistant, tool
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "tu_1");
+        assert_eq!(messages[2]["content"], "file content here");
+    }
+
+    #[test]
+    fn test_anthropic_tool_results_to_openai_multiple() {
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        // Simulate Anthropic request with multiple parallel tool_use + tool_results
+        let request = json!({
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Help me"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {"file": "a.rs"}},
+                    {"type": "tool_use", "id": "tu_2", "name": "Read", "input": {"file": "b.rs"}},
+                    {"type": "tool_use", "id": "tu_3", "name": "Grep", "input": {"pattern": "foo"}},
+                    {"type": "tool_use", "id": "tu_4", "name": "Edit", "input": {"file": "a.rs"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "content a"},
+                    {"type": "tool_result", "tool_use_id": "tu_2", "content": "content b"},
+                    {"type": "tool_result", "tool_use_id": "tu_3", "content": "grep result"},
+                    {"type": "tool_result", "tool_use_id": "tu_4", "content": "edit done"}
+                ]}
+            ]
+        });
+
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+
+        let messages = openai_req["messages"].as_array().unwrap();
+        // user, assistant (with tool_calls), tool*4
+        assert_eq!(messages.len(), 6);
+
+        // Verify assistant has 4 tool_calls
+        let assistant_tool_calls = messages[1]["tool_calls"].as_array().unwrap();
+        assert_eq!(assistant_tool_calls.len(), 4);
+
+        // Verify each tool result is a separate tool message with correct mapping
+        for (i, (expected_id, expected_content)) in [
+            ("tu_1", "content a"),
+            ("tu_2", "content b"),
+            ("tu_3", "grep result"),
+            ("tu_4", "edit done"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let tool_msg = &messages[2 + i];
+            assert_eq!(tool_msg["role"], "tool");
+            assert_eq!(tool_msg["tool_call_id"], *expected_id);
+            assert_eq!(tool_msg["content"], *expected_content);
+        }
+    }
+
+    #[test]
+    fn test_anthropic_tool_results_with_mixed_content() {
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        // User message with both text and tool_result blocks
+        let request = json!({
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Read it"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "result"},
+                    {"type": "text", "text": "Now edit it please"}
+                ]}
+            ]
+        });
+
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+
+        let messages = openai_req["messages"].as_array().unwrap();
+        // user, assistant, user(text), tool
+        assert_eq!(messages.len(), 4);
+
+        // Non-tool content emitted as user message first
+        assert_eq!(messages[2]["role"], "user");
+
+        // Tool result after
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(messages[3]["tool_call_id"], "tu_1");
+        assert_eq!(messages[3]["content"], "result");
+    }
+
+    #[test]
+    fn test_anthropic_tool_result_with_error() {
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        let request = json!({
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Read it"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "file not found", "is_error": true}
+                ]}
+            ]
+        });
+
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+
+        let messages = openai_req["messages"].as_array().unwrap();
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["content"], "[Error] file not found");
+    }
+
+    #[test]
+    fn test_tool_result_content_to_string_variants() {
+        // String content
+        assert_eq!(
+            OpenAITransformer::tool_result_content_to_string(&json!("hello"), false),
+            "hello"
+        );
+
+        // Null content
+        assert_eq!(
+            OpenAITransformer::tool_result_content_to_string(&Value::Null, false),
+            ""
+        );
+
+        // Array content (Anthropic structured blocks)
+        assert_eq!(
+            OpenAITransformer::tool_result_content_to_string(
+                &json!([{"type": "text", "text": "line1"}, {"type": "text", "text": "line2"}]),
+                false
+            ),
+            "line1\nline2"
+        );
+
+        // Error flag
+        assert_eq!(
+            OpenAITransformer::tool_result_content_to_string(&json!("oops"), true),
+            "[Error] oops"
+        );
+
+        // Error with empty content
+        assert_eq!(
+            OpenAITransformer::tool_result_content_to_string(&Value::Null, true),
+            ""
+        );
     }
 }

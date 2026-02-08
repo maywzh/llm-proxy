@@ -2029,3 +2029,354 @@ class TestUsageConversion:
         assert openai_response["usage"]["prompt_tokens"] == 100
         assert openai_response["usage"]["completion_tokens"] == 50
         assert openai_response["usage"]["total_tokens"] == 150
+
+
+# =============================================================================
+# Anthropic→OpenAI Tool Result Splitting Tests
+# =============================================================================
+
+
+class TestAnthropicToolResultsToOpenAI:
+    """Tests for Anthropic tool_result messages splitting into OpenAI role:tool messages."""
+
+    def test_single_tool_result(self, anthropic_transformer, openai_transformer):
+        """Single tool_result should become a role:tool message."""
+        request = {
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Read the file"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Let me read that."},
+                        {
+                            "type": "tool_use",
+                            "id": "tu_1",
+                            "name": "Read",
+                            "input": {"file": "a.rs"},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": "file content here",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        unified = anthropic_transformer.transform_request_out(request)
+        openai_req = openai_transformer.transform_request_in(unified)
+
+        messages = openai_req["messages"]
+        # user, assistant, tool
+        assert len(messages) == 3
+        assert messages[2]["role"] == "tool"
+        assert messages[2]["tool_call_id"] == "tu_1"
+        assert messages[2]["content"] == "file content here"
+
+    def test_multiple_tool_results(self, anthropic_transformer, openai_transformer):
+        """Multiple tool_results in one user message should each become separate role:tool messages."""
+        request = {
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Help me"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_1",
+                            "name": "Read",
+                            "input": {"file": "a.rs"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "tu_2",
+                            "name": "Read",
+                            "input": {"file": "b.rs"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "tu_3",
+                            "name": "Grep",
+                            "input": {"pattern": "foo"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "tu_4",
+                            "name": "Edit",
+                            "input": {"file": "a.rs"},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": "content a",
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_2",
+                            "content": "content b",
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_3",
+                            "content": "grep result",
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_4",
+                            "content": "edit done",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        unified = anthropic_transformer.transform_request_out(request)
+        openai_req = openai_transformer.transform_request_in(unified)
+
+        messages = openai_req["messages"]
+        # user, assistant (with tool_calls), tool*4
+        assert len(messages) == 6
+
+        # Verify assistant has 4 tool_calls
+        assert len(messages[1]["tool_calls"]) == 4
+
+        # Verify each tool result
+        expected = [
+            ("tu_1", "content a"),
+            ("tu_2", "content b"),
+            ("tu_3", "grep result"),
+            ("tu_4", "edit done"),
+        ]
+        for i, (expected_id, expected_content) in enumerate(expected):
+            tool_msg = messages[2 + i]
+            assert tool_msg["role"] == "tool"
+            assert tool_msg["tool_call_id"] == expected_id
+            assert tool_msg["content"] == expected_content
+
+    def test_mixed_content_with_tool_results(
+        self, anthropic_transformer, openai_transformer
+    ):
+        """User message with both text and tool_result should split correctly."""
+        request = {
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Read it"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": "result",
+                        },
+                        {"type": "text", "text": "Now edit it please"},
+                    ],
+                },
+            ],
+        }
+
+        unified = anthropic_transformer.transform_request_out(request)
+        openai_req = openai_transformer.transform_request_in(unified)
+
+        messages = openai_req["messages"]
+        # user, assistant, user(text), tool
+        assert len(messages) == 4
+
+        # Non-tool content emitted as user message first
+        assert messages[2]["role"] == "user"
+
+        # Tool result after
+        assert messages[3]["role"] == "tool"
+        assert messages[3]["tool_call_id"] == "tu_1"
+        assert messages[3]["content"] == "result"
+
+    def test_tool_result_with_error(self, anthropic_transformer, openai_transformer):
+        """Error tool_result should have [Error] prefix."""
+        request = {
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Read it"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": "file not found",
+                            "is_error": True,
+                        },
+                    ],
+                },
+            ],
+        }
+
+        unified = anthropic_transformer.transform_request_out(request)
+        openai_req = openai_transformer.transform_request_in(unified)
+
+        messages = openai_req["messages"]
+        assert messages[2]["role"] == "tool"
+        assert messages[2]["content"] == "[Error] file not found"
+
+    def test_tool_result_content_to_string_variants(self):
+        """Test _tool_result_content_to_string with various content types."""
+        t = OpenAITransformer
+
+        # String content
+        assert t._tool_result_content_to_string("hello", False) == "hello"
+
+        # None content
+        assert t._tool_result_content_to_string(None, False) == ""
+
+        # Array content (Anthropic structured blocks)
+        assert (
+            t._tool_result_content_to_string(
+                [{"type": "text", "text": "line1"}, {"type": "text", "text": "line2"}],
+                False,
+            )
+            == "line1\nline2"
+        )
+
+        # Error flag
+        assert t._tool_result_content_to_string("oops", True) == "[Error] oops"
+
+        # Error with empty content
+        assert t._tool_result_content_to_string(None, True) == ""
+
+
+# =============================================================================
+# Sanitize Provider Payload Tests
+# =============================================================================
+
+
+class TestSanitizeProviderPayload:
+    """Tests for _sanitize_provider_payload."""
+
+    def test_strip_thinking_keeps_text(self):
+        """Stripping thinking blocks should keep non-thinking content."""
+        from app.transformer.pipeline import _sanitize_provider_payload
+
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "deep thought",
+                            "signature": "sig",
+                        },
+                        {"type": "text", "text": "Hello!"},
+                    ],
+                }
+            ]
+        }
+        _sanitize_provider_payload(payload)
+        content = payload["messages"][0]["content"]
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert content[0]["text"] == "Hello!"
+
+    def test_only_thinking_adds_placeholder(self):
+        """Assistant message with only thinking blocks should get a placeholder."""
+        from app.transformer.pipeline import _sanitize_provider_payload
+
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "deep thought",
+                            "signature": "sig",
+                        },
+                    ],
+                },
+                {"role": "user", "content": "Next question"},
+            ]
+        }
+        _sanitize_provider_payload(payload)
+        content = payload["messages"][0]["content"]
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert content[0]["text"] == "."
+
+    def test_user_message_no_placeholder(self):
+        """Non-assistant messages should not get a placeholder when empty."""
+        from app.transformer.pipeline import _sanitize_provider_payload
+
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+                    ],
+                }
+            ]
+        }
+        _sanitize_provider_payload(payload)
+        content = payload["messages"][0]["content"]
+        assert len(content) == 0
+
+    def test_blank_text_fields_replaced(self):
+        """Blank text fields should be replaced with placeholder."""
+        from app.transformer.pipeline import _sanitize_provider_payload
+
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": ""}],
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "  "}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": ""},
+                        {"type": "text", "text": "real content"},
+                    ],
+                },
+            ]
+        }
+        _sanitize_provider_payload(payload)
+        # Empty text replaced
+        assert payload["messages"][0]["content"][0]["text"] == "."
+        # Whitespace-only text replaced
+        assert payload["messages"][1]["content"][0]["text"] == "."
+        # Empty text in user message also replaced
+        assert payload["messages"][2]["content"][0]["text"] == "."
+        # Non-empty text untouched
+        assert payload["messages"][2]["content"][1]["text"] == "real content"
