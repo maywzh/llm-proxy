@@ -215,7 +215,7 @@ class HealthCheckService:
         # Get the actual model name from mapping
         actual_model = provider.get_model_mapping().get(model, model)
 
-        # Prepare test request (minimal tokens to reduce cost)
+        provider_type = provider.provider_type.lower()
         test_payload = {
             "model": actual_model,
             "messages": [{"role": "user", "content": "Hi"}],
@@ -223,17 +223,47 @@ class HealthCheckService:
             "stream": False,
         }
 
+        if "vertex" in provider_type:
+            # GCP Vertex AI: Anthropic Messages API via rawPredict endpoint
+            params = provider.provider_params or {}
+            gcp_project = params.get("gcp_project", "")
+            gcp_location = params.get("gcp_location", "us-central1")
+            gcp_publisher = params.get("gcp_publisher", "anthropic")
+
+            url = (
+                f"{provider.api_base}/v1/projects/{gcp_project}"
+                f"/locations/{gcp_location}/publishers/{gcp_publisher}"
+                f"/models/{actual_model}:rawPredict"
+            )
+            headers = {
+                "Authorization": f"Bearer {provider.api_key}",
+                "Content-Type": "application/json",
+                "anthropic-version": "vertex-2023-10-16",
+            }
+        elif provider_type in ("anthropic", "claude"):
+            # Anthropic: x-api-key auth + /v1/messages endpoint
+            url = f"{provider.api_base}/v1/messages"
+            headers = {
+                "x-api-key": provider.api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            }
+        else:
+            # OpenAI-compatible (openai, azure, etc.): Bearer auth + /chat/completions
+            url = f"{provider.api_base}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {provider.api_key}",
+            }
+
         start_time = time.time()
 
         try:
             # Use shared HTTP client with per-request timeout override
             client = get_http_client()
             response = await client.post(
-                f"{provider.api_base}/chat/completions",
+                url,
                 json=test_payload,
-                headers={
-                    "Authorization": f"Bearer {provider.api_key}",
-                },
+                headers=headers,
                 timeout=self.timeout_secs,
             )
 

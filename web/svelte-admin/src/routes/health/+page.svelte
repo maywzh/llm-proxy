@@ -4,19 +4,25 @@
   import { auth } from '$lib/stores';
   import type { HealthCheckResponse, HealthStatus } from '$lib/types';
   import {
-    Activity,
     RefreshCw,
+    RotateCw,
     Loader2,
     AlertCircle,
     X,
     ChevronDown,
     ChevronUp,
-    Check,
+    CheckCircle2,
     XCircle,
     MinusCircle,
-    HelpCircle,
+    CircleDashed,
     Clock,
+    Zap,
+    Server,
+    ShieldCheck,
+    ShieldAlert,
+    HeartPulse,
   } from 'lucide-svelte';
+  import ProviderIcon from '$lib/components/ProviderIcon.svelte';
 
   const HEALTH_CACHE_KEY = 'llm-proxy-health-check-cache';
 
@@ -28,11 +34,12 @@
   let healthData = $state<HealthCheckResponse | null>(null);
   let lastCheckTime = $state<string | null>(null);
   let checking = $state(false);
+  let reloading = $state(false);
   let checkingProviders: Set<number> = new SvelteSet();
+  let checkingModels: Set<string> = new SvelteSet();
   let error = $state<string | null>(null);
   let expandedProviders: Set<number> = new SvelteSet();
 
-  // Load cached data on mount
   onMount(() => {
     const cached = localStorage.getItem(HEALTH_CACHE_KEY);
     if (cached) {
@@ -40,7 +47,6 @@
         const { timestamp, data }: HealthCheckCache = JSON.parse(cached);
         healthData = data;
         lastCheckTime = timestamp;
-        // Auto-expand unhealthy providers
         if (data.providers) {
           expandedProviders = new SvelteSet(
             data.providers
@@ -49,11 +55,60 @@
           );
         }
       } catch {
-        // Failed to load cached health data
         localStorage.removeItem(HEALTH_CACHE_KEY);
       }
     }
   });
+
+  async function handleReloadProviders() {
+    const client = auth.apiClient;
+    if (!client) return;
+
+    reloading = true;
+    error = null;
+
+    try {
+      const providersResponse = await client.listProviders();
+      const updatedProviders: import('$lib/types').ProviderHealthStatus[] =
+        providersResponse.providers.map(p => {
+          const existing = healthData?.providers.find(
+            ep => ep.provider_id === p.id
+          );
+          return (
+            existing || {
+              provider_id: p.id,
+              provider_key: p.provider_key,
+              status: 'unknown' as import('$lib/types').HealthStatus,
+              models: [],
+              avg_response_time_ms: null,
+              checked_at: new Date().toISOString(),
+            }
+          );
+        });
+
+      const updatedHealthData: HealthCheckResponse = {
+        providers: updatedProviders,
+        total_providers: updatedProviders.length,
+        healthy_providers: updatedProviders.filter(p => p.status === 'healthy')
+          .length,
+        unhealthy_providers: updatedProviders.filter(
+          p => p.status === 'unhealthy'
+        ).length,
+      };
+
+      healthData = updatedHealthData;
+
+      const cache: HealthCheckCache = {
+        timestamp: lastCheckTime || new Date().toISOString(),
+        data: updatedHealthData,
+      };
+      localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to reload providers';
+    } finally {
+      reloading = false;
+    }
+  }
 
   async function handleCheckHealth() {
     const client = auth.apiClient;
@@ -63,10 +118,8 @@
     error = null;
 
     try {
-      // Always fetch fresh provider list to pick up newly added providers
       const providersResponse = await client.listProviders();
       const providerIds = providersResponse.providers.map(p => p.id);
-      // Initialize health data, preserving existing results for known providers
       const initialProviders: import('$lib/types').ProviderHealthStatus[] =
         providersResponse.providers.map(p => {
           const existing = healthData?.providers.find(
@@ -93,7 +146,6 @@
         ).length,
       };
 
-      // Check all providers in parallel, updating each as results come in
       const checkPromises = providerIds.map(async id => {
         checkingProviders.add(id);
         checkingProviders = checkingProviders;
@@ -103,7 +155,6 @@
             timeout_secs: 30,
           });
 
-          // Update this specific provider in healthData
           if (healthData) {
             const updatedProviders = healthData.providers.map(p => {
               if (p.provider_id === id) {
@@ -136,21 +187,19 @@
 
             healthData = updatedHealthData;
 
-            // Update cache
             const cache: HealthCheckCache = {
               timestamp: new Date().toISOString(),
               data: updatedHealthData,
             };
             localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
 
-            // Auto-expand if unhealthy
             if (response.status === 'unhealthy') {
               expandedProviders.add(id);
               expandedProviders = expandedProviders;
             }
           }
         } catch {
-          // Error checking provider - silently continue with other providers
+          // Provider check failed silently
         } finally {
           checkingProviders.delete(id);
           checkingProviders = checkingProviders;
@@ -183,11 +232,9 @@
         timeout_secs: 30,
       });
 
-      // Update the provider in healthData
       if (healthData) {
         const updatedProviders = healthData.providers.map(p => {
           if (p.provider_id === providerId) {
-            // Convert CheckProviderHealthResponse to ProviderHealthStatus format
             return {
               provider_id: response.provider_id,
               provider_key: response.provider_key,
@@ -217,14 +264,12 @@
 
         healthData = updatedHealthData;
 
-        // Update cache
         const cache: HealthCheckCache = {
           timestamp: lastCheckTime || new Date().toISOString(),
           data: updatedHealthData,
         };
         localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
 
-        // Auto-expand if unhealthy
         if (response.status === 'unhealthy') {
           expandedProviders.add(providerId);
           expandedProviders = expandedProviders;
@@ -241,6 +286,54 @@
     }
   }
 
+  async function handleCheckModelHealth(providerId: number, modelName: string) {
+    const client = auth.apiClient;
+    if (!client) return;
+
+    const modelKey = `${providerId}-${modelName}`;
+    checkingModels.add(modelKey);
+    checkingModels = checkingModels;
+    error = null;
+
+    try {
+      const response = await client.checkProviderHealth(providerId, {
+        models: [modelName],
+        max_concurrent: 1,
+        timeout_secs: 30,
+      });
+
+      if (healthData && response.models.length > 0) {
+        const modelResult = response.models[0];
+        const updatedProviders = healthData.providers.map(p => {
+          if (p.provider_id === providerId) {
+            const updatedModels = p.models.map(m =>
+              m.model === modelName ? modelResult : m
+            );
+            return { ...p, models: updatedModels };
+          }
+          return p;
+        });
+
+        healthData = {
+          ...healthData,
+          providers: updatedProviders,
+        };
+
+        const cache: HealthCheckCache = {
+          timestamp: lastCheckTime || new Date().toISOString(),
+          data: healthData,
+        };
+        localStorage.setItem(HEALTH_CACHE_KEY, JSON.stringify(cache));
+      }
+    } catch (err) {
+      error =
+        err instanceof Error ? err.message : 'Failed to check model health';
+    } finally {
+      checkingModels.delete(modelKey);
+      checkingModels = checkingModels;
+    }
+  }
+
   function toggleProvider(providerId: number) {
     if (expandedProviders.has(providerId)) {
       expandedProviders.delete(providerId);
@@ -250,42 +343,16 @@
     expandedProviders = expandedProviders;
   }
 
-  function getStatusIcon(status: HealthStatus) {
+  function getCardBorderClass(status: HealthStatus) {
     switch (status) {
       case 'healthy':
-        return Check;
+        return 'border-l-4 border-l-emerald-500';
       case 'unhealthy':
-        return XCircle;
+        return 'border-l-4 border-l-red-500';
       case 'disabled':
-        return MinusCircle;
+        return 'border-l-4 border-l-gray-300 dark:border-l-gray-600';
       default:
-        return HelpCircle;
-    }
-  }
-
-  function getStatusBadgeClass(status: HealthStatus) {
-    switch (status) {
-      case 'healthy':
-        return 'badge badge-success';
-      case 'unhealthy':
-        return 'badge badge-danger';
-      case 'disabled':
-        return 'badge badge-secondary';
-      default:
-        return 'badge badge-secondary';
-    }
-  }
-
-  function getStatusIconClass(status: HealthStatus) {
-    switch (status) {
-      case 'healthy':
-        return 'text-green-500';
-      case 'unhealthy':
-        return 'text-red-500';
-      case 'disabled':
-        return 'text-gray-400';
-      default:
-        return 'text-gray-400';
+        return 'border-l-4 border-l-gray-300 dark:border-l-gray-600';
     }
   }
 
@@ -300,7 +367,15 @@
 
   function formatResponseTime(ms: number | null) {
     if (ms === null) return 'N/A';
-    return `${ms}ms`;
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
+  }
+
+  function getResponseTimeColor(ms: number | null) {
+    if (ms === null) return 'text-gray-400';
+    if (ms < 500) return 'text-emerald-600 dark:text-emerald-400';
+    if (ms < 2000) return 'text-amber-600 dark:text-amber-400';
+    return 'text-red-600 dark:text-red-400';
   }
 
   function formatRelativeTime(timestamp: string) {
@@ -331,22 +406,37 @@
 <div class="space-y-6">
   <!-- Header -->
   <div class="flex justify-between items-center">
-    <div>
-      <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">
-        Health Check
-      </h1>
-      <p class="text-gray-600 dark:text-gray-400">
-        Monitor provider and model health status
-      </p>
+    <div class="flex items-center gap-3">
+      <div class="p-2 bg-primary-100 dark:bg-primary-600/20 rounded-lg">
+        <HeartPulse class="w-6 h-6 text-primary-600 dark:text-primary-400" />
+      </div>
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100">
+          Health Check
+        </h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+          Monitor provider and model health status
+        </p>
+      </div>
     </div>
-    <button
-      onclick={handleCheckHealth}
-      disabled={checking}
-      class="btn btn-primary flex items-center space-x-2"
-    >
-      <RefreshCw class="w-5 h-5 {checking ? 'animate-spin' : ''}" />
-      <span>Check Health</span>
-    </button>
+    <div class="flex items-center gap-2">
+      <button
+        onclick={handleReloadProviders}
+        disabled={reloading || checking}
+        class="btn btn-secondary flex items-center gap-2"
+      >
+        <RotateCw class="w-4 h-4 {reloading ? 'animate-spin' : ''}" />
+        <span>Reload</span>
+      </button>
+      <button
+        onclick={handleCheckHealth}
+        disabled={checking}
+        class="btn btn-primary flex items-center gap-2"
+      >
+        <RefreshCw class="w-4 h-4 {checking ? 'animate-spin' : ''}" />
+        <span>{checking ? 'Checking...' : 'Check All'}</span>
+      </button>
+    </div>
   </div>
 
   <!-- Error Display -->
@@ -373,63 +463,88 @@
 
   <!-- Last Check Time -->
   {#if lastCheckTime}
-    <div class="card">
-      <div class="card-body py-3">
-        <div
-          class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400"
-        >
-          <Clock class="w-4 h-4" />
-          <span>Last checked: {formatRelativeTime(lastCheckTime)}</span>
-          <span class="text-gray-400">•</span>
-          <span class="text-xs">{formatTimestamp(lastCheckTime)}</span>
-        </div>
-      </div>
+    <div
+      class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 px-1"
+    >
+      <Clock class="w-3.5 h-3.5" />
+      <span>Last checked: {formatRelativeTime(lastCheckTime)}</span>
+      <span class="text-gray-300 dark:text-gray-600">|</span>
+      <span class="text-xs">{formatTimestamp(lastCheckTime)}</span>
     </div>
   {/if}
 
   <!-- Statistics Cards -->
   {#if healthData}
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <div class="card">
-        <div class="card-body">
-          <div class="flex items-center justify-between">
+      <div class="card overflow-hidden">
+        <div class="card-body relative">
+          <div
+            class="absolute top-0 right-0 w-20 h-20 bg-blue-50 dark:bg-blue-900/10 rounded-bl-full"
+          ></div>
+          <div class="flex items-center justify-between relative">
             <div>
-              <p class="text-sm text-gray-600 dark:text-gray-400">
+              <p
+                class="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1"
+              >
                 Total Providers
               </p>
-              <p class="text-2xl font-bold text-gray-900 dark:text-gray-100">
+              <p class="text-3xl font-bold text-gray-900 dark:text-gray-100">
                 {healthData.total_providers}
               </p>
             </div>
-            <Activity class="w-8 h-8 text-blue-500" />
+            <div class="p-3 bg-blue-100 dark:bg-blue-900/30 rounded-xl">
+              <Server class="w-6 h-6 text-blue-600 dark:text-blue-400" />
+            </div>
           </div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-body">
-          <div class="flex items-center justify-between">
+      <div class="card overflow-hidden">
+        <div class="card-body relative">
+          <div
+            class="absolute top-0 right-0 w-20 h-20 bg-emerald-50 dark:bg-emerald-900/10 rounded-bl-full"
+          ></div>
+          <div class="flex items-center justify-between relative">
             <div>
-              <p class="text-sm text-gray-600 dark:text-gray-400">Healthy</p>
-              <p class="text-2xl font-bold text-green-600">
+              <p
+                class="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1"
+              >
+                Healthy
+              </p>
+              <p
+                class="text-3xl font-bold text-emerald-600 dark:text-emerald-400"
+              >
                 {healthData.healthy_providers}
               </p>
             </div>
-            <Check class="w-8 h-8 text-green-500" />
+            <div class="p-3 bg-emerald-100 dark:bg-emerald-900/30 rounded-xl">
+              <ShieldCheck
+                class="w-6 h-6 text-emerald-600 dark:text-emerald-400"
+              />
+            </div>
           </div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-body">
-          <div class="flex items-center justify-between">
+      <div class="card overflow-hidden">
+        <div class="card-body relative">
+          <div
+            class="absolute top-0 right-0 w-20 h-20 bg-red-50 dark:bg-red-900/10 rounded-bl-full"
+          ></div>
+          <div class="flex items-center justify-between relative">
             <div>
-              <p class="text-sm text-gray-600 dark:text-gray-400">Unhealthy</p>
-              <p class="text-2xl font-bold text-red-600">
+              <p
+                class="text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1"
+              >
+                Unhealthy
+              </p>
+              <p class="text-3xl font-bold text-red-600 dark:text-red-400">
                 {healthData.unhealthy_providers}
               </p>
             </div>
-            <XCircle class="w-8 h-8 text-red-500" />
+            <div class="p-3 bg-red-100 dark:bg-red-900/30 rounded-xl">
+              <ShieldAlert class="w-6 h-6 text-red-600 dark:text-red-400" />
+            </div>
           </div>
         </div>
       </div>
@@ -439,32 +554,42 @@
   <!-- Providers Grid -->
   <div class="space-y-4">
     <div class="flex justify-between items-center">
-      <h2 class="text-xl font-bold text-gray-900 dark:text-gray-100">
+      <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
         Provider Health Status
         {#if healthData}
-          ({healthData.providers.length})
+          <span
+            class="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400"
+          >
+            ({healthData.providers.length})
+          </span>
         {/if}
       </h2>
     </div>
 
     {#if !healthData}
       <div class="card">
-        <div
-          class="card-body text-center py-12 text-gray-500 dark:text-gray-400"
-        >
-          <Activity class="w-12 h-12 mx-auto mb-4 text-gray-400" />
-          <p class="mb-2">No health check data available</p>
-          <p class="text-sm mb-4">Click "Check Health" to start monitoring</p>
+        <div class="card-body text-center py-16">
+          <div
+            class="inline-flex p-4 bg-gray-100 dark:bg-gray-800 rounded-full mb-4"
+          >
+            <HeartPulse class="w-10 h-10 text-gray-400" />
+          </div>
+          <p class="text-gray-700 dark:text-gray-300 font-medium mb-1">
+            No health check data available
+          </p>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+            Click "Check All" to start monitoring your providers
+          </p>
           <button
             onclick={handleCheckHealth}
             disabled={checking}
             class="btn btn-primary"
           >
             {#if checking}
-              <Loader2 class="w-5 h-5 animate-spin mr-2" />
+              <Loader2 class="w-4 h-4 animate-spin mr-2" />
               Checking...
             {:else}
-              Check Health
+              Check All
             {/if}
           </button>
         </div>
@@ -480,109 +605,145 @@
     {:else}
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {#each healthData.providers as provider (provider.provider_id)}
-          <div class="card hover:shadow-lg transition-shadow">
+          <div
+            class="card hover:shadow-lg transition-all duration-200 {getCardBorderClass(
+              provider.status
+            )}"
+          >
             <div class="card-body">
               <!-- Provider Header -->
-              <div class="flex items-start justify-between mb-4">
-                <div class="flex items-center space-x-3 flex-1 min-w-0">
-                  <div class="shrink-0">
-                    {#if getStatusIcon(provider.status) === Check}
-                      <Check
-                        class="w-5 h-5 {getStatusIconClass(provider.status)}"
-                      />
-                    {:else if getStatusIcon(provider.status) === XCircle}
-                      <XCircle
-                        class="w-5 h-5 {getStatusIconClass(provider.status)}"
-                      />
-                    {:else if getStatusIcon(provider.status) === MinusCircle}
-                      <MinusCircle
-                        class="w-5 h-5 {getStatusIconClass(provider.status)}"
-                      />
-                    {:else}
-                      <HelpCircle
-                        class="w-5 h-5 {getStatusIconClass(provider.status)}"
-                      />
-                    {/if}
+              <div class="flex items-start justify-between mb-3">
+                <div class="flex items-center gap-3 flex-1 min-w-0">
+                  <div
+                    class="shrink-0 p-1.5 bg-gray-50 dark:bg-gray-700/50 rounded-lg"
+                  >
+                    <ProviderIcon
+                      providerKey={provider.provider_key}
+                      class="w-6 h-6"
+                    />
                   </div>
                   <div class="flex-1 min-w-0">
                     <h3
-                      class="text-lg font-semibold text-gray-900 dark:text-gray-100 truncate"
+                      class="text-base font-semibold text-gray-900 dark:text-gray-100 truncate"
                     >
                       {provider.provider_key}
                     </h3>
-                    <span class={getStatusBadgeClass(provider.status)}>
-                      {provider.status}
-                    </span>
+                    {#if provider.status === 'healthy'}
+                      <span
+                        class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                      >
+                        <span
+                          class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"
+                        ></span>
+                        healthy
+                      </span>
+                    {:else if provider.status === 'unhealthy'}
+                      <span
+                        class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                      >
+                        <span class="w-1.5 h-1.5 rounded-full bg-red-500"
+                        ></span>
+                        unhealthy
+                      </span>
+                    {:else if provider.status === 'disabled'}
+                      <span
+                        class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400"
+                      >
+                        <span class="w-1.5 h-1.5 rounded-full bg-gray-400"
+                        ></span>
+                        disabled
+                      </span>
+                    {:else}
+                      <span
+                        class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400"
+                      >
+                        <span class="w-1.5 h-1.5 rounded-full bg-gray-400"
+                        ></span>
+                        unknown
+                      </span>
+                    {/if}
                   </div>
                 </div>
+                {#if checkingProviders.has(provider.provider_id)}
+                  <Loader2
+                    class="w-4 h-4 animate-spin text-blue-500 shrink-0"
+                  />
+                {/if}
               </div>
 
               <!-- Provider Stats -->
-              <div class="space-y-2 mb-4">
-                <div class="flex items-center justify-between text-sm">
-                  <span class="text-gray-600 dark:text-gray-400">
-                    Models Tested
-                  </span>
-                  <span class="font-medium text-gray-900 dark:text-gray-100">
+              <div
+                class="grid grid-cols-2 gap-3 mb-3 py-3 border-y border-gray-100 dark:border-gray-700"
+              >
+                <div>
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mb-0.5">
+                    Models
+                  </p>
+                  <p
+                    class="text-sm font-semibold text-gray-900 dark:text-gray-100"
+                  >
                     {provider.models.length}
-                  </span>
+                  </p>
                 </div>
-                {#if provider.avg_response_time_ms !== null}
-                  <div class="flex items-center justify-between text-sm">
-                    <span class="text-gray-600 dark:text-gray-400">
-                      Avg Response
-                    </span>
-                    <span class="font-medium text-gray-900 dark:text-gray-100">
-                      {formatResponseTime(provider.avg_response_time_ms)}
-                    </span>
-                  </div>
-                {/if}
+                <div>
+                  <p class="text-xs text-gray-500 dark:text-gray-400 mb-0.5">
+                    Avg Response
+                  </p>
+                  <p
+                    class="text-sm font-semibold flex items-center gap-1 {getResponseTimeColor(
+                      provider.avg_response_time_ms
+                    )}"
+                  >
+                    <Zap class="w-3 h-3" />
+                    {formatResponseTime(provider.avg_response_time_ms)}
+                  </p>
+                </div>
               </div>
 
-              <!-- Check Button -->
-              <button
-                onclick={e => {
-                  e.stopPropagation();
-                  handleCheckProviderHealth(provider.provider_id);
-                }}
-                disabled={checkingProviders.has(provider.provider_id)}
-                class="btn btn-sm btn-secondary w-full flex items-center justify-center space-x-2 mb-3"
-                title="Check this provider's health"
-              >
-                <RefreshCw
-                  class="w-4 h-4 {checkingProviders.has(provider.provider_id)
-                    ? 'animate-spin'
-                    : ''}"
-                />
-                <span>Check</span>
-              </button>
+              <!-- Action Buttons -->
+              <div class="flex gap-2 mb-3">
+                <button
+                  onclick={e => {
+                    e.stopPropagation();
+                    handleCheckProviderHealth(provider.provider_id);
+                  }}
+                  disabled={checkingProviders.has(provider.provider_id)}
+                  class="btn btn-sm btn-secondary flex-1 flex items-center justify-center gap-1.5"
+                  title="Check this provider's health"
+                >
+                  <RefreshCw
+                    class="w-3.5 h-3.5 {checkingProviders.has(
+                      provider.provider_id
+                    )
+                      ? 'animate-spin'
+                      : ''}"
+                  />
+                  <span>Check</span>
+                </button>
+                <button
+                  onclick={() => toggleProvider(provider.provider_id)}
+                  class="btn btn-sm btn-ghost flex items-center justify-center gap-1"
+                >
+                  <span class="text-xs">
+                    {expandedProviders.has(provider.provider_id)
+                      ? 'Hide'
+                      : 'Details'}
+                  </span>
+                  {#if expandedProviders.has(provider.provider_id)}
+                    <ChevronUp class="w-3.5 h-3.5" />
+                  {:else}
+                    <ChevronDown class="w-3.5 h-3.5" />
+                  {/if}
+                </button>
+              </div>
 
               <!-- Last Checked -->
               <div
-                class="text-xs text-gray-500 dark:text-gray-400 text-center border-t border-gray-200 dark:border-gray-700 pt-3"
+                class="flex items-center justify-center gap-1 text-xs text-gray-400 dark:text-gray-500"
               >
-                <div class="flex items-center justify-center space-x-1">
-                  <Clock class="w-3 h-3" />
-                  <span>{formatTimestamp(provider.checked_at)}</span>
-                </div>
+                <Clock class="w-3 h-3" />
+                <span>{formatTimestamp(provider.checked_at)}</span>
               </div>
-
-              <!-- Expand/Collapse Button -->
-              <button
-                onclick={() => toggleProvider(provider.provider_id)}
-                class="btn btn-sm btn-ghost w-full flex items-center justify-center space-x-2 mt-2"
-              >
-                <span class="text-sm">
-                  {expandedProviders.has(provider.provider_id)
-                    ? 'Hide Details'
-                    : 'Show Details'}
-                </span>
-                {#if expandedProviders.has(provider.provider_id)}
-                  <ChevronUp class="w-4 h-4" />
-                {:else}
-                  <ChevronDown class="w-4 h-4" />
-                {/if}
-              </button>
 
               <!-- Model Details (Expanded) -->
               {#if expandedProviders.has(provider.provider_id)}
@@ -590,9 +751,9 @@
                   class="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700 space-y-2"
                 >
                   <h4
-                    class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2"
+                    class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2"
                   >
-                    Model Test Results:
+                    Model Results
                   </h4>
                   {#if checkingProviders.has(provider.provider_id)}
                     <div
@@ -606,67 +767,74 @@
                       </span>
                     </div>
                   {:else}
-                    <div class="space-y-2">
+                    <div class="space-y-1.5">
                       {#each provider.models as model, idx (idx)}
-                        <div class="p-3 bg-gray-50 dark:bg-gray-900 rounded-lg">
-                          <div class="flex items-center justify-between mb-1">
-                            <div class="flex items-center space-x-2">
-                              <div class="shrink-0">
-                                {#if getStatusIcon(model.status) === Check}
-                                  <Check
-                                    class="w-5 h-5 {getStatusIconClass(
-                                      model.status
-                                    )}"
-                                  />
-                                {:else if getStatusIcon(model.status) === XCircle}
-                                  <XCircle
-                                    class="w-5 h-5 {getStatusIconClass(
-                                      model.status
-                                    )}"
-                                  />
-                                {:else if getStatusIcon(model.status) === MinusCircle}
-                                  <MinusCircle
-                                    class="w-5 h-5 {getStatusIconClass(
-                                      model.status
-                                    )}"
-                                  />
-                                {:else}
-                                  <HelpCircle
-                                    class="w-5 h-5 {getStatusIconClass(
-                                      model.status
-                                    )}"
-                                  />
-                                {/if}
-                              </div>
-                              <p
-                                class="font-medium text-sm text-gray-900 dark:text-gray-100 truncate"
-                              >
-                                {model.model}
-                              </p>
-                            </div>
+                        <div
+                          class="flex items-center justify-between p-2.5 bg-gray-50 dark:bg-gray-900 rounded-lg group"
+                        >
+                          <div class="flex items-center gap-2 min-w-0 flex-1">
+                            {#if model.status === 'healthy'}
+                              <CheckCircle2
+                                class="w-4 h-4 text-emerald-500 shrink-0"
+                              />
+                            {:else if model.status === 'unhealthy'}
+                              <XCircle class="w-4 h-4 text-red-500 shrink-0" />
+                            {:else if model.status === 'disabled'}
+                              <MinusCircle
+                                class="w-4 h-4 text-gray-400 shrink-0"
+                              />
+                            {:else}
+                              <CircleDashed
+                                class="w-4 h-4 text-gray-400 shrink-0"
+                              />
+                            {/if}
                             <span
-                              class="{getStatusBadgeClass(
-                                model.status
-                              )} text-xs"
+                              class="text-sm text-gray-900 dark:text-gray-100 truncate"
                             >
-                              {model.status}
+                              {model.model}
                             </span>
                           </div>
-                          {#if model.response_time_ms !== null}
-                            <div
-                              class="text-xs text-gray-600 dark:text-gray-400"
+                          <div class="flex items-center gap-2 shrink-0">
+                            {#if model.response_time_ms !== null}
+                              <span
+                                class="text-xs font-mono {getResponseTimeColor(
+                                  model.response_time_ms
+                                )}"
+                              >
+                                {formatResponseTime(model.response_time_ms)}
+                              </span>
+                            {/if}
+                            <button
+                              onclick={e => {
+                                e.stopPropagation();
+                                handleCheckModelHealth(
+                                  provider.provider_id,
+                                  model.model
+                                );
+                              }}
+                              disabled={checkingModels.has(
+                                `${provider.provider_id}-${model.model}`
+                              )}
+                              class="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded cursor-pointer"
+                              title="Check {model.model}"
                             >
-                              {formatResponseTime(model.response_time_ms)}
-                            </div>
-                          {/if}
-                          {#if model.error}
-                            <p
-                              class="text-xs text-red-600 dark:text-red-400 mt-1"
-                            >
-                              {model.error}
-                            </p>
-                          {/if}
+                              <RefreshCw
+                                class="w-3 h-3 text-gray-500 {checkingModels.has(
+                                  `${provider.provider_id}-${model.model}`
+                                )
+                                  ? 'animate-spin'
+                                  : ''}"
+                              />
+                            </button>
+                          </div>
                         </div>
+                        {#if model.error}
+                          <p
+                            class="text-xs text-red-600 dark:text-red-400 pl-6"
+                          >
+                            {model.error}
+                          </p>
+                        {/if}
                       {/each}
                     </div>
                   {/if}
