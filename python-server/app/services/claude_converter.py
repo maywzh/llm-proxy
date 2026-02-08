@@ -62,20 +62,22 @@ def claude_to_openai_request(
         msg = claude_request.messages[i]
 
         if msg.role == ClaudeConstants.ROLE_USER:
-            openai_message = _convert_claude_user_message(msg)
-            openai_messages.append(openai_message)
+            if _is_tool_result_message(msg):
+                # Mixed user message with tool_result + text content blocks.
+                # Emit tool results FIRST to maintain assistant(tool_calls) →
+                # tool(result) adjacency, then emit remaining content as user.
+                tool_results = _convert_claude_tool_results(msg)
+                openai_messages.extend(tool_results)
+                # Emit non-tool-result content as a separate user message
+                non_tool_content = _extract_non_tool_result_content(msg)
+                if non_tool_content:
+                    openai_messages.append(non_tool_content)
+            else:
+                openai_message = _convert_claude_user_message(msg)
+                openai_messages.append(openai_message)
         elif msg.role == ClaudeConstants.ROLE_ASSISTANT:
             openai_message = _convert_claude_assistant_message(msg)
             openai_messages.append(openai_message)
-
-            # Check if next message contains tool results
-            if i + 1 < len(claude_request.messages):
-                next_msg = claude_request.messages[i + 1]
-                if _is_tool_result_message(next_msg):
-                    # Process tool results
-                    i += 1  # Skip to tool result message
-                    tool_results = _convert_claude_tool_results(next_msg)
-                    openai_messages.extend(tool_results)
 
         i += 1
 
@@ -653,6 +655,27 @@ def _convert_claude_assistant_message(msg: ClaudeMessage) -> Dict[str, Any]:
         openai_message["tool_calls"] = tool_calls
 
     return openai_message
+
+
+def _extract_non_tool_result_content(msg: ClaudeMessage) -> Optional[Dict[str, Any]]:
+    """Extract non-tool-result content blocks from a mixed user message."""
+    if not isinstance(msg.content, list):
+        return None
+
+    openai_content: List[Dict[str, Any]] = []
+    for block in msg.content:
+        if block.type == ClaudeConstants.CONTENT_TEXT:
+            openai_content.append({"type": "text", "text": block.text})
+        elif block.type == ClaudeConstants.CONTENT_IMAGE:
+            image_content = _convert_image_block(block)
+            if image_content:
+                openai_content.append(image_content)
+
+    if not openai_content:
+        return None
+    if len(openai_content) == 1 and openai_content[0]["type"] == "text":
+        return {"role": ClaudeConstants.ROLE_USER, "content": openai_content[0]["text"]}
+    return {"role": ClaudeConstants.ROLE_USER, "content": openai_content}
 
 
 def _convert_claude_tool_results(msg: ClaudeMessage) -> List[Dict[str, Any]]:

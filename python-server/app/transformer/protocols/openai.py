@@ -168,7 +168,24 @@ class OpenAITransformer(Transformer):
             )
 
             if has_tool_results:
-                # Emit non-tool-result content as a user message first (if any)
+                # Emit each tool_result FIRST as an independent role: "tool" message.
+                # This must come before any non-tool-result user content to maintain
+                # the assistant(tool_calls) → tool(result) adjacency required by
+                # downstream providers (e.g. Bedrock Converse).
+                for c in msg.content:
+                    if isinstance(c, ToolResultContent):
+                        content_str = self._tool_result_content_to_string(
+                            c.content, c.is_error
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "content": content_str,
+                                "tool_call_id": c.tool_use_id,
+                            }
+                        )
+
+                # Emit non-tool-result content as a user message after tool results
                 non_tool_parts = [
                     self._unified_content_part_to_openai(c)
                     for c in msg.content
@@ -182,20 +199,6 @@ class OpenAITransformer(Transformer):
                             "content": non_tool_parts,
                         }
                     )
-
-                # Emit each tool_result as an independent role: "tool" message
-                for c in msg.content:
-                    if isinstance(c, ToolResultContent):
-                        content_str = self._tool_result_content_to_string(
-                            c.content, c.is_error
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "content": content_str,
-                                "tool_call_id": c.tool_use_id,
-                            }
-                        )
             else:
                 messages.append(self._unified_to_message(msg))
 
