@@ -553,26 +553,10 @@ impl Transformer for OpenAITransformer {
                 .any(|c| matches!(c, UnifiedContent::ToolResult { .. }));
 
             if has_tool_results {
-                // Emit non-tool-result content as a user message first (if any)
-                let non_tool_parts: Vec<OpenAIContentPart> = msg
-                    .content
-                    .iter()
-                    .filter(|c| !matches!(c, UnifiedContent::ToolResult { .. }))
-                    .filter_map(Self::unified_to_content_part)
-                    .collect();
-
-                if !non_tool_parts.is_empty() {
-                    messages.push(OpenAIMessage {
-                        role: "user".to_string(),
-                        content: Some(OpenAIContent::Parts(non_tool_parts)),
-                        reasoning_content: None,
-                        name: msg.name.clone(),
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-
-                // Emit each tool_result as an independent role: "tool" message
+                // Emit each tool_result FIRST as an independent role: "tool" message.
+                // This must come before any non-tool-result user content to maintain
+                // the assistant(tool_calls) → tool(result) adjacency required by
+                // downstream providers (e.g. Bedrock Converse).
                 for content in &msg.content {
                     if let UnifiedContent::ToolResult {
                         tool_use_id,
@@ -591,6 +575,25 @@ impl Transformer for OpenAITransformer {
                             tool_call_id: Some(tool_use_id.clone()),
                         });
                     }
+                }
+
+                // Emit non-tool-result content as a user message after tool results
+                let non_tool_parts: Vec<OpenAIContentPart> = msg
+                    .content
+                    .iter()
+                    .filter(|c| !matches!(c, UnifiedContent::ToolResult { .. }))
+                    .filter_map(Self::unified_to_content_part)
+                    .collect();
+
+                if !non_tool_parts.is_empty() {
+                    messages.push(OpenAIMessage {
+                        role: "user".to_string(),
+                        content: Some(OpenAIContent::Parts(non_tool_parts)),
+                        reasoning_content: None,
+                        name: msg.name.clone(),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
                 }
             } else {
                 messages.push(Self::unified_to_message(msg));
@@ -1761,16 +1764,137 @@ mod tests {
         let openai_req = openai.transform_request_in(&unified).unwrap();
 
         let messages = openai_req["messages"].as_array().unwrap();
-        // user, assistant, user(text), tool
+        // user, assistant, tool, user(text) — tool MUST come before user to
+        // preserve assistant(tool_calls) → tool adjacency
         assert_eq!(messages.len(), 4);
 
-        // Non-tool content emitted as user message first
-        assert_eq!(messages[2]["role"], "user");
+        // Tool result emitted first (adjacent to assistant)
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "tu_1");
+        assert_eq!(messages[2]["content"], "result");
 
-        // Tool result after
+        // Non-tool content emitted as user message after
+        assert_eq!(messages[3]["role"], "user");
+    }
+
+    #[test]
+    fn test_tool_result_adjacency_with_system_reminder() {
+        // Reproduces the real-world bug: Claude Code injects a <system-reminder>
+        // text block into the same user message that carries tool_result.
+        // The tool message MUST stay adjacent to the preceding assistant(tool_calls).
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        let request = json!({
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "search for chromium size"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Let me search."},
+                    {"type": "tool_use", "id": "tu_search", "name": "web_search", "input": {"q": "chromium"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_search", "content": "Found 5 results"},
+                    {"type": "text", "text": "<system-reminder>Use TodoWrite</system-reminder>"}
+                ]}
+            ]
+        });
+
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+        let messages = openai_req["messages"].as_array().unwrap();
+
+        // user, assistant(tool_calls), tool, user(system-reminder)
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[1]["role"], "assistant");
+        assert!(messages[1]["tool_calls"].is_array());
+        // tool MUST be right after assistant
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "tu_search");
+        // user text comes last
+        assert_eq!(messages[3]["role"], "user");
+        assert!(
+            messages[3]["content"].as_str().is_none()
+                || messages[3]["content"]
+                    .to_string()
+                    .contains("system-reminder")
+        );
+    }
+
+    #[test]
+    fn test_tool_result_adjacency_multiple_tools_with_interrupt() {
+        // assistant calls 2 tools, user interrupts with text + provides both results
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        let request = json!({
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "do two things"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu_a", "name": "tool_a", "input": {}},
+                    {"type": "tool_use", "id": "tu_b", "name": "tool_b", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_a", "content": "result_a"},
+                    {"type": "tool_result", "tool_use_id": "tu_b", "content": "result_b"},
+                    {"type": "text", "text": "[Request interrupted by user for tool use]"},
+                    {"type": "text", "text": "new user instruction"}
+                ]}
+            ]
+        });
+
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+        let messages = openai_req["messages"].as_array().unwrap();
+
+        // user, assistant(tool_calls), tool(a), tool(b), user(text+text)
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "tu_a");
         assert_eq!(messages[3]["role"], "tool");
-        assert_eq!(messages[3]["tool_call_id"], "tu_1");
-        assert_eq!(messages[3]["content"], "result");
+        assert_eq!(messages[3]["tool_call_id"], "tu_b");
+        assert_eq!(messages[4]["role"], "user");
+    }
+
+    #[test]
+    fn test_tool_result_only_no_text_unchanged() {
+        // Pure tool_result without text should work as before (no user message emitted)
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        let request = json!({
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "read file"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "file contents"}
+                ]}
+            ]
+        });
+
+        let unified = anthropic.transform_request_out(request).unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+        let messages = openai_req["messages"].as_array().unwrap();
+
+        // user, assistant(tool_calls), tool — no extra user message
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["tool_call_id"], "tu_1");
     }
 
     #[test]
