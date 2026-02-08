@@ -298,8 +298,8 @@ pub async fn handle_proxy_request(
             .transform_pipeline
             .transform_request_with_bypass(payload.clone(), &transform_ctx)?;
 
-        // Strip thinking blocks to prevent cross-provider signature validation failures
-        strip_thinking_blocks(&mut provider_payload);
+        // Sanitize payload before sending to provider
+        sanitize_provider_payload(&mut provider_payload);
 
         // Record bypass or cross-protocol metrics
         let metrics = get_metrics();
@@ -600,18 +600,46 @@ pub async fn handle_proxy_request(
 // Helper Functions
 // ============================================================================
 
-/// Strip thinking blocks from request payload.
-/// Thinking blocks contain provider-specific signatures that cannot be reused
-/// across providers. When the proxy routes requests to different provider
-/// instances, the original signatures become invalid and cause 400 errors.
-/// We remove entire thinking blocks rather than just signatures, because
-/// a thinking block without a signature is also invalid.
-fn strip_thinking_blocks(payload: &mut Value) {
+/// Sanitize the provider-bound payload to prevent validation errors.
+///
+/// This is the single entry point for all message-level sanitization before
+/// the payload is sent to any provider. Consolidating the logic here avoids
+/// scattered, case-by-case fixes across the codebase.
+///
+/// Steps applied to each message's content array:
+///   1. Strip thinking blocks — their provider-specific signatures are not
+///      reusable across providers and a thinking block without a signature
+///      is also invalid.
+///   2. Replace blank text fields — providers like Bedrock Converse reject
+///      content blocks whose text field is blank. Clients (e.g. Claude Code)
+///      may legitimately send empty text blocks.
+///   3. Backfill empty assistant content — after the above steps the content
+///      array may be empty; an empty assistant message is invalid for most
+///      providers, so we insert a placeholder.
+fn sanitize_provider_payload(payload: &mut Value) {
     if let Some(messages) = payload.get_mut("messages").and_then(|m| m.as_array_mut()) {
         for msg in messages {
+            let is_assistant = msg.get("role").and_then(|r| r.as_str()) == Some("assistant");
             if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+                // 1. Strip thinking blocks
                 content
                     .retain(|block| block.get("type").and_then(|t| t.as_str()) != Some("thinking"));
+
+                // 2. Replace blank text fields
+                for block in content.iter_mut() {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                            if text.trim().is_empty() {
+                                block["text"] = json!(".");
+                            }
+                        }
+                    }
+                }
+
+                // 3. Backfill empty assistant content
+                if content.is_empty() && is_assistant {
+                    content.push(json!({"type": "text", "text": "."}));
+                }
             }
         }
     }
@@ -2122,7 +2150,7 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_thinking_blocks() {
+    fn test_sanitize_provider_payload() {
         let mut payload = json!({
             "messages": [
                 {"role": "user", "content": "Hello"},
@@ -2132,7 +2160,7 @@ mod tests {
                 ]}
             ]
         });
-        strip_thinking_blocks(&mut payload);
+        sanitize_provider_payload(&mut payload);
         let blocks = payload["messages"][1]["content"].as_array().unwrap();
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0]["type"], "text");
@@ -2140,7 +2168,7 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_thinking_blocks_no_thinking() {
+    fn test_sanitize_no_thinking() {
         let mut payload = json!({
             "messages": [
                 {"role": "user", "content": "Hello"},
@@ -2150,12 +2178,12 @@ mod tests {
             ]
         });
         let original = payload.clone();
-        strip_thinking_blocks(&mut payload);
+        sanitize_provider_payload(&mut payload);
         assert_eq!(payload, original);
     }
 
     #[test]
-    fn test_strip_thinking_blocks_string_content() {
+    fn test_sanitize_string_content() {
         let mut payload = json!({
             "messages": [
                 {"role": "user", "content": "Hello"},
@@ -2163,12 +2191,12 @@ mod tests {
             ]
         });
         let original = payload.clone();
-        strip_thinking_blocks(&mut payload);
+        sanitize_provider_payload(&mut payload);
         assert_eq!(payload, original);
     }
 
     #[test]
-    fn test_strip_thinking_blocks_multiple_messages() {
+    fn test_sanitize_multiple_messages() {
         let mut payload = json!({
             "messages": [
                 {"role": "assistant", "content": [
@@ -2182,7 +2210,7 @@ mod tests {
                 ]}
             ]
         });
-        strip_thinking_blocks(&mut payload);
+        sanitize_provider_payload(&mut payload);
         let blocks0 = payload["messages"][0]["content"].as_array().unwrap();
         assert_eq!(blocks0.len(), 1);
         assert_eq!(blocks0[0]["text"], "Answer 1");
@@ -2192,8 +2220,9 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_thinking_blocks_only_thinking() {
-        // When a message has only thinking blocks, content becomes empty array
+    fn test_sanitize_only_thinking() {
+        // When an assistant message has only thinking blocks, content gets a placeholder
+        // to prevent API validation errors from empty content arrays
         let mut payload = json!({
             "messages": [
                 {"role": "assistant", "content": [
@@ -2202,8 +2231,37 @@ mod tests {
                 {"role": "user", "content": "Next question"}
             ]
         });
-        strip_thinking_blocks(&mut payload);
+        sanitize_provider_payload(&mut payload);
         let blocks = payload["messages"][0]["content"].as_array().unwrap();
-        assert!(blocks.is_empty());
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], ".");
+    }
+
+    #[test]
+    fn test_sanitize_blank_text_fields() {
+        let mut payload = json!({
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": ""},
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "  "},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": ""},
+                    {"type": "text", "text": "real content"},
+                ]},
+            ]
+        });
+        sanitize_provider_payload(&mut payload);
+        // Empty text in assistant message replaced
+        assert_eq!(payload["messages"][0]["content"][0]["text"], ".");
+        // Whitespace-only text in assistant message replaced
+        assert_eq!(payload["messages"][1]["content"][0]["text"], ".");
+        // Empty text in user message also replaced
+        assert_eq!(payload["messages"][2]["content"][0]["text"], ".");
+        // Non-empty text untouched
+        assert_eq!(payload["messages"][2]["content"][1]["text"], "real content");
     }
 }

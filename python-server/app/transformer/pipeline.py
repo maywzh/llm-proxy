@@ -361,15 +361,15 @@ class TransformPipeline:
             if ctx.provider_protocol in (Protocol.ANTHROPIC, Protocol.GCP_VERTEX):
                 _sanitize_empty_assistant_messages(payload)
 
-            # Strip thinking blocks to prevent cross-provider signature validation failures
-            _strip_thinking_blocks(payload)
+            # Sanitize payload before sending to provider
+            _sanitize_provider_payload(payload)
 
             return payload, True
         else:
             # Full transformation
             payload = self.transform_request(raw, ctx)
-            # Strip thinking blocks to prevent cross-provider signature validation failures
-            _strip_thinking_blocks(payload)
+            # Sanitize payload before sending to provider
+            _sanitize_provider_payload(payload)
             return payload, False
 
     def transform_response_with_bypass(
@@ -446,27 +446,55 @@ class TransformPipeline:
 # =============================================================================
 
 
-def _strip_thinking_blocks(payload: dict[str, Any]) -> None:
+def _sanitize_provider_payload(payload: dict[str, Any]) -> None:
     """
-    Strip thinking blocks from request payload.
+    Sanitize the provider-bound payload to prevent validation errors.
 
-    Thinking blocks contain provider-specific signatures that cannot be reused
-    across providers. When the proxy routes requests to different provider
-    instances, the original signatures become invalid and cause 400 errors.
-    We remove entire thinking blocks rather than just signatures, because
-    a thinking block without a signature is also invalid.
+    This is the single entry point for all message-level sanitization before
+    the payload is sent to any provider. Consolidating the logic here avoids
+    scattered, case-by-case fixes across the codebase.
+
+    Steps applied to each message's content array:
+      1. Strip thinking blocks — their provider-specific signatures are not
+         reusable across providers and a thinking block without a signature
+         is also invalid.
+      2. Replace blank text fields — providers like Bedrock Converse reject
+         content blocks whose text field is blank. Clients (e.g. Claude Code)
+         may legitimately send empty text blocks.
+      3. Backfill empty assistant content — after the above steps the content
+         array may be empty; an empty assistant message is invalid for most
+         providers, so we insert a placeholder.
     """
     messages = payload.get("messages")
     if not isinstance(messages, list):
         return
     for msg in messages:
         content = msg.get("content")
-        if isinstance(content, list):
-            msg["content"] = [
-                block
-                for block in content
-                if not (isinstance(block, dict) and block.get("type") == "thinking")
-            ]
+        if not isinstance(content, list):
+            continue
+
+        # 1. Strip thinking blocks
+        content = [
+            block
+            for block in content
+            if not (isinstance(block, dict) and block.get("type") == "thinking")
+        ]
+
+        # 2. Replace blank text fields
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+                and not block["text"].strip()
+            ):
+                block["text"] = "."
+
+        # 3. Backfill empty assistant content
+        if not content and msg.get("role") == "assistant":
+            content = [{"type": "text", "text": "."}]
+
+        msg["content"] = content
 
 
 def _sanitize_empty_assistant_messages(payload: dict[str, Any]) -> None:
