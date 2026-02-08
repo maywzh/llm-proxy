@@ -16,6 +16,7 @@ pub mod models;
 pub mod proxy;
 pub mod rectifier;
 pub mod streaming;
+pub mod upstream;
 
 // Re-export commonly used types
 pub use admin::{admin_router, combined_openapi, AdminApiDoc, AdminState, V1ApiDoc};

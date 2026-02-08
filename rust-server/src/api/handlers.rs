@@ -3,6 +3,7 @@
 //! This module contains all endpoint handlers including chat completions,
 //! model listings, and metrics.
 
+use crate::api::auth::{verify_auth, AuthFormat};
 use crate::api::disconnect::DisconnectStream;
 use crate::api::gemini3::{
     log_gemini_request_signatures, log_gemini_response_signatures, normalize_request_payload,
@@ -12,20 +13,27 @@ use crate::api::models::*;
 use crate::api::streaming::{
     calculate_message_tokens_with_tools, create_sse_stream, rewrite_model_in_response,
 };
-use crate::core::config::CredentialConfig;
-use crate::core::database::hash_key;
+use crate::api::upstream::{
+    attach_response_extensions, build_json_response, build_protocol_error_response,
+    build_unexpected_status_split_response, build_upstream_request,
+    execute_upstream_request_or_transport_error, parse_upstream_json_or_error_with_log,
+    split_upstream_status_error_with_log, StatusErrorResponseMode, UpstreamAuth, UpstreamContext,
+};
+use crate::core::error_types::{ERROR_TYPE_API, ERROR_TYPE_TIMEOUT};
 use crate::core::jsonl_logger::{
     log_provider_request, log_provider_response, log_request, log_response,
 };
-use crate::core::langfuse::{get_langfuse_service, init_langfuse_trace, GenerationData};
+use crate::core::langfuse::{
+    fail_generation_if_sampled, finish_generation_if_sampled, init_langfuse_trace,
+    update_trace_provider_if_sampled, GenerationData,
+};
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{
-    extract_client, ApiKeyName, HasCredentials, ModelName, ProviderName,
-};
+use crate::core::middleware::{extract_client, HasCredentials};
 use crate::core::utils::{get_key_name, strip_provider_suffix};
 use crate::core::{AppError, RateLimiter, Result, StreamCancelHandle};
 use crate::services::ProviderService;
+use crate::transformer::Protocol;
 use crate::with_request_context;
 use axum::{
     body::Body,
@@ -34,7 +42,6 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::Utc;
 use prometheus::{Encoder, TextEncoder};
 use serde_json::json;
 use std::collections::HashSet;
@@ -281,60 +288,6 @@ impl HasCredentials for AppState {
     }
 }
 
-/// Verify API key authentication and check rate limits.
-///
-/// Checks both x-api-key and Authorization headers against configured credentials.
-/// x-api-key takes precedence over Authorization: Bearer (consistent with Python).
-/// If a credential is found, also enforces rate limiting if configured.
-///
-/// Returns the full CredentialConfig for the authenticated credential, or None if no auth required.
-fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<CredentialConfig>> {
-    // Extract the provided key from headers
-    // x-api-key takes precedence over Authorization: Bearer (consistent with Python/Claude API)
-    let provided_key = headers
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .or_else(|| {
-            headers.get("authorization").and_then(|auth_header| {
-                auth_header
-                    .to_str()
-                    .ok()
-                    .and_then(|auth_str| auth_str.strip_prefix("Bearer "))
-            })
-        });
-
-    // Get credentials from DynamicConfig if available
-    let credentials = state.get_credentials();
-
-    // Check if any authentication is required
-    if credentials.is_empty() {
-        return Ok(None);
-    }
-
-    let provided_key = provided_key.ok_or(AppError::Unauthorized)?;
-
-    // Hash the provided key for comparison with stored hashes
-    let provided_key_hash = hash_key(provided_key);
-
-    // Check against credentials configuration
-    for credential_config in credentials {
-        if credential_config.enabled && credential_config.credential_key == provided_key_hash {
-            // Check rate limit for this credential using the hash
-            state
-                .rate_limiter
-                .check_rate_limit(&credential_config.credential_key)?;
-
-            tracing::debug!(
-                credential_name = %credential_config.name,
-                "Request authenticated with credential"
-            );
-            return Ok(Some(credential_config.clone()));
-        }
-    }
-
-    Err(AppError::Unauthorized)
-}
-
 // ============================================================================
 // Helper Types and Structs for Chat Completions
 // ============================================================================
@@ -359,6 +312,22 @@ struct SelectedProvider {
     provider: Provider,
     /// The URL to send the request to
     url: String,
+}
+
+/// Context for streaming response handling.
+struct StreamingContext {
+    model_label: String,
+    provider_name: String,
+    gemini_model: Option<String>,
+    prompt_tokens_for_fallback: Option<usize>,
+    ttft_timeout_secs: Option<u64>,
+    generation_data: GenerationData,
+    trace_id: Option<String>,
+    api_key_name: String,
+    request_id: String,
+    request_payload: serde_json::Value,
+    client: String,
+    cancel_handle: Option<StreamCancelHandle>,
 }
 
 // ============================================================================
@@ -496,12 +465,7 @@ fn select_provider(
     generation_data.mapped_model = mapped_model;
 
     // Update trace with provider info
-    if let Some(ref tid) = trace_id {
-        let langfuse = get_langfuse_service();
-        if let Ok(service) = langfuse.read() {
-            service.update_trace_provider(tid, &provider.name, &provider.api_base, model_label);
-        };
-    }
+    update_trace_provider_if_sampled(trace_id, &provider.name, &provider.api_base, model_label);
 
     let url = format!("{}/chat/completions", provider.api_base);
 
@@ -552,37 +516,12 @@ fn apply_model_mapping(
     }
 }
 
-/// Send HTTP request to the provider.
-///
-/// Sends the chat completion request to the upstream provider.
-///
-/// # Arguments
-/// * `http_client` - HTTP client for making requests
-/// * `url` - Provider endpoint URL
-/// * `api_key` - Provider API key
-/// * `payload` - Request payload
-async fn send_provider_request(
-    http_client: &reqwest::Client,
-    url: &str,
-    api_key: &str,
-    payload: &serde_json::Value,
-) -> std::result::Result<reqwest::Response, reqwest::Error> {
-    http_client
-        .post(url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(payload)
-        .send()
-        .await
-}
-
 /// Handle backend error response.
 ///
 /// Parses error response from the provider and creates appropriate error response.
 ///
 /// # Arguments
 /// * `response` - The HTTP response from provider
-/// * `status` - HTTP status code
 /// * `model_label` - Model label for response extensions
 /// * `provider_name` - Provider name for response extensions
 /// * `api_key_name` - API key name for response extensions
@@ -590,142 +529,87 @@ async fn send_provider_request(
 /// * `trace_id` - Optional trace ID for Langfuse
 async fn handle_backend_error(
     response: reqwest::Response,
-    status: reqwest::StatusCode,
     model_label: &str,
     provider_name: &str,
     api_key_name: &str,
     generation_data: &mut GenerationData,
     trace_id: &Option<String>,
+    request_id: &str,
 ) -> Response {
-    let error_body = match response.bytes().await {
-        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-            Ok(body) => body,
-            Err(_) => {
-                let text = String::from_utf8_lossy(&bytes).to_string();
-                json!({
-                    "error": {
-                        "message": text,
-                        "type": "error",
-                        "code": status.as_u16()
-                    }
-                })
-            }
-        },
-        Err(_) => json!({
-            "error": {
-                "message": format!("HTTP {}", status),
-                "type": "error",
-                "code": status.as_u16()
-            }
-        }),
+    let ctx = UpstreamContext {
+        protocol: Protocol::OpenAI,
+        model: Some(model_label),
+        provider: provider_name,
+        api_key_name: Some(api_key_name),
+        request_id: Some(request_id),
     };
+    match split_upstream_status_error_with_log(
+        response,
+        StatusErrorResponseMode::Passthrough,
+        &ctx,
+        ERROR_TYPE_API,
+        "Backend API returned error status",
+        false,
+        false,
+    )
+    .await
+    {
+        Ok(_success_response) => {
+            build_unexpected_status_split_response(&ctx, "backend error handler")
+        }
+        Err((parsed, error_response)) => {
+            fail_generation_if_sampled(trace_id, generation_data, parsed.message);
 
-    tracing::error!(
-        provider = %provider_name,
-        status = %status,
-        "Backend API returned error status"
-    );
-
-    // Record error in Langfuse
-    let error_message = error_body
-        .get("error")
-        .and_then(|e| e.get("message"))
-        .and_then(|m| m.as_str())
-        .unwrap_or(&format!("HTTP {}", status))
-        .to_string();
-    generation_data.is_error = true;
-    generation_data.error_message = Some(error_message);
-    generation_data.end_time = Some(Utc::now());
-
-    if trace_id.is_some() {
-        let langfuse = get_langfuse_service();
-        if let Ok(service) = langfuse.read() {
-            service.trace_generation(generation_data.clone());
-        };
+            error_response
+        }
     }
-
-    // Build response with proper extensions
-    let mut resp = Json(error_body).into_response();
-    *resp.status_mut() =
-        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    resp.extensions_mut()
-        .insert(ModelName(model_label.to_string()));
-    resp.extensions_mut()
-        .insert(ProviderName(provider_name.to_string()));
-    resp.extensions_mut()
-        .insert(ApiKeyName(api_key_name.to_string()));
-    resp
 }
 
 /// Handle streaming chat completion response.
 ///
 /// Creates an SSE stream for streaming responses.
-///
-/// # Arguments
-/// * `response` - HTTP response from provider
-/// * `model_label` - Model label for metrics
-/// * `provider_name` - Provider name for metrics
-/// * `gemini_model` - Model name for Gemini 3 normalization
-/// * `prompt_tokens_for_fallback` - Estimated prompt tokens
-/// * `ttft_timeout_secs` - Time to first token timeout
-/// * `generation_data` - Generation data for Langfuse (consumed)
-/// * `trace_id` - Optional trace ID for Langfuse
-/// * `api_key_name` - API key name for error responses
-/// * `request_id` - Request ID for JSONL logging
-/// * `request_payload` - Request payload for JSONL logging
-/// * `client` - Client name from User-Agent header
-#[allow(clippy::too_many_arguments)]
 async fn handle_streaming_response(
     response: reqwest::Response,
-    model_label: String,
-    provider_name: String,
-    gemini_model: Option<String>,
-    prompt_tokens_for_fallback: Option<usize>,
-    ttft_timeout_secs: Option<u64>,
-    generation_data: GenerationData,
-    trace_id: &Option<String>,
-    api_key_name: &str,
-    request_id: String,
-    request_payload: serde_json::Value,
-    client: String,
-    cancel_handle: Option<StreamCancelHandle>,
+    ctx: StreamingContext,
 ) -> Result<Response> {
     // Only pass generation_data if trace_id is Some (Langfuse enabled and sampled)
-    let langfuse_data = if trace_id.is_some() {
-        Some(generation_data)
+    let langfuse_data = if ctx.trace_id.is_some() {
+        Some(ctx.generation_data)
     } else {
         None
     };
 
     match create_sse_stream(
         response,
-        model_label.clone(),
-        provider_name.clone(),
-        gemini_model,
-        prompt_tokens_for_fallback,
-        ttft_timeout_secs,
+        ctx.model_label.clone(),
+        ctx.provider_name.clone(),
+        ctx.gemini_model,
+        ctx.prompt_tokens_for_fallback,
+        ctx.ttft_timeout_secs,
         langfuse_data,
-        Some(request_id),
+        Some(ctx.request_id),
         Some("/v1/chat/completions".to_string()),
-        Some(request_payload),
-        Some(client),
-        cancel_handle,
+        Some(ctx.request_payload),
+        Some(ctx.client),
+        ctx.cancel_handle,
     )
     .await
     {
         Ok(sse_stream) => Ok(sse_stream),
         Err(e) => {
             tracing::error!(
-                provider = %provider_name,
+                provider = %ctx.provider_name,
                 error = %e,
                 "Streaming error"
             );
-            Ok(build_error_response(
+            Ok(build_protocol_error_response(
+                Protocol::OpenAI,
                 StatusCode::GATEWAY_TIMEOUT,
-                e.to_string(),
-                &model_label,
-                &provider_name,
-                api_key_name,
+                ERROR_TYPE_TIMEOUT,
+                &e.to_string(),
+                Some(&ctx.model_label),
+                Some(&ctx.provider_name),
+                Some(&ctx.api_key_name),
             ))
         }
     }
@@ -759,39 +643,30 @@ async fn handle_non_streaming_response(
     _request_payload: &serde_json::Value,
     client: &str,
 ) -> Result<Response> {
-    let status = response.status();
-
-    let mut response_data: serde_json::Value = match response.json().await {
-        Ok(data) => {
-            // Log provider response to JSONL (the raw response from provider)
-            log_provider_response(request_id, provider_name, status.as_u16(), None, &data);
-            data
-        }
-        Err(e) => {
-            tracing::error!(
-                provider = %provider_name,
-                error = %e,
-                "Failed to parse provider response JSON"
-            );
-            // Record error in Langfuse
-            generation_data.is_error = true;
-            generation_data.error_message = Some(format!("Invalid JSON from provider: {}", e));
-            generation_data.end_time = Some(Utc::now());
-            if trace_id.is_some() {
-                let langfuse = get_langfuse_service();
-                if let Ok(service) = langfuse.read() {
-                    service.trace_generation(generation_data.clone());
-                };
+    let (status, mut response_data): (reqwest::StatusCode, serde_json::Value) =
+        match parse_upstream_json_or_error_with_log(
+            response,
+            &UpstreamContext {
+                protocol: Protocol::OpenAI,
+                model: Some(model_label),
+                provider: provider_name,
+                api_key_name: Some(api_key_name),
+                request_id: Some(request_id),
+            },
+            "Failed to parse provider response JSON",
+        )
+        .await
+        {
+            Ok((status, data)) => {
+                // Log provider response to JSONL (the raw response from provider)
+                log_provider_response(request_id, provider_name, status.as_u16(), None, &data);
+                (status, data)
             }
-            return Ok(build_error_response(
-                StatusCode::BAD_GATEWAY,
-                format!("Invalid JSON from provider: {}", e),
-                model_label,
-                provider_name,
-                api_key_name,
-            ));
-        }
-    };
+            Err((error_message, error_response)) => {
+                fail_generation_if_sampled(trace_id, generation_data, error_message);
+                return Ok(error_response);
+            }
+        };
 
     // Capture output for Langfuse
     if let Some(choices) = response_data.get("choices").and_then(|c| c.as_array()) {
@@ -835,13 +710,7 @@ async fn handle_non_streaming_response(
     }
 
     // Record successful generation in Langfuse
-    generation_data.end_time = Some(Utc::now());
-    if trace_id.is_some() {
-        let langfuse = get_langfuse_service();
-        if let Ok(service) = langfuse.read() {
-            service.trace_generation(generation_data.clone());
-        };
-    }
+    finish_generation_if_sampled(trace_id, generation_data);
 
     // Log response info: DEBUG shows summary, TRACE shows full response with size
     if tracing::enabled!(tracing::Level::DEBUG) {
@@ -898,16 +767,7 @@ fn record_langfuse_error(
     trace_id: &Option<String>,
     error_message: &str,
 ) {
-    generation_data.is_error = true;
-    generation_data.error_message = Some(error_message.to_string());
-    generation_data.end_time = Some(Utc::now());
-
-    if trace_id.is_some() {
-        let langfuse = get_langfuse_service();
-        if let Ok(service) = langfuse.read() {
-            service.trace_generation(generation_data.clone());
-        };
-    }
+    fail_generation_if_sampled(trace_id, generation_data, error_message.to_string());
 }
 
 /// Add response extensions for middleware logging.
@@ -925,11 +785,12 @@ fn add_response_extensions(
     provider_name: String,
     api_key_name: String,
 ) {
-    response.extensions_mut().insert(ModelName(model_label));
-    response
-        .extensions_mut()
-        .insert(ProviderName(provider_name));
-    response.extensions_mut().insert(ApiKeyName(api_key_name));
+    attach_response_extensions(
+        response,
+        Some(&model_label),
+        Some(&provider_name),
+        Some(&api_key_name),
+    );
 }
 
 // ============================================================================
@@ -964,7 +825,7 @@ pub async fn chat_completions(
     Json(mut payload): Json<serde_json::Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth(&headers, &state)?;
+    let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
@@ -1094,44 +955,39 @@ pub async fn chat_completions(
                     &payload,
                 );
 
-                // Send request to provider
-                let response = match send_provider_request(
+                let provider_service = state.get_provider_service();
+
+                let request = build_upstream_request(
                     &state.http_client,
                     &url,
-                    &provider.api_key,
                     &payload,
+                    UpstreamAuth::Bearer(&provider.api_key),
+                    None,
+                    None,
+                );
+
+                let upstream_ctx = UpstreamContext {
+                    protocol: Protocol::OpenAI,
+                    model: Some(&model_label),
+                    provider: &provider.name,
+                    api_key_name: Some(&api_key_name),
+                    request_id: Some(&request_id),
+                };
+
+                let response = match execute_upstream_request_or_transport_error(
+                    request,
+                    &provider_service,
+                    &upstream_ctx,
+                    Some(&url),
+                    Some(&model_label),
+                    "HTTP request failed to provider",
                 )
                 .await
                 {
                     Ok(resp) => resp,
-                    Err(e) => {
-                        tracing::error!(
-                            request_id = %request_id,
-                            provider = %provider.name,
-                            url = %url,
-                            model = %model_label,
-                            error = %e,
-                            is_timeout = e.is_timeout(),
-                            is_connect = e.is_connect(),
-                            "HTTP request failed to provider"
-                        );
-                        let status = if e.is_timeout() {
-                            StatusCode::GATEWAY_TIMEOUT
-                        } else {
-                            StatusCode::BAD_GATEWAY
-                        };
-                        record_langfuse_error(
-                            &mut generation_data,
-                            &trace_id,
-                            &format!("Upstream request failed: {}", e),
-                        );
-                        return Ok(build_error_response(
-                            status,
-                            format!("Upstream request failed: {}", e),
-                            &model_label,
-                            &provider.name,
-                            &api_key_name,
-                        ));
+                    Err((error_message, error_response)) => {
+                        record_langfuse_error(&mut generation_data, &trace_id, &error_message);
+                        return Ok(error_response);
                     }
                 };
 
@@ -1149,12 +1005,12 @@ pub async fn chat_completions(
                 if status.is_client_error() || status.is_server_error() {
                     return Ok(handle_backend_error(
                         response,
-                        status,
                         &model_label,
                         &provider.name,
                         &api_key_name,
                         &mut generation_data,
                         &trace_id,
+                        &request_id,
                     )
                     .await);
                 }
@@ -1163,18 +1019,20 @@ pub async fn chat_completions(
                 let mut final_response = if is_stream {
                     handle_streaming_response(
                         response,
-                        model_label.clone(),
-                        provider.name.clone(),
-                        gemini_model.clone(),
-                        prompt_tokens_for_fallback,
-                        state.config.ttft_timeout_secs,
-                        generation_data,
-                        &trace_id,
-                        &api_key_name,
-                        request_id.clone(),
-                        payload.clone(),
-                        client.clone(),
-                        cancel_handle_clone,
+                        StreamingContext {
+                            model_label: model_label.clone(),
+                            provider_name: provider.name.clone(),
+                            gemini_model: gemini_model.clone(),
+                            prompt_tokens_for_fallback,
+                            ttft_timeout_secs: state.config.ttft_timeout_secs,
+                            generation_data,
+                            trace_id: trace_id.clone(),
+                            api_key_name: api_key_name.clone(),
+                            request_id: request_id.clone(),
+                            request_payload: payload.clone(),
+                            client: client.clone(),
+                            cancel_handle: cancel_handle_clone,
+                        },
                     )
                     .await?
                 } else {
@@ -1276,7 +1134,7 @@ pub async fn completions(
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth(&headers, &state)?;
+    let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
@@ -1323,39 +1181,39 @@ pub async fn completions(
                 // Get api_key_name from context
                 let api_key_name = get_api_key_name();
 
-                let response = match state
-                    .http_client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", provider.api_key))
-                    .header("Content-Type", "application/json")
-                    .json(&payload)
-                    .send()
-                    .await
+                let provider_service = state.get_provider_service();
+
+                let request = build_upstream_request(
+                    &state.http_client,
+                    &url,
+                    &payload,
+                    UpstreamAuth::Bearer(&provider.api_key),
+                    None,
+                    None,
+                );
+
+                let upstream_ctx = UpstreamContext {
+                    protocol: Protocol::OpenAI,
+                    model: Some(&model_label),
+                    provider: &provider.name,
+                    api_key_name: Some(&api_key_name),
+                    request_id: Some(&request_id),
+                };
+
+                let response = match execute_upstream_request_or_transport_error(
+                    request,
+                    &provider_service,
+                    &upstream_ctx,
+                    Some(&url),
+                    Some(&model_label),
+                    "HTTP request failed to provider",
+                )
+                .await
+                .map_err(|(_, resp)| resp)
                 {
                     Ok(resp) => resp,
-                    Err(e) => {
-                        tracing::error!(
-                            request_id = %request_id,
-                            provider = %provider.name,
-                            url = %url,
-                            model = %model_label,
-                            error = %e,
-                            is_timeout = e.is_timeout(),
-                            is_connect = e.is_connect(),
-                            "HTTP request failed to provider"
-                        );
-                        let status = if e.is_timeout() {
-                            StatusCode::GATEWAY_TIMEOUT
-                        } else {
-                            StatusCode::BAD_GATEWAY
-                        };
-                        return Ok(build_error_response(
-                            status,
-                            format!("Upstream request failed: {}", e),
-                            &model_label,
-                            &provider.name,
-                            &api_key_name,
-                        ));
+                    Err(error_response) => {
+                        return Ok(error_response);
                     }
                 };
 
@@ -1371,87 +1229,44 @@ pub async fn completions(
 
                 // Check if backend API returned an error status code
                 // Faithfully pass through the backend error
-                if status.is_client_error() || status.is_server_error() {
-                    let error_body = match response.bytes().await {
-                        Ok(bytes) => {
-                            // Try to parse as JSON first
-                            match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                                Ok(body) => body,
-                                Err(_) => {
-                                    // If can't parse as JSON, create error object with text
-                                    let text = String::from_utf8_lossy(&bytes).to_string();
-                                    json!({
-                                        "error": {
-                                            "message": text,
-                                            "type": "error",
-                                            "code": status.as_u16()
-                                        }
-                                    })
-                                }
-                            }
-                        }
-                        Err(_) => json!({
-                            "error": {
-                                "message": format!("HTTP {}", status),
-                                "type": "error",
-                                "code": status.as_u16()
-                            }
-                        }),
-                    };
-
-                    tracing::error!(
-                        request_id = %request_id,
-                        provider = %provider.name,
-                        status = %status,
-                        "Backend API returned error status"
-                    );
-
-                    // Faithfully return the backend's status code and error body
-                    let mut response = Json(error_body).into_response();
-                    *response.status_mut() = StatusCode::from_u16(status.as_u16())
-                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                    response
-                        .extensions_mut()
-                        .insert(ModelName(model_label.clone()));
-                    response
-                        .extensions_mut()
-                        .insert(ProviderName(provider.name.clone()));
-                    response
-                        .extensions_mut()
-                        .insert(ApiKeyName(api_key_name.clone()));
-                    return Ok(response);
-                }
-
-                let response_data: serde_json::Value = match response.json().await {
-                    Ok(data) => data,
-                    Err(e) => {
-                        tracing::error!(
-                            request_id = %request_id,
-                            provider = %provider.name,
-                            error = %e,
-                            "Failed to parse provider response JSON"
-                        );
-                        return Ok(build_error_response(
-                            StatusCode::BAD_GATEWAY,
-                            format!("Invalid JSON from provider: {}", e),
-                            &model_label,
-                            &provider.name,
-                            &api_key_name,
-                        ));
+                let response = match split_upstream_status_error_with_log(
+                    response,
+                    StatusErrorResponseMode::Passthrough,
+                    &upstream_ctx,
+                    ERROR_TYPE_API,
+                    "Backend API returned error status",
+                    false,
+                    false,
+                )
+                .await
+                .map_err(|(_, resp)| resp)
+                {
+                    Ok(resp) => resp,
+                    Err(error_response) => {
+                        return Ok(error_response);
                     }
                 };
-                let mut final_response = Json(response_data).into_response();
 
-                // Add model, provider, and api_key_name info to response extensions for middleware logging
-                final_response
-                    .extensions_mut()
-                    .insert(ModelName(model_label));
-                final_response
-                    .extensions_mut()
-                    .insert(ProviderName(provider.name));
-                final_response
-                    .extensions_mut()
-                    .insert(ApiKeyName(api_key_name));
+                let response_data: serde_json::Value = match parse_upstream_json_or_error_with_log(
+                    response,
+                    &upstream_ctx,
+                    "Failed to parse provider response JSON",
+                )
+                .await
+                .map_err(|(_, resp)| resp)
+                {
+                    Ok((_status, data)) => data,
+                    Err(error_response) => {
+                        return Ok(error_response);
+                    }
+                };
+                let final_response = build_json_response(
+                    StatusCode::OK,
+                    response_data,
+                    Some(&model_label),
+                    Some(&provider.name),
+                    Some(&api_key_name),
+                );
 
                 Ok(final_response)
             })
@@ -1484,7 +1299,7 @@ pub async fn list_models(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth(&headers, &state)?;
+            let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
 
             tracing::debug!(
                 request_id = %request_id,
@@ -1536,29 +1351,6 @@ pub async fn list_models(
         .await
 }
 
-fn model_allowed_for_info(model_name: &str, allowed_models: &[String]) -> bool {
-    if allowed_models.is_empty() {
-        return true;
-    }
-    if crate::api::auth::model_matches_allowed_list(model_name, allowed_models) {
-        return true;
-    }
-    if !crate::api::models::is_pattern(model_name) {
-        return false;
-    }
-    if let Some(regex) = crate::api::models::compile_pattern(model_name) {
-        for allowed in allowed_models {
-            if crate::api::models::is_pattern(allowed) {
-                continue;
-            }
-            if regex.is_match(allowed) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// List model deployments in LiteLLM-compatible format.
 #[utoipa::path(
     get,
@@ -1581,7 +1373,7 @@ pub async fn list_model_info(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth(&headers, &state)?;
+            let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
 
             tracing::debug!(
                 request_id = %request_id,
@@ -1601,7 +1393,7 @@ pub async fn list_model_info(
                 let mut model_keys: Vec<String> = provider.model_mapping.keys().cloned().collect();
                 model_keys.sort();
                 for model_name in model_keys {
-                    if !model_allowed_for_info(&model_name, &allowed_models) {
+                    if !crate::api::models::model_allowed_for_info(&model_name, &allowed_models) {
                         continue;
                     }
 
@@ -1702,35 +1494,6 @@ fn record_token_usage(usage: &Usage, model: &str, provider: &str, client: &str) 
         total_tokens = usage.total_tokens,
         "Token usage recorded"
     );
-}
-
-fn build_error_response(
-    status: StatusCode,
-    message: String,
-    model: &str,
-    provider: &str,
-    api_key_name: &str,
-) -> Response {
-    let body = json!({
-        "error": {
-            "message": message,
-            "type": "error",
-            "code": status.as_u16()
-        }
-    });
-
-    let mut response = Json(body).into_response();
-    *response.status_mut() = status;
-    response
-        .extensions_mut()
-        .insert(ModelName(model.to_string()));
-    response
-        .extensions_mut()
-        .insert(ProviderName(provider.to_string()));
-    response
-        .extensions_mut()
-        .insert(ApiKeyName(api_key_name.to_string()));
-    response
 }
 
 #[cfg(test)]

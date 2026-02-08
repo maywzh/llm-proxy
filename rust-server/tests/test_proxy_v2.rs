@@ -15,7 +15,7 @@ use axum::{
 };
 use llm_proxy_rust::{
     api::{chat_completions_v2, messages_v2, responses_v2, AppState, ProxyState},
-    core::{init_metrics, AppConfig, MetricsMiddleware},
+    core::{init_metrics, AppConfig, MetricsMiddleware, ERROR_TYPE_AUTHENTICATION},
     services::ProviderService,
 };
 use serde_json::json;
@@ -448,7 +448,7 @@ async fn test_v2_provider_401_error() {
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({
             "error": {
                 "message": "Invalid API key",
-                "type": "authentication_error"
+                "type": ERROR_TYPE_AUTHENTICATION
             }
         })))
         .mount(&mock_server)

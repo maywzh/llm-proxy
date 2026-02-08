@@ -83,6 +83,25 @@ CROSS_PROTOCOL_REQUESTS = Counter(
     ["client_protocol", "provider_protocol", "provider"],
 )
 
+# Adaptive routing metrics
+PROVIDER_EFFECTIVE_WEIGHT = Gauge(
+    "llm_proxy_provider_effective_weight",
+    "Runtime effective weight used for provider selection",
+    ["provider"],
+)
+
+PROVIDER_CIRCUIT_STATE = Gauge(
+    "llm_proxy_provider_circuit_state",
+    "Provider circuit state flag (1 for active state, 0 otherwise)",
+    ["provider", "state"],
+)
+
+PROVIDER_EJECTIONS_TOTAL = Counter(
+    "llm_proxy_provider_ejections_total",
+    "Total number of provider ejections by reason",
+    ["provider", "reason"],
+)
+
 # Client disconnect metrics
 CLIENT_DISCONNECTS = Counter(
     "llm_proxy_client_disconnects_total",

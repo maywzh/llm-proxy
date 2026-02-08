@@ -3,6 +3,7 @@
 //! This module defines all data structures used in the Claude Messages API,
 //! including requests, responses, content blocks, and streaming events.
 
+use crate::core::error_types::{ERROR_TYPE_API, ERROR_TYPE_INVALID_REQUEST, ERROR_TYPE_TIMEOUT};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use utoipa::ToSchema;
@@ -414,17 +415,17 @@ impl ClaudeErrorResponse {
 
     /// Create an API error response.
     pub fn api_error(message: impl Into<String>) -> Self {
-        Self::new("api_error", message)
+        Self::new(ERROR_TYPE_API, message)
     }
 
     /// Create a timeout error response.
     pub fn timeout_error(message: impl Into<String>) -> Self {
-        Self::new("timeout_error", message)
+        Self::new(ERROR_TYPE_TIMEOUT, message)
     }
 
     /// Create an invalid request error response.
     pub fn invalid_request_error(message: impl Into<String>) -> Self {
-        Self::new("invalid_request_error", message)
+        Self::new(ERROR_TYPE_INVALID_REQUEST, message)
     }
 }
 

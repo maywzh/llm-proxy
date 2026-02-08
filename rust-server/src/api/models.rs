@@ -4,6 +4,7 @@
 //! chat completion requests/responses, health checks, and model listings.
 
 use crate::core::config::{ModelMappingEntry, ModelMappingValue};
+use crate::core::error_types::ERROR_TYPE_API;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -156,6 +157,34 @@ pub fn get_model_metadata(
     model_mapping: &HashMap<String, ModelMappingValue>,
 ) -> Option<ModelMappingEntry> {
     match_model_pattern(model, model_mapping).and_then(|v| v.metadata().cloned())
+}
+
+/// Check if a model is allowed for the model info endpoint.
+///
+/// Returns `true` when `allowed_models` is empty (no filtering), the model
+/// matches the allowed list directly, or the model is a pattern that matches
+/// at least one concrete entry in the allowed list.
+pub fn model_allowed_for_info(model_name: &str, allowed_models: &[String]) -> bool {
+    if allowed_models.is_empty() {
+        return true;
+    }
+    if crate::api::auth::model_matches_allowed_list(model_name, allowed_models) {
+        return true;
+    }
+    if !is_pattern(model_name) {
+        return false;
+    }
+    if let Some(regex) = compile_pattern(model_name) {
+        for allowed in allowed_models {
+            if is_pattern(allowed) {
+                continue;
+            }
+            if regex.is_match(allowed) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Provider information for internal use.
@@ -641,7 +670,7 @@ pub struct ModelInfoQueryParamsV1 {
 #[schema(example = json!({
     "error": {
         "message": "Invalid API key",
-        "type": "error",
+        "type": ERROR_TYPE_API,
         "code": 401
     }
 }))]

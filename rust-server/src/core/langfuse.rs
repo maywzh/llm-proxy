@@ -213,6 +213,49 @@ pub fn init_langfuse_trace(
     (trace_id, generation_data)
 }
 
+/// Trace generation when Langfuse trace is enabled for this request.
+pub fn trace_generation_if_sampled(trace_id: &Option<String>, generation_data: GenerationData) {
+    if trace_id.is_some() {
+        if let Ok(service) = get_langfuse_service().read() {
+            service.trace_generation(generation_data);
+        }
+    }
+}
+
+/// Complete generation and send sampled trace.
+pub fn finish_generation_if_sampled(
+    trace_id: &Option<String>,
+    generation_data: &mut GenerationData,
+) {
+    generation_data.end_time.get_or_insert_with(Utc::now);
+    trace_generation_if_sampled(trace_id, generation_data.clone());
+}
+
+/// Mark generation as failed and send sampled trace.
+pub fn fail_generation_if_sampled(
+    trace_id: &Option<String>,
+    generation_data: &mut GenerationData,
+    error_message: impl Into<String>,
+) {
+    generation_data.is_error = true;
+    generation_data.error_message = Some(error_message.into());
+    finish_generation_if_sampled(trace_id, generation_data);
+}
+
+/// Update trace provider metadata when Langfuse trace is enabled for this request.
+pub fn update_trace_provider_if_sampled(
+    trace_id: &Option<String>,
+    provider_name: &str,
+    provider_api_base: &str,
+    model_name: &str,
+) {
+    if let Some(tid) = trace_id {
+        if let Ok(service) = get_langfuse_service().read() {
+            service.update_trace_provider(tid, provider_name, provider_api_base, model_name);
+        }
+    }
+}
+
 // ============================================================================
 // Data Models
 // ============================================================================

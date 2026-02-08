@@ -15,6 +15,7 @@ pub mod config;
 pub mod database;
 pub mod error;
 pub mod error_logger;
+pub mod error_types;
 pub mod header_policy;
 pub mod jsonl_logger;
 pub mod langfuse;
@@ -38,13 +39,20 @@ pub use error::{AppError, Result};
 pub use error_logger::{
     init_error_logger, log_error, mask_headers, ErrorCategory, ErrorLogRecord, ErrorLogger,
 };
+pub use error_types::{
+    ERROR_CODE_PROVIDER, ERROR_CODE_TTFT_TIMEOUT, ERROR_TYPE_API, ERROR_TYPE_AUTHENTICATION,
+    ERROR_TYPE_INVALID_REQUEST, ERROR_TYPE_OVERLOADED, ERROR_TYPE_RATE_LIMIT, ERROR_TYPE_STREAM,
+    ERROR_TYPE_TIMEOUT,
+};
 pub use jsonl_logger::{
     get_jsonl_logger, init_jsonl_logger, log_request, log_response, log_streaming_response,
     JsonlLogger, JsonlLoggerConfig, LogRecord, RequestRecord, ResponseRecord,
 };
 pub use langfuse::{
-    build_langfuse_tags, extract_client_metadata, get_langfuse_service, init_langfuse_service,
-    shutdown_langfuse_service, GenerationData, LangfuseConfig, LangfuseService,
+    build_langfuse_tags, extract_client_metadata, fail_generation_if_sampled,
+    finish_generation_if_sampled, get_langfuse_service, init_langfuse_service,
+    shutdown_langfuse_service, trace_generation_if_sampled, update_trace_provider_if_sampled,
+    GenerationData, LangfuseConfig, LangfuseService,
 };
 pub use logging::{get_provider_context, PROVIDER_CONTEXT};
 pub use metrics::{get_metrics, init_metrics, Metrics};

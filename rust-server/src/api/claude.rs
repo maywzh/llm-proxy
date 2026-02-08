@@ -4,39 +4,46 @@
 //! Claude format requests to OpenAI format, proxying to providers,
 //! and converting responses back to Claude format.
 
+use crate::api::auth::{verify_auth, AuthFormat};
 use crate::api::claude_models::{
-    ClaudeContentBlock, ClaudeErrorResponse, ClaudeMessage, ClaudeMessageContent,
-    ClaudeMessagesRequest, ClaudeSystemPrompt, ClaudeTokenCountRequest, ClaudeTokenCountResponse,
-    ClaudeTool,
+    ClaudeContentBlock, ClaudeMessage, ClaudeMessageContent, ClaudeMessagesRequest,
+    ClaudeSystemPrompt, ClaudeTokenCountRequest, ClaudeTokenCountResponse, ClaudeTool,
 };
 use crate::api::gemini3::{normalize_request_payload, strip_gemini3_provider_fields};
 use crate::api::handlers::AppState;
 use crate::api::proxy::ensure_tool_use_result_pairing;
 use crate::api::streaming::calculate_message_tokens_with_tools;
-use crate::core::config::CredentialConfig;
-use crate::core::database::hash_key;
+use crate::api::upstream::{
+    attach_response_extensions, build_protocol_error_response, build_upstream_request,
+    execute_upstream_request_or_transport_error, finalize_non_streaming_response,
+    parse_upstream_json_or_error_with_log, record_token_metrics,
+    split_upstream_status_error_with_log, StatusErrorResponseMode, UpstreamAuth, UpstreamContext,
+};
+use crate::core::error_types::{ERROR_TYPE_API, ERROR_TYPE_INVALID_REQUEST};
 use crate::core::header_policy::sanitize_anthropic_beta_header;
 use crate::core::jsonl_logger::{
     log_provider_request, log_provider_response, log_provider_streaming_response, log_request,
-    log_response, log_streaming_response,
+    log_streaming_response,
 };
 use crate::core::langfuse::{
-    build_langfuse_tags, extract_client_metadata, get_langfuse_service, GenerationData,
+    fail_generation_if_sampled, finish_generation_if_sampled, init_langfuse_trace,
+    update_trace_provider_if_sampled, GenerationData,
 };
 use crate::core::logging::{generate_request_id, get_api_key_name, PROVIDER_CONTEXT, REQUEST_ID};
-use crate::core::metrics::get_metrics;
-use crate::core::middleware::{extract_client, ApiKeyName, ModelName, ProviderName};
+use crate::core::middleware::extract_client;
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
+use crate::core::utils::{get_key_name, strip_provider_suffix};
 use crate::core::{AppError, Result};
 use crate::services::claude_converter::{
     claude_to_openai_request, convert_openai_streaming_to_claude, openai_to_claude_response,
 };
+use crate::transformer::Protocol;
 use crate::with_request_context;
 use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::Response,
     Json,
 };
 use chrono::Utc;
@@ -44,146 +51,6 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Instant;
-
-// ============================================================================
-// Authentication
-// ============================================================================
-
-/// Verify API key authentication and check rate limits for Claude API.
-fn verify_auth(headers: &HeaderMap, state: &AppState) -> Result<Option<CredentialConfig>> {
-    // Extract the provided key from Authorization header
-    // Claude API uses "x-api-key" header, but we also support "Authorization: Bearer"
-    let provided_key = headers
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .or_else(|| {
-            headers.get("authorization").and_then(|auth_header| {
-                auth_header
-                    .to_str()
-                    .ok()
-                    .and_then(|auth_str| auth_str.strip_prefix("Bearer "))
-            })
-        });
-
-    // Get credentials from DynamicConfig if available
-    let credentials = state.get_credentials();
-
-    // Check if any authentication is required
-    if credentials.is_empty() {
-        return Ok(None);
-    }
-
-    let provided_key = provided_key.ok_or(AppError::Unauthorized)?;
-
-    // Hash the provided key for comparison with stored hashes
-    let provided_key_hash = hash_key(provided_key);
-
-    // Check against credentials configuration
-    for credential_config in credentials {
-        if credential_config.enabled && credential_config.credential_key == provided_key_hash {
-            // Check rate limit for this credential using the hash
-            state
-                .rate_limiter
-                .check_rate_limit(&credential_config.credential_key)?;
-
-            tracing::debug!(
-                credential_name = %credential_config.name,
-                "Request authenticated with credential"
-            );
-            return Ok(Some(credential_config.clone()));
-        }
-    }
-
-    Err(AppError::Unauthorized)
-}
-
-/// Get the key name from an optional CredentialConfig
-fn get_key_name(key_config: &Option<CredentialConfig>) -> String {
-    key_config
-        .as_ref()
-        .map(|k| k.name.clone())
-        .unwrap_or_else(|| "anonymous".to_string())
-}
-
-/// Strip the provider suffix from model name if configured.
-fn strip_provider_suffix(model: &str, provider_suffix: Option<&str>) -> String {
-    let Some(suffix) = provider_suffix.filter(|s| !s.is_empty()) else {
-        return model.to_string();
-    };
-
-    // Check if model starts with "suffix/" without allocating
-    model
-        .strip_prefix(suffix)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .unwrap_or(model)
-        .to_string()
-}
-
-async fn read_provider_error_message(
-    response: reqwest::Response,
-    status: reqwest::StatusCode,
-) -> String {
-    let bytes = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(_) => return format!("HTTP {}", status),
-    };
-
-    if let Ok(body) = serde_json::from_slice::<Value>(&bytes) {
-        if let Some(message) = body
-            .get("error")
-            .and_then(|e| e.get("message"))
-            .and_then(|m| m.as_str())
-        {
-            return message.to_string();
-        }
-        if let Some(message) = body.get("error").and_then(|e| e.as_str()) {
-            return message.to_string();
-        }
-        if let Some(message) = body.get("message").and_then(|m| m.as_str()) {
-            return message.to_string();
-        }
-    }
-
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    if text.is_empty() {
-        format!("HTTP {}", status)
-    } else {
-        text
-    }
-}
-
-// ============================================================================
-// Error Response Builder
-// ============================================================================
-
-/// Build a Claude-formatted error response with optional extensions.
-fn build_claude_error_response(
-    status: StatusCode,
-    error_type: &str,
-    message: &str,
-    model: Option<&str>,
-    provider: Option<&str>,
-    api_key_name: Option<&str>,
-) -> Response {
-    let error = ClaudeErrorResponse::new(error_type, message);
-    let mut response = Json(error).into_response();
-    *response.status_mut() = status;
-
-    // Add extensions for middleware metrics tracking
-    if let Some(m) = model {
-        response.extensions_mut().insert(ModelName(m.to_string()));
-    }
-    if let Some(p) = provider {
-        response
-            .extensions_mut()
-            .insert(ProviderName(p.to_string()));
-    }
-    if let Some(k) = api_key_name {
-        response.extensions_mut().insert(ApiKeyName(k.to_string()));
-    }
-
-    response
-}
 
 // ============================================================================
 // Handlers
@@ -220,43 +87,15 @@ pub async fn create_message(
     Json(claude_request): Json<ClaudeMessagesRequest>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth(&headers, &state)?;
+    let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
         // Extract client from User-Agent header for metrics
         let client = extract_client(&headers);
 
-        // Extract client metadata from headers for Langfuse tracing using shared helper
-        let client_metadata = extract_client_metadata(&headers);
-        let user_agent = client_metadata.get("user_agent").cloned();
-
-        // Build tags for Langfuse using shared helper
-        let tags = build_langfuse_tags("/v1/messages", &api_key_name, user_agent.as_deref());
-
-        // Initialize Langfuse tracing
-        let langfuse = get_langfuse_service();
-        let trace_id = if let Ok(service) = langfuse.read() {
-            service.create_trace(
-                &request_id,
-                &api_key_name,
-                "/v1/messages",
-                tags,
-                client_metadata,
-            )
-        } else {
-            None
-        };
-
-        // Initialize generation data for Langfuse
-        let mut generation_data = GenerationData {
-            trace_id: trace_id.clone().unwrap_or_default(),
-            request_id: request_id.clone(),
-            credential_name: api_key_name.clone(),
-            endpoint: "/v1/messages".to_string(),
-            start_time: Utc::now(),
-            ..Default::default()
-        };
+        let (trace_id, mut generation_data) =
+            init_langfuse_trace(&request_id, &api_key_name, &headers, "/v1/messages");
 
         tracing::debug!(
             request_id = %request_id,
@@ -290,17 +129,11 @@ pub async fn create_message(
                     "Provider selection failed - no available provider for model"
                 );
                 // Record error in Langfuse
-                generation_data.is_error = true;
-                generation_data.error_message = Some(err.clone());
-                generation_data.end_time = Some(Utc::now());
-                if trace_id.is_some() {
-                    if let Ok(service) = langfuse.read() {
-                        service.trace_generation(generation_data);
-                    }
-                }
-                return Ok(build_claude_error_response(
+                fail_generation_if_sampled(&trace_id, &mut generation_data, err.clone());
+                return Ok(build_protocol_error_response(
+                    Protocol::Anthropic,
                     StatusCode::BAD_REQUEST,
-                    "invalid_request_error",
+                    ERROR_TYPE_INVALID_REQUEST,
                     &err,
                     Some(&model_label),
                     None, // No provider available
@@ -318,16 +151,12 @@ pub async fn create_message(
         generation_data.mapped_model = mapped_model.clone();
 
         // Update trace with provider info (so trace metadata includes provider)
-        if let Some(ref tid) = trace_id {
-            if let Ok(service) = langfuse.read() {
-                service.update_trace_provider(
-                    tid,
-                    &provider.name,
-                    &provider.api_base,
-                    &model_label,
-                );
-            }
-        }
+        update_trace_provider_if_sampled(
+            &trace_id,
+            &provider.name,
+            &provider.api_base,
+            &model_label,
+        );
 
         // Convert Claude request to OpenAI format
         let mut openai_request = claude_to_openai_request(
@@ -428,69 +257,63 @@ pub async fn create_message(
 
                 // Build and send request based on provider_type
                 let response = if is_anthropic {
-                    // Anthropic protocol: use x-api-key and forward anthropic-specific headers
-                    let mut req = state
-                        .http_client
-                        .post(&url)
-                        .header("x-api-key", &provider.api_key)
-                        .header("Content-Type", "application/json")
-                        .header("anthropic-version", anthropic_version);
-
-                    if let Some(beta) = anthropic_beta_header.as_deref() {
-                        req = req.header("anthropic-beta", beta);
-                    }
-
-                    req.json(&provider_request_value).send().await
+                    let request = build_upstream_request(
+                        &state.http_client,
+                        &url,
+                        &provider_request_value,
+                        UpstreamAuth::XApiKey(&provider.api_key),
+                        Some(anthropic_version),
+                        anthropic_beta_header.as_deref(),
+                    );
+                    let ctx = UpstreamContext {
+                        protocol: Protocol::Anthropic,
+                        model: Some(&model_label),
+                        provider: &provider.name,
+                        api_key_name: Some(&api_key_name),
+                        request_id: Some(&request_id),
+                    };
+                    execute_upstream_request_or_transport_error(
+                        request,
+                        &provider_service,
+                        &ctx,
+                        Some(&url),
+                        Some(&model_label),
+                        "HTTP request failed to provider",
+                    )
+                    .await
                 } else {
-                    // OpenAI protocol: use Authorization Bearer
-                    state
-                        .http_client
-                        .post(&url)
-                        .header("Authorization", format!("Bearer {}", provider.api_key))
-                        .header("Content-Type", "application/json")
-                        .json(&openai_request)
-                        .send()
-                        .await
+                    let request = build_upstream_request(
+                        &state.http_client,
+                        &url,
+                        &openai_request,
+                        UpstreamAuth::Bearer(&provider.api_key),
+                        None,
+                        None,
+                    );
+                    let ctx = UpstreamContext {
+                        protocol: Protocol::Anthropic,
+                        model: Some(&model_label),
+                        provider: &provider.name,
+                        api_key_name: Some(&api_key_name),
+                        request_id: Some(&request_id),
+                    };
+                    execute_upstream_request_or_transport_error(
+                        request,
+                        &provider_service,
+                        &ctx,
+                        Some(&url),
+                        Some(&model_label),
+                        "HTTP request failed to provider",
+                    )
+                    .await
                 };
 
                 let response = match response {
                     Ok(resp) => resp,
-                    Err(e) => {
-                        tracing::error!(
-                            request_id = %request_id,
-                            provider = %provider.name,
-                            url = %url,
-                            model = %model_label,
-                            error = %e,
-                            is_timeout = e.is_timeout(),
-                            is_connect = e.is_connect(),
-                            "HTTP request failed to provider"
-                        );
+                    Err((error_message, error_response)) => {
+                        fail_generation_if_sampled(&trace_id, &mut generation_data, error_message);
 
-                        // Record error in Langfuse
-                        generation_data.is_error = true;
-                        generation_data.error_message =
-                            Some(format!("Upstream request failed: {}", e));
-                        generation_data.end_time = Some(Utc::now());
-                        if trace_id.is_some() {
-                            if let Ok(service) = langfuse.read() {
-                                service.trace_generation(generation_data);
-                            }
-                        }
-
-                        let (status, error_type) = if e.is_timeout() {
-                            (StatusCode::GATEWAY_TIMEOUT, "timeout_error")
-                        } else {
-                            (StatusCode::BAD_GATEWAY, "api_error")
-                        };
-                        return Ok(build_claude_error_response(
-                            status,
-                            error_type,
-                            &format!("Upstream request failed: {}", e),
-                            Some(&model_label),
-                            Some(&provider.name),
-                            Some(&api_key_name),
-                        ));
+                        return Ok(error_response);
                     }
                 };
 
@@ -505,35 +328,31 @@ pub async fn create_message(
                 );
 
                 // Check if backend API returned an error status code
-                if status.is_client_error() || status.is_server_error() {
-                    let error_message = read_provider_error_message(response, status).await;
+                let ctx = UpstreamContext {
+                    protocol: Protocol::Anthropic,
+                    model: Some(&model_label),
+                    provider: &provider.name,
+                    api_key_name: Some(&api_key_name),
+                    request_id: Some(&request_id),
+                };
+                let response = match split_upstream_status_error_with_log(
+                    response,
+                    StatusErrorResponseMode::Protocol,
+                    &ctx,
+                    ERROR_TYPE_API,
+                    "Backend API returned error status",
+                    false,
+                    false,
+                )
+                .await
+                {
+                    Ok(resp) => resp,
+                    Err((parsed, error_response)) => {
+                        fail_generation_if_sampled(&trace_id, &mut generation_data, parsed.message);
 
-                    tracing::error!(
-                        request_id = %request_id,
-                        provider = %provider.name,
-                        status = %status,
-                        "Backend API returned error status"
-                    );
-
-                    generation_data.is_error = true;
-                    generation_data.error_message = Some(error_message.clone());
-                    generation_data.end_time = Some(Utc::now());
-                    if trace_id.is_some() {
-                        if let Ok(service) = langfuse.read() {
-                            service.trace_generation(generation_data);
-                        }
+                        return Ok(error_response);
                     }
-
-                    return Ok(build_claude_error_response(
-                        StatusCode::from_u16(status.as_u16())
-                            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                        "api_error",
-                        &error_message,
-                        Some(&model_label),
-                        Some(&provider.name),
-                        Some(&api_key_name),
-                    ));
-                }
+                };
 
                 if claude_request.stream {
                     // Calculate input tokens for fallback (only used if provider doesn't return usage)
@@ -735,18 +554,12 @@ async fn handle_streaming_response(
                                 }
                             } else if event.starts_with("event: message_stop") {
                                 // Stream is ending, record Langfuse generation
-                                if trace_id.is_some() {
-                                    gen_data.output_content = Some(accumulated_output.clone());
-                                    gen_data.finish_reason = finish_reason.clone();
-                                    gen_data.prompt_tokens = usage_input_tokens;
-                                    gen_data.completion_tokens = usage_output_tokens;
-                                    gen_data.total_tokens =
-                                        usage_input_tokens + usage_output_tokens;
-                                    gen_data.end_time = Some(Utc::now());
-                                    if let Ok(service) = get_langfuse_service().read() {
-                                        service.trace_generation(gen_data.clone());
-                                    }
-                                }
+                                gen_data.output_content = Some(accumulated_output.clone());
+                                gen_data.finish_reason = finish_reason.clone();
+                                gen_data.prompt_tokens = usage_input_tokens;
+                                gen_data.completion_tokens = usage_output_tokens;
+                                gen_data.total_tokens = usage_input_tokens + usage_output_tokens;
+                                finish_generation_if_sampled(&trace_id, &mut gen_data);
 
                                 // Record stream metrics using unified function
                                 let stats = StreamStats {
@@ -831,15 +644,12 @@ async fn handle_streaming_response(
         .unwrap();
 
     // Add extensions for middleware metrics tracking
-    response
-        .extensions_mut()
-        .insert(ModelName(model_label_clone));
-    response
-        .extensions_mut()
-        .insert(ProviderName(provider_name_clone));
-    response
-        .extensions_mut()
-        .insert(ApiKeyName(api_key_name_clone));
+    attach_response_extensions(
+        &mut response,
+        Some(&model_label_clone),
+        Some(&provider_name_clone),
+        Some(&api_key_name_clone),
+    );
 
     Ok(response)
 }
@@ -858,30 +668,30 @@ async fn handle_non_streaming_response(
     request_id: String,
     _request_payload: serde_json::Value,
 ) -> Result<Response> {
-    let status = response.status();
-
-    let response_data: serde_json::Value = match response.json().await {
-        Ok(data) => {
-            // Log provider response to JSONL (the raw OpenAI-format response from provider)
-            log_provider_response(&request_id, &provider_name, status.as_u16(), None, &data);
-            data
-        }
-        Err(e) => {
-            tracing::error!(
-                provider = %provider_name,
-                error = %e,
-                "Failed to parse provider response JSON"
-            );
-            return Ok(build_claude_error_response(
-                StatusCode::BAD_GATEWAY,
-                "api_error",
-                &format!("Invalid JSON from provider: {}", e),
-                Some(&model_label),
-                Some(&provider_name),
-                Some(&api_key_name),
-            ));
-        }
-    };
+    let (status, response_data): (reqwest::StatusCode, serde_json::Value) =
+        match parse_upstream_json_or_error_with_log(
+            response,
+            &UpstreamContext {
+                protocol: Protocol::Anthropic,
+                model: Some(&model_label),
+                provider: &provider_name,
+                api_key_name: Some(&api_key_name),
+                request_id: Some(&request_id),
+            },
+            "Failed to parse provider response JSON",
+        )
+        .await
+        {
+            Ok((status, data)) => {
+                // Log provider response to JSONL (the raw OpenAI-format response from provider)
+                log_provider_response(&request_id, &provider_name, status.as_u16(), None, &data);
+                (status, data)
+            }
+            Err((error_message, error_response)) => {
+                fail_generation_if_sampled(&trace_id, &mut generation_data, error_message);
+                return Ok(error_response);
+            }
+        };
 
     // Convert OpenAI response to Claude format
     let claude_response = match openai_to_claude_response(&response_data, &original_model) {
@@ -892,9 +702,10 @@ async fn handle_non_streaming_response(
                 error = %e,
                 "Failed to convert OpenAI response to Claude format"
             );
-            return Ok(build_claude_error_response(
+            return Ok(build_protocol_error_response(
+                Protocol::Anthropic,
                 StatusCode::BAD_GATEWAY,
-                "api_error",
+                ERROR_TYPE_API,
                 &format!("Failed to convert response: {}", e),
                 Some(&model_label),
                 Some(&provider_name),
@@ -913,58 +724,28 @@ async fn handle_non_streaming_response(
             generation_data.completion_tokens = completion_tokens as u32;
             generation_data.total_tokens = (prompt_tokens + completion_tokens) as u32;
 
-            // Record token metrics
-            let metrics = get_metrics();
-            metrics
-                .token_usage
-                .with_label_values(&[
-                    &model_label,
-                    &provider_name,
-                    "prompt",
-                    &api_key_name,
-                    &client,
-                ])
-                .inc_by(prompt_tokens);
-            metrics
-                .token_usage
-                .with_label_values(&[
-                    &model_label,
-                    &provider_name,
-                    "completion",
-                    &api_key_name,
-                    &client,
-                ])
-                .inc_by(completion_tokens);
-            metrics
-                .token_usage
-                .with_label_values(&[
-                    &model_label,
-                    &provider_name,
-                    "total",
-                    &api_key_name,
-                    &client,
-                ])
-                .inc_by(prompt_tokens + completion_tokens);
+            record_token_metrics(
+                prompt_tokens,
+                completion_tokens,
+                &model_label,
+                &provider_name,
+                &api_key_name,
+                &client,
+            );
         }
     }
 
-    // Record successful generation in Langfuse
-    generation_data.end_time = Some(Utc::now());
-    if trace_id.is_some() {
-        if let Ok(service) = get_langfuse_service().read() {
-            service.trace_generation(generation_data);
-        }
-    }
-
-    // Log response to JSONL file (non-streaming)
-    log_response(
+    let claude_response_value = serde_json::to_value(&claude_response).unwrap_or_default();
+    let response = finalize_non_streaming_response(
+        trace_id.as_deref(),
+        &mut generation_data,
         &request_id,
         status.as_u16(),
-        None,
-        &serde_json::to_value(&claude_response).unwrap_or_default(),
+        claude_response_value,
+        &model_label,
+        &provider_name,
+        &api_key_name,
     );
-
-    // Note: Request count metrics are recorded by middleware via response extensions
 
     tracing::debug!(
         model = %model_label,
@@ -973,13 +754,6 @@ async fn handle_non_streaming_response(
         request_id = %request_id,
         "Claude non-streaming response completed"
     );
-
-    let mut response = Json(claude_response).into_response();
-    response.extensions_mut().insert(ModelName(model_label));
-    response
-        .extensions_mut()
-        .insert(ProviderName(provider_name));
-    response.extensions_mut().insert(ApiKeyName(api_key_name));
 
     Ok(response)
 }
@@ -1009,7 +783,7 @@ pub async fn count_tokens(
     Json(claude_request): Json<ClaudeTokenCountRequest>,
 ) -> Result<Json<ClaudeTokenCountResponse>> {
     let request_id = generate_request_id();
-    let _key_config = verify_auth(&headers, &state)?;
+    let _key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
@@ -1180,18 +954,28 @@ mod tests {
     }
 
     #[test]
-    fn test_build_claude_error_response() {
-        let response = build_claude_error_response(
+    fn test_build_protocol_error_response() {
+        let response = build_protocol_error_response(
+            Protocol::Anthropic,
             StatusCode::BAD_REQUEST,
-            "invalid_request_error",
+            ERROR_TYPE_INVALID_REQUEST,
             "Test error",
             Some("test-model"),
             Some("test-provider"),
             Some("test-key"),
         );
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(response.extensions().get::<ModelName>().is_some());
-        assert!(response.extensions().get::<ProviderName>().is_some());
-        assert!(response.extensions().get::<ApiKeyName>().is_some());
+        assert!(response
+            .extensions()
+            .get::<crate::core::middleware::ModelName>()
+            .is_some());
+        assert!(response
+            .extensions()
+            .get::<crate::core::middleware::ProviderName>()
+            .is_some());
+        assert!(response
+            .extensions()
+            .get::<crate::core::middleware::ApiKeyName>()
+            .is_some());
     }
 }

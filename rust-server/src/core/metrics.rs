@@ -26,6 +26,15 @@ pub struct Metrics {
     /// Provider health status (1=healthy, 0=unhealthy)
     pub provider_health: GaugeVec,
 
+    /// Runtime effective weight used for provider selection
+    pub provider_effective_weight: GaugeVec,
+
+    /// Provider circuit state flags (closed/open/half_open)
+    pub provider_circuit_state: GaugeVec,
+
+    /// Total provider ejections by reason
+    pub provider_ejections_total: IntCounterVec,
+
     /// Provider response latency histogram in seconds
     pub provider_latency: HistogramVec,
 
@@ -122,6 +131,27 @@ pub fn init_metrics() -> &'static Metrics {
         )
         .expect("Failed to register provider_health metric");
 
+        let provider_effective_weight = register_gauge_vec!(
+            "llm_proxy_provider_effective_weight",
+            "Runtime effective weight used for provider selection",
+            &["provider"]
+        )
+        .expect("Failed to register provider_effective_weight metric");
+
+        let provider_circuit_state = register_gauge_vec!(
+            "llm_proxy_provider_circuit_state",
+            "Provider circuit state flag (1 for active state, 0 otherwise)",
+            &["provider", "state"]
+        )
+        .expect("Failed to register provider_circuit_state metric");
+
+        let provider_ejections_total = register_int_counter_vec!(
+            "llm_proxy_provider_ejections_total",
+            "Total number of provider ejections by reason",
+            &["provider", "reason"]
+        )
+        .expect("Failed to register provider_ejections_total metric");
+
         let provider_latency = register_histogram_vec!(
             "llm_proxy_provider_latency_seconds",
             "Provider response latency in seconds",
@@ -179,6 +209,9 @@ pub fn init_metrics() -> &'static Metrics {
             active_requests,
             token_usage,
             provider_health,
+            provider_effective_weight,
+            provider_circuit_state,
+            provider_ejections_total,
             provider_latency,
             ttft,
             tokens_per_second,
@@ -202,6 +235,7 @@ pub fn get_metrics() -> &'static Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::error_types::ProviderEjectionReason;
 
     #[test]
     fn test_metrics_initialization() {
@@ -386,6 +420,205 @@ mod tests {
         let health = metrics.provider_health.with_label_values(&["openai"]).get();
 
         assert_eq!(health, 0.0);
+    }
+
+    #[test]
+    fn test_provider_effective_weight_metric() {
+        let metrics = init_metrics();
+
+        metrics
+            .provider_effective_weight
+            .with_label_values(&["openai"])
+            .set(0.42);
+
+        let value = metrics
+            .provider_effective_weight
+            .with_label_values(&["openai"])
+            .get();
+
+        assert_eq!(value, 0.42);
+    }
+
+    #[test]
+    fn test_provider_circuit_state_metric() {
+        let metrics = init_metrics();
+
+        metrics
+            .provider_circuit_state
+            .with_label_values(&["openai", "open"])
+            .set(1.0);
+
+        let value = metrics
+            .provider_circuit_state
+            .with_label_values(&["openai", "open"])
+            .get();
+
+        assert_eq!(value, 1.0);
+    }
+
+    #[test]
+    fn test_provider_circuit_state_one_hot() {
+        let metrics = init_metrics();
+
+        // Simulate circuit state transition: only one state should be 1.0 at a time
+        let provider = "test-provider-onehot";
+        for state in ["closed", "open", "half_open"] {
+            metrics
+                .provider_circuit_state
+                .with_label_values(&[provider, state])
+                .set(0.0);
+        }
+
+        // Set "open" as active
+        metrics
+            .provider_circuit_state
+            .with_label_values(&[provider, "open"])
+            .set(1.0);
+
+        assert_eq!(
+            metrics
+                .provider_circuit_state
+                .with_label_values(&[provider, "closed"])
+                .get(),
+            0.0
+        );
+        assert_eq!(
+            metrics
+                .provider_circuit_state
+                .with_label_values(&[provider, "open"])
+                .get(),
+            1.0
+        );
+        assert_eq!(
+            metrics
+                .provider_circuit_state
+                .with_label_values(&[provider, "half_open"])
+                .get(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_provider_effective_weight_changes() {
+        let metrics = init_metrics();
+        let provider = "test-provider-weight-changes";
+
+        metrics
+            .provider_effective_weight
+            .with_label_values(&[provider])
+            .set(1.0);
+        assert_eq!(
+            metrics
+                .provider_effective_weight
+                .with_label_values(&[provider])
+                .get(),
+            1.0
+        );
+
+        // Simulate degradation
+        metrics
+            .provider_effective_weight
+            .with_label_values(&[provider])
+            .set(0.5);
+        assert_eq!(
+            metrics
+                .provider_effective_weight
+                .with_label_values(&[provider])
+                .get(),
+            0.5
+        );
+
+        // Simulate full open (zero weight)
+        metrics
+            .provider_effective_weight
+            .with_label_values(&[provider])
+            .set(0.0);
+        assert_eq!(
+            metrics
+                .provider_effective_weight
+                .with_label_values(&[provider])
+                .get(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_provider_ejections_multiple_reasons() {
+        let metrics = init_metrics();
+        let provider = "test-provider-multi-eject";
+
+        let rate_limit_before = metrics
+            .provider_ejections_total
+            .with_label_values(&[provider, ProviderEjectionReason::RateLimit429.as_str()])
+            .get();
+        let server_before = metrics
+            .provider_ejections_total
+            .with_label_values(&[provider, ProviderEjectionReason::Server5xx.as_str()])
+            .get();
+        let transport_before = metrics
+            .provider_ejections_total
+            .with_label_values(&[provider, ProviderEjectionReason::Transport.as_str()])
+            .get();
+
+        metrics
+            .provider_ejections_total
+            .with_label_values(&[provider, ProviderEjectionReason::RateLimit429.as_str()])
+            .inc();
+        metrics
+            .provider_ejections_total
+            .with_label_values(&[provider, ProviderEjectionReason::Server5xx.as_str()])
+            .inc_by(2);
+        metrics
+            .provider_ejections_total
+            .with_label_values(&[provider, ProviderEjectionReason::Transport.as_str()])
+            .inc_by(3);
+
+        assert_eq!(
+            metrics
+                .provider_ejections_total
+                .with_label_values(&[provider, ProviderEjectionReason::RateLimit429.as_str()])
+                .get()
+                - rate_limit_before,
+            1
+        );
+        assert_eq!(
+            metrics
+                .provider_ejections_total
+                .with_label_values(&[provider, ProviderEjectionReason::Server5xx.as_str()])
+                .get()
+                - server_before,
+            2
+        );
+        assert_eq!(
+            metrics
+                .provider_ejections_total
+                .with_label_values(&[provider, ProviderEjectionReason::Transport.as_str()])
+                .get()
+                - transport_before,
+            3
+        );
+    }
+
+    #[test]
+    fn test_provider_ejections_total_metric() {
+        let metrics = init_metrics();
+
+        let initial = metrics
+            .provider_ejections_total
+            .with_label_values(&["openai", ProviderEjectionReason::RateLimit429.as_str()])
+            .get();
+
+        metrics
+            .provider_ejections_total
+            .with_label_values(&["openai", ProviderEjectionReason::RateLimit429.as_str()])
+            .inc();
+
+        let after = metrics
+            .provider_ejections_total
+            .with_label_values(&["openai", ProviderEjectionReason::RateLimit429.as_str()])
+            .get();
+
+        assert_eq!(after, initial + 1);
     }
 
     #[test]
