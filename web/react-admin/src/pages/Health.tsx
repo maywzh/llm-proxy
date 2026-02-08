@@ -75,30 +75,35 @@ const Health: React.FC = () => {
     setError(null);
 
     try {
-      // If no health data yet, fetch providers first
-      let providerIds: number[];
-      if (!healthData) {
-        const providersResponse = await apiClient.listProviders();
-        providerIds = providersResponse.providers.map(p => p.id);
-        // Initialize health data with empty providers
-        const initialProviders: ProviderHealthStatus[] =
-          providersResponse.providers.map(p => ({
-            provider_id: p.id,
-            provider_key: p.provider_key,
-            status: 'unknown' as HealthStatus,
-            models: [],
-            avg_response_time_ms: null,
-            checked_at: new Date().toISOString(),
-          }));
-        setHealthData({
-          providers: initialProviders,
-          total_providers: initialProviders.length,
-          healthy_providers: 0,
-          unhealthy_providers: 0,
+      // Always fetch fresh provider list to pick up newly added providers
+      const providersResponse = await apiClient.listProviders();
+      const providerIds = providersResponse.providers.map(p => p.id);
+      // Initialize health data, preserving existing results for known providers
+      const initialProviders: ProviderHealthStatus[] =
+        providersResponse.providers.map(p => {
+          const existing = healthData?.providers.find(
+            ep => ep.provider_id === p.id
+          );
+          return (
+            existing || {
+              provider_id: p.id,
+              provider_key: p.provider_key,
+              status: 'unknown' as HealthStatus,
+              models: [],
+              avg_response_time_ms: null,
+              checked_at: new Date().toISOString(),
+            }
+          );
         });
-      } else {
-        providerIds = healthData.providers.map(p => p.provider_id);
-      }
+      setHealthData({
+        providers: initialProviders,
+        total_providers: initialProviders.length,
+        healthy_providers: initialProviders.filter(p => p.status === 'healthy')
+          .length,
+        unhealthy_providers: initialProviders.filter(
+          p => p.status === 'unhealthy'
+        ).length,
+      });
 
       // Check all providers in parallel, updating each as results come in
       const checkPromises = providerIds.map(async id => {
@@ -178,7 +183,7 @@ const Health: React.FC = () => {
     } finally {
       setChecking(false);
     }
-  }, [apiClient, healthData]);
+  }, [apiClient]);
 
   const handleCheckProviderHealth = useCallback(
     async (providerId: number) => {
