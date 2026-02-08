@@ -17,68 +17,40 @@ use axum::{
     body::Body,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::Response,
     Json,
 };
-use chrono::Utc;
 use futures::StreamExt;
-use serde_json::{json, Value};
+use serde_json::Value;
 
+use crate::api::auth::{verify_auth, AuthFormat};
 use crate::api::disconnect::DisconnectStream;
-use crate::api::proxy::{build_gcp_vertex_url, verify_auth_multi_format, ProxyState};
+use crate::api::proxy::ProxyState;
 use crate::api::rectifier::sanitize_provider_payload;
+use crate::api::upstream::{
+    attach_response_extensions, build_gcp_vertex_url, build_protocol_error_response,
+    build_upstream_request, execute_upstream_request_or_transport_error,
+    finalize_non_streaming_response, parse_upstream_json_or_error_with_log, record_token_metrics,
+    split_upstream_status_error_with_log, StatusErrorResponseMode, UpstreamAuth, UpstreamContext,
+};
+use crate::core::error_types::{ERROR_TYPE_API, ERROR_TYPE_INVALID_REQUEST};
 use crate::core::header_policy::sanitize_anthropic_beta_header;
 use crate::core::jsonl_logger::{
     log_provider_request, log_provider_response, log_provider_streaming_response, log_request,
-    log_response, log_streaming_response,
+    log_streaming_response,
 };
-use crate::core::langfuse::{get_langfuse_service, init_langfuse_trace, GenerationData};
+use crate::core::langfuse::{
+    fail_generation_if_sampled, finish_generation_if_sampled, init_langfuse_trace, GenerationData,
+};
 use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{extract_client, ApiKeyName, ModelName, ProviderName};
+use crate::core::middleware::extract_client;
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::utils::get_key_name;
 use crate::core::Result;
 use crate::core::StreamCancelHandle;
+use crate::transformer::Protocol;
 use crate::with_request_context;
-
-// ============================================================================
-// Error Response Builder
-// ============================================================================
-
-fn build_vertex_error_response(
-    status: StatusCode,
-    error_type: &str,
-    message: &str,
-    model: Option<&str>,
-    provider: Option<&str>,
-    api_key_name: Option<&str>,
-) -> Response {
-    let body = json!({
-        "type": "error",
-        "error": {
-            "type": error_type,
-            "message": message
-        }
-    });
-
-    let mut response = Json(body).into_response();
-    *response.status_mut() = status;
-
-    if let Some(m) = model {
-        response.extensions_mut().insert(ModelName(m.to_string()));
-    }
-    if let Some(p) = provider {
-        response
-            .extensions_mut()
-            .insert(ProviderName(p.to_string()));
-    }
-    if let Some(k) = api_key_name {
-        response.extensions_mut().insert(ApiKeyName(k.to_string()));
-    }
-
-    response
-}
 
 // ============================================================================
 // Path Parsing
@@ -120,16 +92,17 @@ pub async fn gcp_vertex_proxy(
     Json(mut payload): Json<Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+    let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
     let api_key_name = get_key_name(&key_config);
 
     // Parse model and action from path
     let (model, action) = match parse_model_and_action(&model_and_action) {
         Some((m, a)) => (m, a),
         None => {
-            return Ok(build_vertex_error_response(
+            return Ok(build_protocol_error_response(
+                Protocol::GcpVertex,
                 StatusCode::BAD_REQUEST,
-                "invalid_request_error",
+                ERROR_TYPE_INVALID_REQUEST,
                 &format!(
                     "Invalid model:action format. Expected 'model:rawPredict' or 'model:streamRawPredict', got '{}'",
                     model_and_action
@@ -178,9 +151,10 @@ pub async fn gcp_vertex_proxy(
                     model = %model,
                     "Provider selection failed"
                 );
-                return Ok(build_vertex_error_response(
+                return Ok(build_protocol_error_response(
+                    Protocol::GcpVertex,
                     StatusCode::BAD_REQUEST,
-                    "invalid_request_error",
+                    ERROR_TYPE_INVALID_REQUEST,
                     &err,
                     Some(&model),
                     None,
@@ -197,14 +171,33 @@ pub async fn gcp_vertex_proxy(
         generation_data.mapped_model = mapped_model.clone();
 
         // Build the upstream URL using the shared helper function
-        let upstream_url = build_gcp_vertex_url(
+        let upstream_url = match build_gcp_vertex_url(
             &provider.api_base,
             &project,
             &location,
             &publisher,
             &mapped_model,
             is_streaming,
-        );
+        ) {
+            Ok(url) => url,
+            Err(err) => {
+                tracing::error!(
+                    request_id = %request_id,
+                    provider = %provider.name,
+                    error = %err,
+                    "GCP Vertex URL validation failed"
+                );
+                return Ok(build_protocol_error_response(
+                    Protocol::GcpVertex,
+                    StatusCode::BAD_REQUEST,
+                    ERROR_TYPE_INVALID_REQUEST,
+                    &err,
+                    Some(&model),
+                    Some(&provider.name),
+                    Some(&api_key_name),
+                ));
+            }
+        };
 
         // Log request
         log_request(&request_id, &endpoint, &provider.name, &payload);
@@ -242,94 +235,58 @@ pub async fn gcp_vertex_proxy(
                     headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
                 );
 
-                let mut req = state
-                    .app_state
-                    .http_client
-                    .post(&upstream_url)
-                    .header("Authorization", format!("Bearer {}", provider.api_key))
-                    .header("Content-Type", "application/json")
-                    .header("anthropic-version", anthropic_version);
+                let request = build_upstream_request(
+                    &state.app_state.http_client,
+                    &upstream_url,
+                    &payload,
+                    UpstreamAuth::Bearer(&provider.api_key),
+                    Some(anthropic_version),
+                    anthropic_beta_header.as_deref(),
+                );
 
-                if let Some(beta) = anthropic_beta_header.as_deref() {
-                    req = req.header("anthropic-beta", beta);
-                }
+                let upstream_ctx = UpstreamContext {
+                    protocol: Protocol::GcpVertex,
+                    model: Some(&model),
+                    provider: &provider.name,
+                    api_key_name: Some(&api_key_name),
+                    request_id: Some(&request_id),
+                };
 
-                let response = match req.json(&payload).send().await {
+                let response = match execute_upstream_request_or_transport_error(
+                    request,
+                    &provider_service,
+                    &upstream_ctx,
+                    None,
+                    Some(&model),
+                    "HTTP request failed",
+                )
+                .await
+                {
                     Ok(resp) => resp,
-                    Err(e) => {
-                        tracing::error!(
-                            request_id = %request_id,
-                            provider = %provider.name,
-                            error = %e,
-                            "HTTP request failed"
-                        );
-                        let (status, error_type) = if e.is_timeout() {
-                            (StatusCode::GATEWAY_TIMEOUT, "timeout_error")
-                        } else {
-                            (StatusCode::BAD_GATEWAY, "api_error")
-                        };
-                        return Ok(build_vertex_error_response(
-                            status,
-                            error_type,
-                            &format!("Upstream request failed: {}", e),
-                            Some(&model),
-                            Some(&provider.name),
-                            Some(&api_key_name),
-                        ));
+                    Err((error_message, error_response)) => {
+                        fail_generation_if_sampled(&trace_id, &mut generation_data, error_message);
+                        return Ok(error_response);
                     }
                 };
 
-                let status = response.status();
-
                 // Handle error responses
-                if status.is_client_error() || status.is_server_error() {
-                    let error_body = match response.bytes().await {
-                        Ok(bytes) => {
-                            let text = String::from_utf8_lossy(&bytes).to_string();
-                            serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| {
-                                json!({
-                                    "type": "error",
-                                    "error": {
-                                        "type": "api_error",
-                                        "message": text
-                                    }
-                                })
-                            })
-                        }
-                        Err(_) => json!({
-                            "type": "error",
-                            "error": {
-                                "type": "api_error",
-                                "message": format!("HTTP {}", status)
-                            }
-                        }),
-                    };
-
-                    let error_message = error_body
-                        .get("error")
-                        .and_then(|e| e.get("message"))
-                        .and_then(|m| m.as_str())
-                        .unwrap_or(&format!("HTTP {}", status))
-                        .to_string();
-
-                    tracing::error!(
-                        request_id = %request_id,
-                        provider = %provider.name,
-                        status = %status,
-                        error = %error_message,
-                        "GCP Vertex AI returned error"
-                    );
-
-                    return Ok(build_vertex_error_response(
-                        StatusCode::from_u16(status.as_u16())
-                            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                        "api_error",
-                        &error_message,
-                        Some(&model),
-                        Some(&provider.name),
-                        Some(&api_key_name),
-                    ));
-                }
+                let response = match split_upstream_status_error_with_log(
+                    response,
+                    StatusErrorResponseMode::Protocol,
+                    &upstream_ctx,
+                    ERROR_TYPE_API,
+                    "GCP Vertex AI returned error",
+                    true,
+                    false,
+                )
+                .await
+                {
+                    Ok(resp) => resp,
+                    Err((parsed, error_response)) => {
+                        fail_generation_if_sampled(&trace_id, &mut generation_data, parsed.message);
+                        return Ok(error_response);
+                    }
+                };
 
                 if is_streaming {
                     handle_streaming_response(
@@ -587,10 +544,7 @@ async fn handle_streaming_response(
                     state.generation_data.prompt_tokens = state.input_tokens;
                     state.generation_data.completion_tokens = state.output_tokens;
                     state.generation_data.total_tokens = state.input_tokens + state.output_tokens;
-                    state.generation_data.end_time = Some(Utc::now());
-                    if let Ok(service) = get_langfuse_service().read() {
-                        service.trace_generation(state.generation_data.clone());
-                    }
+                    finish_generation_if_sampled(&state.trace_id, &mut state.generation_data);
                 }
 
                 // Log streaming response
@@ -630,9 +584,12 @@ async fn handle_streaming_response(
         .body(body)
         .unwrap();
 
-    resp.extensions_mut().insert(ModelName(model));
-    resp.extensions_mut().insert(ProviderName(provider_name));
-    resp.extensions_mut().insert(ApiKeyName(api_key_name));
+    attach_response_extensions(
+        &mut resp,
+        Some(&model),
+        Some(&provider_name),
+        Some(&api_key_name),
+    );
 
     Ok(resp)
 }
@@ -648,28 +605,28 @@ async fn handle_non_streaming_response(
     trace_id: Option<String>,
     request_id: String,
 ) -> Result<Response> {
-    let status = response.status();
     let mut generation_data = generation_data;
 
-    let response_data: Value = match response.json().await {
-        Ok(data) => data,
-        Err(e) => {
-            tracing::error!(
-                request_id = %request_id,
-                provider = %provider_name,
-                error = %e,
-                "Failed to parse response JSON"
-            );
-            return Ok(build_vertex_error_response(
-                StatusCode::BAD_GATEWAY,
-                "api_error",
-                &format!("Invalid JSON from provider: {}", e),
-                Some(&model),
-                Some(&provider_name),
-                Some(&api_key_name),
-            ));
-        }
-    };
+    let (status, response_data): (reqwest::StatusCode, Value) =
+        match parse_upstream_json_or_error_with_log(
+            response,
+            &UpstreamContext {
+                protocol: Protocol::GcpVertex,
+                model: Some(&model),
+                provider: &provider_name,
+                api_key_name: Some(&api_key_name),
+                request_id: Some(&request_id),
+            },
+            "Failed to parse response JSON",
+        )
+        .await
+        {
+            Ok((status, data)) => (status, data),
+            Err((error_message, error_response)) => {
+                fail_generation_if_sampled(&trace_id, &mut generation_data, error_message);
+                return Ok(error_response);
+            }
+        };
 
     // Log provider response
     log_provider_response(
@@ -690,39 +647,16 @@ async fn handle_non_streaming_response(
             generation_data.completion_tokens = output as u32;
             generation_data.total_tokens = (input + output) as u32;
 
-            // Record token metrics
-            let metrics = get_metrics();
-            metrics
-                .token_usage
-                .with_label_values(&[&model, &provider_name, "prompt", &api_key_name, "unknown"])
-                .inc_by(input);
-            metrics
-                .token_usage
-                .with_label_values(&[
-                    &model,
-                    &provider_name,
-                    "completion",
-                    &api_key_name,
-                    "unknown",
-                ])
-                .inc_by(output);
-            metrics
-                .token_usage
-                .with_label_values(&[&model, &provider_name, "total", &api_key_name, "unknown"])
-                .inc_by(input + output);
+            record_token_metrics(
+                input,
+                output,
+                &model,
+                &provider_name,
+                &api_key_name,
+                "unknown",
+            );
         }
     }
-
-    // Record Langfuse
-    generation_data.end_time = Some(Utc::now());
-    if trace_id.is_some() {
-        if let Ok(service) = get_langfuse_service().read() {
-            service.trace_generation(generation_data);
-        }
-    }
-
-    // Log response
-    log_response(&request_id, status.as_u16(), None, &response_data);
 
     tracing::debug!(
         request_id = %request_id,
@@ -731,12 +665,16 @@ async fn handle_non_streaming_response(
         "GCP Vertex AI non-streaming response completed"
     );
 
-    let mut resp = Json(response_data).into_response();
-    resp.extensions_mut().insert(ModelName(model));
-    resp.extensions_mut().insert(ProviderName(provider_name));
-    resp.extensions_mut().insert(ApiKeyName(api_key_name));
-
-    Ok(resp)
+    Ok(finalize_non_streaming_response(
+        trace_id.as_deref(),
+        &mut generation_data,
+        &request_id,
+        status.as_u16(),
+        response_data,
+        &model,
+        &provider_name,
+        &api_key_name,
+    ))
 }
 
 // ============================================================================

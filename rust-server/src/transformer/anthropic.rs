@@ -504,6 +504,54 @@ impl AnthropicTransformer {
         AnthropicMessage { role, content }
     }
 
+    /// Check if an AnthropicContent contains only ToolResult blocks.
+    fn is_only_tool_results(content: &AnthropicContent) -> bool {
+        match content {
+            AnthropicContent::Text(_) => false,
+            AnthropicContent::Blocks(blocks) => {
+                !blocks.is_empty()
+                    && blocks
+                        .iter()
+                        .all(|b| matches!(b, AnthropicContentBlock::ToolResult { .. }))
+            }
+        }
+    }
+
+    /// Consolidate consecutive user messages that contain only tool_result blocks
+    /// into a single user message. Anthropic's API requires ALL tool_result blocks
+    /// for a given assistant message to be in a single user message immediately
+    /// following it.
+    fn consolidate_tool_result_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicMessage> {
+        let mut result: Vec<AnthropicMessage> = Vec::with_capacity(messages.len());
+
+        for msg in messages {
+            if msg.role == "user" && Self::is_only_tool_results(&msg.content) {
+                // Check if the previous message is also a user message with only tool_results
+                let should_merge = result
+                    .last()
+                    .map(|prev| prev.role == "user" && Self::is_only_tool_results(&prev.content))
+                    .unwrap_or(false);
+
+                if should_merge {
+                    // Merge current tool_result blocks into the previous message
+                    if let Some(prev) = result.last_mut() {
+                        if let AnthropicContent::Blocks(ref mut prev_blocks) = prev.content {
+                            if let AnthropicContent::Blocks(new_blocks) = msg.content {
+                                prev_blocks.extend(new_blocks);
+                            }
+                        }
+                    }
+                } else {
+                    result.push(msg);
+                }
+            } else {
+                result.push(msg);
+            }
+        }
+
+        result
+    }
+
     /// Check if Anthropic content is empty (empty string or empty blocks).
     fn is_empty_content(content: &AnthropicContent) -> bool {
         match content {
@@ -622,6 +670,13 @@ impl Transformer for AnthropicTransformer {
             .iter()
             .map(Self::unified_to_message)
             .collect();
+
+        // Consolidate consecutive user messages with only tool_result blocks.
+        // This is needed when OpenAI-format clients send multiple parallel tool calls,
+        // each producing a separate role:"tool" message that becomes a separate
+        // role:"user" message with a single tool_result block. Anthropic requires
+        // all tool_result blocks to be in a single user message.
+        messages = Self::consolidate_tool_result_messages(messages);
 
         // Anthropic API requires all messages to have non-empty content,
         // except for the optional final assistant message (prefill).
@@ -1733,5 +1788,448 @@ mod tests {
         assert_eq!(content2.len(), 1);
         assert_eq!(content2[0]["type"], "tool_result");
         assert_eq!(content2[0]["tool_use_id"], "call_1");
+    }
+
+    // ========================================================================
+    // Tool Result Consolidation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_consolidate_tool_result_messages_multiple_parallel() {
+        // 4 separate user messages with tool_results should be consolidated into 1
+        let messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: json!("result 1"),
+                    is_error: None,
+                }]),
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_2".to_string(),
+                    content: json!("result 2"),
+                    is_error: None,
+                }]),
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_3".to_string(),
+                    content: json!("result 3"),
+                    is_error: None,
+                }]),
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_4".to_string(),
+                    content: json!("result 4"),
+                    is_error: None,
+                }]),
+            },
+        ];
+
+        let consolidated = AnthropicTransformer::consolidate_tool_result_messages(messages);
+        assert_eq!(consolidated.len(), 1);
+        assert_eq!(consolidated[0].role, "user");
+        if let AnthropicContent::Blocks(blocks) = &consolidated[0].content {
+            assert_eq!(blocks.len(), 4);
+            for (i, block) in blocks.iter().enumerate() {
+                match block {
+                    AnthropicContentBlock::ToolResult { tool_use_id, .. } => {
+                        assert_eq!(tool_use_id, &format!("call_{}", i + 1));
+                    }
+                    _ => panic!("Expected ToolResult block at index {}", i),
+                }
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_consolidate_tool_result_messages_preserves_non_tool() {
+        // Non-tool-result user messages should NOT be consolidated
+        let messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Text("Hello".to_string()),
+            },
+            AnthropicMessage {
+                role: "assistant".to_string(),
+                content: AnthropicContent::Text("Hi there".to_string()),
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Text("How are you?".to_string()),
+            },
+        ];
+
+        let consolidated = AnthropicTransformer::consolidate_tool_result_messages(messages);
+        assert_eq!(consolidated.len(), 3);
+        assert_eq!(consolidated[0].role, "user");
+        assert_eq!(consolidated[1].role, "assistant");
+        assert_eq!(consolidated[2].role, "user");
+    }
+
+    #[test]
+    fn test_consolidate_tool_result_messages_mixed() {
+        // A user message with both text and tool_result should NOT be consolidated
+        // with adjacent tool_result-only messages
+        let messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![
+                    AnthropicContentBlock::Text {
+                        text: "Here are the results".to_string(),
+                    },
+                    AnthropicContentBlock::ToolResult {
+                        tool_use_id: "call_1".to_string(),
+                        content: json!("result 1"),
+                        is_error: None,
+                    },
+                ]),
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_2".to_string(),
+                    content: json!("result 2"),
+                    is_error: None,
+                }]),
+            },
+        ];
+
+        let consolidated = AnthropicTransformer::consolidate_tool_result_messages(messages);
+        // The first message has mixed content (text + tool_result), so it should NOT merge
+        // The second message is tool_result-only but the previous is mixed, so no merge
+        assert_eq!(consolidated.len(), 2);
+
+        // First message should still have 2 blocks (text + tool_result)
+        if let AnthropicContent::Blocks(blocks) = &consolidated[0].content {
+            assert_eq!(blocks.len(), 2);
+        } else {
+            panic!("Expected Blocks content for first message");
+        }
+
+        // Second message should still have 1 block (tool_result)
+        if let AnthropicContent::Blocks(blocks) = &consolidated[1].content {
+            assert_eq!(blocks.len(), 1);
+        } else {
+            panic!("Expected Blocks content for second message");
+        }
+    }
+
+    #[test]
+    fn test_openai_to_anthropic_multiple_parallel_tool_calls() {
+        // End-to-end test: OpenAI format with 4 parallel tool calls
+        // should produce a single user message with 4 tool_result blocks
+        use super::super::openai::OpenAITransformer;
+
+        let openai = OpenAITransformer::new();
+        let anthropic = AnthropicTransformer::new();
+
+        let request = json!({
+            "model": "claude-3-opus",
+            "messages": [
+                {"role": "user", "content": "Get weather for 4 cities"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}},
+                    {"id": "call_2", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"NYC\"}"}},
+                    {"id": "call_3", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"LA\"}"}},
+                    {"id": "call_4", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"CHI\"}"}}
+                ]},
+                {"role": "tool", "content": "Sunny, 72°F", "tool_call_id": "call_1"},
+                {"role": "tool", "content": "Cloudy, 55°F", "tool_call_id": "call_2"},
+                {"role": "tool", "content": "Hot, 90°F", "tool_call_id": "call_3"},
+                {"role": "tool", "content": "Windy, 40°F", "tool_call_id": "call_4"}
+            ],
+            "tools": [{"type": "function", "function": {"name": "get_weather", "description": "Get weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]
+        });
+
+        // OpenAI → Unified
+        let unified = openai.transform_request_out(request).unwrap();
+
+        // Unified → Anthropic
+        let anthropic_req = anthropic.transform_request_in(&unified).unwrap();
+
+        let messages = anthropic_req["messages"].as_array().unwrap();
+        // Should be 3 messages: user, assistant (with 4 tool_use), user (with 4 tool_results)
+        assert_eq!(
+            messages.len(),
+            3,
+            "Expected 3 messages (user, assistant, user with consolidated tool_results), got {}",
+            messages.len()
+        );
+
+        // messages[0]: user
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "Get weather for 4 cities");
+
+        // messages[1]: assistant with 4 tool_use blocks
+        assert_eq!(messages[1]["role"], "assistant");
+        let tool_use_blocks = messages[1]["content"].as_array().unwrap();
+        assert_eq!(tool_use_blocks.len(), 4);
+        for block in tool_use_blocks {
+            assert_eq!(block["type"], "tool_use");
+        }
+
+        // messages[2]: single user message with 4 consolidated tool_result blocks
+        assert_eq!(messages[2]["role"], "user");
+        let tool_result_blocks = messages[2]["content"].as_array().unwrap();
+        assert_eq!(
+            tool_result_blocks.len(),
+            4,
+            "Expected 4 tool_result blocks in consolidated message, got {}",
+            tool_result_blocks.len()
+        );
+
+        // Verify each tool_result block
+        let expected_ids = ["call_1", "call_2", "call_3", "call_4"];
+        let expected_contents = ["Sunny, 72°F", "Cloudy, 55°F", "Hot, 90°F", "Windy, 40°F"];
+        for (i, block) in tool_result_blocks.iter().enumerate() {
+            assert_eq!(block["type"], "tool_result");
+            assert_eq!(block["tool_use_id"], expected_ids[i]);
+            assert_eq!(block["content"], expected_contents[i]);
+        }
+    }
+
+    // ========================================================================
+    // consolidate_tool_result_messages: Additional Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_consolidate_tool_result_messages_empty() {
+        let messages: Vec<AnthropicMessage> = vec![];
+        let consolidated = AnthropicTransformer::consolidate_tool_result_messages(messages);
+        assert_eq!(consolidated.len(), 0);
+    }
+
+    #[test]
+    fn test_consolidate_tool_result_messages_single_tool_result() {
+        let messages = vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: json!("result 1"),
+                is_error: None,
+            }]),
+        }];
+
+        let consolidated = AnthropicTransformer::consolidate_tool_result_messages(messages);
+        assert_eq!(consolidated.len(), 1);
+    }
+
+    #[test]
+    fn test_consolidate_tool_result_messages_assistant_between_tool_results() {
+        // tool_result - assistant - tool_result should NOT consolidate
+        let messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: json!("result 1"),
+                    is_error: None,
+                }]),
+            },
+            AnthropicMessage {
+                role: "assistant".to_string(),
+                content: AnthropicContent::Text("Processing...".to_string()),
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_2".to_string(),
+                    content: json!("result 2"),
+                    is_error: None,
+                }]),
+            },
+        ];
+
+        let consolidated = AnthropicTransformer::consolidate_tool_result_messages(messages);
+        assert_eq!(consolidated.len(), 3);
+    }
+
+    #[test]
+    fn test_consolidate_tool_result_messages_with_is_error() {
+        // Tool results with is_error flag should still consolidate
+        let messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: json!("success result"),
+                    is_error: None,
+                }]),
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_2".to_string(),
+                    content: json!("error: timeout"),
+                    is_error: Some(true),
+                }]),
+            },
+        ];
+
+        let consolidated = AnthropicTransformer::consolidate_tool_result_messages(messages);
+        assert_eq!(consolidated.len(), 1);
+        if let AnthropicContent::Blocks(blocks) = &consolidated[0].content {
+            assert_eq!(blocks.len(), 2);
+            // Verify is_error is preserved on the second block
+            match &blocks[1] {
+                AnthropicContentBlock::ToolResult { is_error, .. } => {
+                    assert_eq!(*is_error, Some(true));
+                }
+                _ => panic!("Expected ToolResult"),
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_consolidate_tool_result_text_user_not_merged() {
+        // A user Text message followed by a tool_result should NOT merge
+        let messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Text("Hello".to_string()),
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: json!("result"),
+                    is_error: None,
+                }]),
+            },
+        ];
+
+        let consolidated = AnthropicTransformer::consolidate_tool_result_messages(messages);
+        assert_eq!(consolidated.len(), 2);
+    }
+
+    #[test]
+    fn test_consolidate_tool_result_empty_blocks_not_merged() {
+        // Empty blocks should not be considered "only tool results"
+        let messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: json!("result"),
+                    is_error: None,
+                }]),
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Blocks(vec![]),
+            },
+        ];
+
+        let consolidated = AnthropicTransformer::consolidate_tool_result_messages(messages);
+        // Empty blocks is not "only tool results", so no merge
+        assert_eq!(consolidated.len(), 2);
+    }
+
+    // ========================================================================
+    // is_only_tool_results tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_only_tool_results_text_content() {
+        assert!(!AnthropicTransformer::is_only_tool_results(
+            &AnthropicContent::Text("hello".to_string())
+        ));
+    }
+
+    #[test]
+    fn test_is_only_tool_results_empty_blocks() {
+        assert!(!AnthropicTransformer::is_only_tool_results(
+            &AnthropicContent::Blocks(vec![])
+        ));
+    }
+
+    #[test]
+    fn test_is_only_tool_results_single_tool_result() {
+        assert!(AnthropicTransformer::is_only_tool_results(
+            &AnthropicContent::Blocks(vec![AnthropicContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: json!("result"),
+                is_error: None,
+            }])
+        ));
+    }
+
+    #[test]
+    fn test_is_only_tool_results_mixed_blocks() {
+        assert!(!AnthropicTransformer::is_only_tool_results(
+            &AnthropicContent::Blocks(vec![
+                AnthropicContentBlock::Text {
+                    text: "hello".to_string()
+                },
+                AnthropicContentBlock::ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    content: json!("result"),
+                    is_error: None,
+                },
+            ])
+        ));
+    }
+
+    // ========================================================================
+    // is_empty_content tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_empty_content_empty_text() {
+        assert!(AnthropicTransformer::is_empty_content(
+            &AnthropicContent::Text("".to_string())
+        ));
+    }
+
+    #[test]
+    fn test_is_empty_content_non_empty_text() {
+        assert!(!AnthropicTransformer::is_empty_content(
+            &AnthropicContent::Text("hello".to_string())
+        ));
+    }
+
+    #[test]
+    fn test_is_empty_content_empty_blocks() {
+        assert!(AnthropicTransformer::is_empty_content(
+            &AnthropicContent::Blocks(vec![])
+        ));
+    }
+
+    #[test]
+    fn test_is_empty_content_non_empty_blocks() {
+        assert!(!AnthropicTransformer::is_empty_content(
+            &AnthropicContent::Blocks(vec![AnthropicContentBlock::Text {
+                text: "hello".to_string()
+            }])
+        ));
+    }
+
+    // ========================================================================
+    // strip_billing_header tests
+    // ========================================================================
+
+    #[test]
+    fn test_strip_billing_header_removes_prefix() {
+        let text = "x-anthropic-billing-header: some billing data";
+        let result = strip_billing_header(text);
+        assert_eq!(result, "some billing data");
+    }
+
+    #[test]
+    fn test_strip_billing_header_no_prefix() {
+        let text = "normal text without billing header";
+        let result = strip_billing_header(text);
+        assert_eq!(result, text);
     }
 }

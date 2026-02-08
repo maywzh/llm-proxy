@@ -5,6 +5,9 @@
 
 use crate::api::health::{HealthStatus, ModelHealthStatus, ProviderHealthStatus};
 use crate::api::models::{CheckProviderHealthResponse, ModelHealthResult, ProviderHealthSummary};
+use crate::api::upstream::{
+    build_gcp_vertex_url, build_upstream_request, extract_error_message, UpstreamAuth,
+};
 use crate::core::database::{Database, ProviderEntity};
 use chrono::Utc;
 use reqwest::Client;
@@ -117,7 +120,7 @@ impl HealthCheckService {
         }
 
         // Determine which models to test
-        let test_models = models.unwrap_or_else(|| self.get_all_mapped_models(provider));
+        let test_models = models.unwrap_or_else(|| self.get_default_test_models(provider));
 
         if test_models.is_empty() {
             return CheckProviderHealthResponse {
@@ -230,24 +233,6 @@ impl HealthCheckService {
         }
     }
 
-    /// Get all models from provider's model mapping
-    ///
-    /// # Arguments
-    ///
-    /// * `provider` - Provider to get models for
-    ///
-    /// # Returns
-    ///
-    /// List of model names (keys from model_mapping)
-    fn get_all_mapped_models(&self, provider: &ProviderEntity) -> Vec<String> {
-        let model_mapping = &provider.model_mapping.0;
-        if model_mapping.is_empty() {
-            vec![]
-        } else {
-            model_mapping.keys().cloned().collect()
-        }
-    }
-
     /// Test a single model on a provider
     ///
     /// # Arguments
@@ -276,12 +261,18 @@ impl HealthCheckService {
 
         let provider_type = provider.provider_type.to_lowercase();
 
+        let payload = json!({
+            "model": actual_model,
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 5,
+            "stream": false,
+        });
+
         // Build URL and request based on provider type
         let request_builder = if provider_type.contains("gcp-vertex")
             || provider_type.contains("gcp_vertex")
             || provider_type == "vertex"
         {
-            // GCP Vertex AI: Anthropic Messages API via rawPredict endpoint
             let gcp_project = provider
                 .provider_params
                 .get("gcp_project")
@@ -298,54 +289,53 @@ impl HealthCheckService {
                 .and_then(|v| v.as_str())
                 .unwrap_or("anthropic");
 
-            let url = format!(
-                "{}/v1/projects/{}/locations/{}/publishers/{}/models/{}:rawPredict",
-                provider.api_base, gcp_project, gcp_location, gcp_publisher, actual_model
-            );
+            let url = match build_gcp_vertex_url(
+                &provider.api_base,
+                gcp_project,
+                gcp_location,
+                gcp_publisher,
+                actual_model,
+                false,
+            ) {
+                Ok(url) => url,
+                Err(err) => {
+                    return ModelHealthStatus {
+                        model: model.to_string(),
+                        status: HealthStatus::Unhealthy,
+                        response_time_ms: None,
+                        error: Some(err),
+                    };
+                }
+            };
 
-            let payload = json!({
-                "model": actual_model,
-                "messages": [{"role": "user", "content": "Hi"}],
-                "max_tokens": 5,
-                "stream": false,
-            });
-
-            client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", provider.api_key))
-                .header("Content-Type", "application/json")
-                .header("anthropic-version", "vertex-2023-10-16")
-                .json(&payload)
+            build_upstream_request(
+                client,
+                &url,
+                &payload,
+                UpstreamAuth::Bearer(&provider.api_key),
+                Some("vertex-2023-10-16"),
+                None,
+            )
         } else if provider_type == "anthropic" || provider_type == "claude" {
-            // Anthropic: x-api-key auth + /v1/messages endpoint
             let url = format!("{}/v1/messages", provider.api_base);
-            let payload = json!({
-                "model": actual_model,
-                "messages": [{"role": "user", "content": "Hi"}],
-                "max_tokens": 5,
-                "stream": false,
-            });
-
-            client
-                .post(&url)
-                .header("x-api-key", &provider.api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("Content-Type", "application/json")
-                .json(&payload)
+            build_upstream_request(
+                client,
+                &url,
+                &payload,
+                UpstreamAuth::XApiKey(&provider.api_key),
+                Some("2023-06-01"),
+                None,
+            )
         } else {
-            // OpenAI-compatible (openai, azure, etc.): Bearer auth + /chat/completions
             let url = format!("{}/chat/completions", provider.api_base);
-            let payload = json!({
-                "model": actual_model,
-                "messages": [{"role": "user", "content": "Hi"}],
-                "max_tokens": 5,
-                "stream": false,
-            });
-
-            client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", provider.api_key))
-                .json(&payload)
+            build_upstream_request(
+                client,
+                &url,
+                &payload,
+                UpstreamAuth::Bearer(&provider.api_key),
+                None,
+                None,
+            )
         };
 
         let start_time = Instant::now();
@@ -367,17 +357,8 @@ impl HealthCheckService {
                     }
                 } else {
                     let error_msg = match response.json::<serde_json::Value>().await {
-                        Ok(json) => {
-                            if let Some(error) = json.get("error") {
-                                if let Some(message) = error.get("message") {
-                                    message.as_str().unwrap_or("Unknown error").to_string()
-                                } else {
-                                    format!("HTTP {}", status_code.as_u16())
-                                }
-                            } else {
-                                format!("HTTP {}", status_code.as_u16())
-                            }
-                        }
+                        Ok(json) => extract_error_message(&json)
+                            .unwrap_or_else(|| format!("HTTP {}", status_code.as_u16())),
                         Err(_) => format!("HTTP {}", status_code.as_u16()),
                     };
 
@@ -848,28 +829,31 @@ mod tests {
         let service = HealthCheckService::new(client, 10);
         let provider = create_test_provider();
 
-        // Provider has no model mapping, so get_all_mapped_models returns empty
+        // Provider has no model mapping, so get_default_test_models returns fallback
+        // models based on provider type. These will fail to connect (no real server),
+        // so the result will be "unhealthy" rather than "unknown".
         let result = service
             .check_provider_health_concurrent(&provider, None, 2)
             .await;
 
-        assert_eq!(result.status, "unknown");
-        assert_eq!(result.models.len(), 0);
-        assert_eq!(result.summary.total_models, 0);
+        assert_eq!(result.status, "unhealthy");
+        assert!(!result.models.is_empty());
+        assert!(result.summary.total_models > 0);
     }
 
     #[test]
-    fn test_get_all_mapped_models_empty() {
+    fn test_get_default_test_models_empty_mapping_returns_fallback() {
         let client = Client::new();
         let service = HealthCheckService::new(client, 10);
         let provider = create_test_provider();
 
-        let models = service.get_all_mapped_models(&provider);
-        assert!(models.is_empty());
+        let models = service.get_default_test_models(&provider);
+        // No model_mapping → falls back to provider-type default
+        assert!(!models.is_empty());
     }
 
     #[test]
-    fn test_get_all_mapped_models_with_mapping() {
+    fn test_get_default_test_models_with_mapping_returns_keys() {
         let client = Client::new();
         let service = HealthCheckService::new(client, 10);
         let mut provider = create_test_provider();
@@ -878,7 +862,7 @@ mod tests {
             ("gpt-3.5-turbo", "gpt-35-turbo"),
         ]));
 
-        let models = service.get_all_mapped_models(&provider);
+        let models = service.get_default_test_models(&provider);
         assert_eq!(models.len(), 2);
         let model_set: std::collections::HashSet<_> = models.into_iter().collect();
         assert!(model_set.contains("gpt-4"));
@@ -945,5 +929,142 @@ mod tests {
         assert_eq!(response.provider_key, "test-provider");
         assert_eq!(response.status, "healthy");
         assert!(response.models.is_empty());
+    }
+
+    // ========================================================================
+    // Additional edge case tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_default_test_models_unknown_provider_type() {
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
+        let mut provider = create_test_provider();
+        provider.provider_type = "some-unknown-type".to_string();
+
+        let models = service.get_default_test_models(&provider);
+        // Fallback should return gpt-3.5-turbo
+        assert_eq!(models, vec!["gpt-3.5-turbo"]);
+    }
+
+    #[test]
+    fn test_get_default_test_models_case_insensitive() {
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
+
+        let mut provider = create_test_provider();
+        provider.provider_type = "Anthropic".to_string();
+        let models = service.get_default_test_models(&provider);
+        assert_eq!(models, vec!["claude-3-haiku-20240307"]);
+
+        provider.provider_type = "OPENAI".to_string();
+        let models = service.get_default_test_models(&provider);
+        assert_eq!(models, vec!["gpt-3.5-turbo"]);
+    }
+
+    #[test]
+    fn test_determine_provider_status_single_healthy() {
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
+        let statuses = vec![ModelHealthStatus {
+            model: "model1".to_string(),
+            status: HealthStatus::Healthy,
+            response_time_ms: Some(100),
+            error: None,
+        }];
+
+        assert_eq!(
+            service.determine_provider_status(&statuses),
+            HealthStatus::Healthy
+        );
+    }
+
+    #[test]
+    fn test_determine_provider_status_single_unhealthy() {
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
+        let statuses = vec![ModelHealthStatus {
+            model: "model1".to_string(),
+            status: HealthStatus::Unhealthy,
+            response_time_ms: None,
+            error: Some("Connection refused".to_string()),
+        }];
+
+        assert_eq!(
+            service.determine_provider_status(&statuses),
+            HealthStatus::Unhealthy
+        );
+    }
+
+    #[test]
+    fn test_calculate_avg_response_time_all_none() {
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
+        let statuses = vec![
+            ModelHealthStatus {
+                model: "model1".to_string(),
+                status: HealthStatus::Unhealthy,
+                response_time_ms: None,
+                error: Some("Error".to_string()),
+            },
+            ModelHealthStatus {
+                model: "model2".to_string(),
+                status: HealthStatus::Unhealthy,
+                response_time_ms: None,
+                error: Some("Error".to_string()),
+            },
+        ];
+
+        assert_eq!(service.calculate_avg_response_time(&statuses), None);
+    }
+
+    #[test]
+    fn test_calculate_avg_response_time_single() {
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 10);
+        let statuses = vec![ModelHealthStatus {
+            model: "model1".to_string(),
+            status: HealthStatus::Healthy,
+            response_time_ms: Some(42),
+            error: None,
+        }];
+
+        assert_eq!(service.calculate_avg_response_time(&statuses), Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_check_provider_health_uses_default_models() {
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 1); // 1s timeout for fast failure
+        let provider = create_test_provider();
+
+        // No model list → uses get_default_test_models
+        let result = service.check_provider_health(&provider, None).await;
+        assert_ne!(result.status, HealthStatus::Disabled);
+        // Should have tested at least one model
+        assert!(!result.models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_check_provider_health_with_explicit_models() {
+        let client = Client::new();
+        let service = HealthCheckService::new(client, 1);
+        let provider = create_test_provider();
+
+        // Explicit model list overrides defaults
+        let result = service
+            .check_provider_health(
+                &provider,
+                Some(vec![
+                    "custom-model-a".to_string(),
+                    "custom-model-b".to_string(),
+                ]),
+            )
+            .await;
+
+        assert_eq!(result.models.len(), 2);
+        let model_names: Vec<_> = result.models.iter().map(|m| m.model.as_str()).collect();
+        assert!(model_names.contains(&"custom-model-a"));
+        assert!(model_names.contains(&"custom-model-b"));
     }
 }

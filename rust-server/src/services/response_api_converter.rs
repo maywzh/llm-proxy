@@ -8,6 +8,7 @@
 //! - Computer use and other advanced tools
 //! - Structured output with JSON schemas
 
+use crate::core::error_types::ERROR_TYPE_API;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -684,7 +685,7 @@ pub fn convert_openai_streaming_to_response_api(
                             "error",
                             &json!({
                                 "type": "error",
-                                "error": {"type": "api_error", "message": format!("Streaming error: {}", e)}
+                                "error": {"type": ERROR_TYPE_API, "message": format!("Streaming error: {}", e)}
                             }),
                         );
                         return Some((

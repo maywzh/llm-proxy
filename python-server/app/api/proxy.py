@@ -18,7 +18,7 @@ from starlette.requests import ClientDisconnect
 from starlette.responses import StreamingResponse
 
 from app.api.dependencies import verify_auth, get_provider_svc
-from app.services.provider_service import ProviderService
+from app.services.provider_service import ProviderService, get_provider_service
 from app.services.langfuse_service import (
     get_langfuse_service,
     GenerationData,
@@ -789,6 +789,12 @@ async def _handle_streaming_request(
 
     try:
         if response.status_code >= 400:
+            # Report error status to adaptive routing
+            get_provider_service().report_http_status(
+                provider.name,
+                response.status_code,
+                response.headers.get("retry-after"),
+            )
             # Read error body
             error_body = b""
             async for chunk in response.aiter_bytes():
@@ -867,6 +873,13 @@ async def _handle_streaming_request(
                 effective_model,
                 provider.name,
             )
+
+        # Report streaming success to adaptive routing
+        get_provider_service().report_http_status(
+            provider.name,
+            response.status_code,
+            response.headers.get("retry-after"),
+        )
 
         # Collect chunks for JSONL logging
         chunk_collector: list[str] = []
@@ -995,6 +1008,13 @@ async def _handle_non_streaming_request(
     # Use shared HTTP client
     client = get_http_client()
     response = await client.post(url, json=provider_payload, headers=headers)
+
+    # Report HTTP status to adaptive routing
+    get_provider_service().report_http_status(
+        provider.name,
+        response.status_code,
+        response.headers.get("retry-after"),
+    )
 
     if response.status_code >= 400:
         try:
@@ -1299,6 +1319,7 @@ async def handle_proxy_request(
     except HTTPException:
         raise
     except httpx.TimeoutException:
+        provider_svc.report_transport_error(provider.name)
         logger.error(f"Timeout error for provider {provider.name}")
         generation_data.is_error = True
         generation_data.error_message = "Gateway timeout"
@@ -1307,6 +1328,7 @@ async def handle_proxy_request(
             langfuse_service.trace_generation(generation_data)
         raise HTTPException(status_code=504, detail="Gateway timeout")
     except httpx.RequestError as e:
+        provider_svc.report_transport_error(provider.name)
         logger.error(f"Network request error for provider {provider.name}: {e}")
         generation_data.is_error = True
         generation_data.error_message = f"Provider {provider.name} network error"
