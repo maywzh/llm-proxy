@@ -1337,3 +1337,125 @@ class TestBillingHeaderStripping:
             openai_request["messages"][0]["content"]
             == "Some text x-anthropic-billing-header: should not be stripped"
         )
+
+
+@pytest.mark.unit
+class TestToolResultTextSplitOrdering:
+    """Tests for the tool_result + text split ordering fix.
+
+    When a user message contains both tool_result and text blocks, the tool
+    messages must be emitted BEFORE the user(text) message to maintain
+    assistant(tool_calls) → tool(result) adjacency.
+    """
+
+    def test_tool_result_adjacency_with_system_reminder(self):
+        """system-reminder text must NOT break tool adjacency."""
+        claude_request = ClaudeMessagesRequest(
+            model="claude-3-opus-20240229",
+            max_tokens=1024,
+            messages=[
+                ClaudeMessage(role="user", content="search"),
+                ClaudeMessage(
+                    role="assistant",
+                    content=[
+                        ClaudeContentBlockToolUse(
+                            id="tu_1", name="search", input={"q": "test"}
+                        ),
+                    ],
+                ),
+                ClaudeMessage(
+                    role="user",
+                    content=[
+                        ClaudeContentBlockToolResult(
+                            tool_use_id="tu_1", content="5 results"
+                        ),
+                        ClaudeContentBlockText(
+                            text="<system-reminder>Use TodoWrite</system-reminder>"
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        openai_request = claude_to_openai_request(claude_request)
+        messages = openai_request["messages"]
+
+        # system(optional) + user + assistant(tool_calls) + tool + user(text)
+        assert messages[-3]["role"] == "assistant"
+        assert "tool_calls" in messages[-3]
+        assert messages[-2]["role"] == "tool"
+        assert messages[-2]["tool_call_id"] == "tu_1"
+        assert messages[-1]["role"] == "user"
+
+    def test_tool_result_adjacency_multiple_tools_with_interrupt(self):
+        """Multiple tool_results + user interrupt text."""
+        claude_request = ClaudeMessagesRequest(
+            model="claude-3-opus-20240229",
+            max_tokens=1024,
+            messages=[
+                ClaudeMessage(role="user", content="do two things"),
+                ClaudeMessage(
+                    role="assistant",
+                    content=[
+                        ClaudeContentBlockToolUse(id="tu_a", name="tool_a", input={}),
+                        ClaudeContentBlockToolUse(id="tu_b", name="tool_b", input={}),
+                    ],
+                ),
+                ClaudeMessage(
+                    role="user",
+                    content=[
+                        ClaudeContentBlockToolResult(
+                            tool_use_id="tu_a", content="result_a"
+                        ),
+                        ClaudeContentBlockToolResult(
+                            tool_use_id="tu_b", content="result_b"
+                        ),
+                        ClaudeContentBlockText(
+                            text="[Request interrupted by user for tool use]"
+                        ),
+                        ClaudeContentBlockText(text="new instruction"),
+                    ],
+                ),
+            ],
+        )
+
+        openai_request = claude_to_openai_request(claude_request)
+        messages = openai_request["messages"]
+
+        assert messages[-4]["role"] == "assistant"
+        assert messages[-3]["role"] == "tool"
+        assert messages[-3]["tool_call_id"] == "tu_a"
+        assert messages[-2]["role"] == "tool"
+        assert messages[-2]["tool_call_id"] == "tu_b"
+        assert messages[-1]["role"] == "user"
+
+    def test_tool_result_only_no_text_unchanged(self):
+        """Pure tool_result without text — no extra user message emitted."""
+        claude_request = ClaudeMessagesRequest(
+            model="claude-3-opus-20240229",
+            max_tokens=1024,
+            messages=[
+                ClaudeMessage(role="user", content="read file"),
+                ClaudeMessage(
+                    role="assistant",
+                    content=[
+                        ClaudeContentBlockToolUse(id="tu_1", name="Read", input={}),
+                    ],
+                ),
+                ClaudeMessage(
+                    role="user",
+                    content=[
+                        ClaudeContentBlockToolResult(
+                            tool_use_id="tu_1", content="file contents"
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        openai_request = claude_to_openai_request(claude_request)
+        messages = openai_request["messages"]
+
+        assert messages[-2]["role"] == "assistant"
+        assert messages[-1]["role"] == "tool"
+        assert messages[-1]["tool_call_id"] == "tu_1"

@@ -2201,16 +2201,170 @@ class TestAnthropicToolResultsToOpenAI:
         openai_req = openai_transformer.transform_request_in(unified)
 
         messages = openai_req["messages"]
-        # user, assistant, user(text), tool
+        # user, assistant, tool, user(text) — tool MUST come before user to
+        # preserve assistant(tool_calls) → tool adjacency
         assert len(messages) == 4
 
-        # Non-tool content emitted as user message first
-        assert messages[2]["role"] == "user"
+        # Tool result emitted first (adjacent to assistant)
+        assert messages[2]["role"] == "tool"
+        assert messages[2]["tool_call_id"] == "tu_1"
+        assert messages[2]["content"] == "result"
 
-        # Tool result after
+        # Non-tool content emitted as user message after
+        assert messages[3]["role"] == "user"
+
+    def test_tool_result_adjacency_with_system_reminder(
+        self, anthropic_transformer, openai_transformer
+    ):
+        """Reproduces the real-world bug: system-reminder text injected into
+        the same user message as tool_result must NOT break tool adjacency."""
+        request = {
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "search for chromium size"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Let me search."},
+                        {
+                            "type": "tool_use",
+                            "id": "tu_search",
+                            "name": "web_search",
+                            "input": {"q": "chromium"},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_search",
+                            "content": "Found 5 results",
+                        },
+                        {
+                            "type": "text",
+                            "text": "<system-reminder>Use TodoWrite</system-reminder>",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        unified = anthropic_transformer.transform_request_out(request)
+        openai_req = openai_transformer.transform_request_in(unified)
+        messages = openai_req["messages"]
+
+        # user, assistant(tool_calls), tool, user(system-reminder)
+        assert len(messages) == 4
+        assert messages[1]["role"] == "assistant"
+        assert "tool_calls" in messages[1]
+        # tool MUST be right after assistant
+        assert messages[2]["role"] == "tool"
+        assert messages[2]["tool_call_id"] == "tu_search"
+        # user text comes last
+        assert messages[3]["role"] == "user"
+
+    def test_tool_result_adjacency_multiple_tools_with_interrupt(
+        self, anthropic_transformer, openai_transformer
+    ):
+        """assistant calls 2 tools, user interrupts with text + provides both results."""
+        request = {
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "do two things"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_a",
+                            "name": "tool_a",
+                            "input": {},
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "tu_b",
+                            "name": "tool_b",
+                            "input": {},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_a",
+                            "content": "result_a",
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_b",
+                            "content": "result_b",
+                        },
+                        {
+                            "type": "text",
+                            "text": "[Request interrupted by user for tool use]",
+                        },
+                        {"type": "text", "text": "new user instruction"},
+                    ],
+                },
+            ],
+        }
+
+        unified = anthropic_transformer.transform_request_out(request)
+        openai_req = openai_transformer.transform_request_in(unified)
+        messages = openai_req["messages"]
+
+        # user, assistant(tool_calls), tool(a), tool(b), user(text+text)
+        assert len(messages) == 5
+        assert messages[1]["role"] == "assistant"
+        assert messages[2]["role"] == "tool"
+        assert messages[2]["tool_call_id"] == "tu_a"
         assert messages[3]["role"] == "tool"
-        assert messages[3]["tool_call_id"] == "tu_1"
-        assert messages[3]["content"] == "result"
+        assert messages[3]["tool_call_id"] == "tu_b"
+        assert messages[4]["role"] == "user"
+
+    def test_tool_result_only_no_text_unchanged(
+        self, anthropic_transformer, openai_transformer
+    ):
+        """Pure tool_result without text should work as before (no user message emitted)."""
+        request = {
+            "model": "claude-4-sonnet",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "read file"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": "file contents",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        unified = anthropic_transformer.transform_request_out(request)
+        openai_req = openai_transformer.transform_request_in(unified)
+        messages = openai_req["messages"]
+
+        # user, assistant(tool_calls), tool — no extra user message
+        assert len(messages) == 3
+        assert messages[1]["role"] == "assistant"
+        assert messages[2]["role"] == "tool"
+        assert messages[2]["tool_call_id"] == "tu_1"
 
     def test_tool_result_with_error(self, anthropic_transformer, openai_transformer):
         """Error tool_result should have [Error] prefix."""
