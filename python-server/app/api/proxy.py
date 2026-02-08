@@ -837,14 +837,19 @@ async def _handle_streaming_request(
                 body=error_json,
             )
 
-            if response.status_code < 500 and response.status_code != 429:
+            if response.status_code != 429:
+                error_category = (
+                    ErrorCategory.PROVIDER_5XX
+                    if response.status_code >= 500
+                    else ErrorCategory.PROVIDER_4XX
+                )
                 provider_debug_headers = _build_provider_debug_headers(
                     url,
                     ctx,
                     headers,
                 )
                 log_error(
-                    error_category=ErrorCategory.PROVIDER_4XX,
+                    error_category=error_category,
                     error_code=response.status_code,
                     error_message=generation_data.error_message,
                     request_id=ctx.request_id,
@@ -1051,14 +1056,19 @@ async def _handle_non_streaming_request(
             body=error_body,
         )
 
-        if response.status_code < 500 and response.status_code != 429:
+        if response.status_code != 429:
+            error_category = (
+                ErrorCategory.PROVIDER_5XX
+                if response.status_code >= 500
+                else ErrorCategory.PROVIDER_4XX
+            )
             provider_debug_headers = _build_provider_debug_headers(
                 url,
                 ctx,
                 headers,
             )
             log_error(
-                error_category=ErrorCategory.PROVIDER_4XX,
+                error_category=error_category,
                 error_code=response.status_code,
                 error_message=generation_data.error_message,
                 request_id=ctx.request_id,

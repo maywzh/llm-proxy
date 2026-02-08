@@ -1,6 +1,7 @@
 .analyse
 .debug
-.claude
+.claude/*
+!.claude/skills
 .worktrees
 .kilocode
 
