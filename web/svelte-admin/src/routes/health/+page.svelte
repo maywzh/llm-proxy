@@ -63,30 +63,35 @@
     error = null;
 
     try {
-      // If no health data yet, fetch providers first
-      let providerIds: number[];
-      if (!healthData) {
-        const providersResponse = await client.listProviders();
-        providerIds = providersResponse.providers.map(p => p.id);
-        // Initialize health data with empty providers
-        const initialProviders: import('$lib/types').ProviderHealthStatus[] =
-          providersResponse.providers.map(p => ({
-            provider_id: p.id,
-            provider_key: p.provider_key,
-            status: 'unknown' as import('$lib/types').HealthStatus,
-            models: [],
-            avg_response_time_ms: null,
-            checked_at: new Date().toISOString(),
-          }));
-        healthData = {
-          providers: initialProviders,
-          total_providers: initialProviders.length,
-          healthy_providers: 0,
-          unhealthy_providers: 0,
-        };
-      } else {
-        providerIds = healthData.providers.map(p => p.provider_id);
-      }
+      // Always fetch fresh provider list to pick up newly added providers
+      const providersResponse = await client.listProviders();
+      const providerIds = providersResponse.providers.map(p => p.id);
+      // Initialize health data, preserving existing results for known providers
+      const initialProviders: import('$lib/types').ProviderHealthStatus[] =
+        providersResponse.providers.map(p => {
+          const existing = healthData?.providers.find(
+            ep => ep.provider_id === p.id
+          );
+          return (
+            existing || {
+              provider_id: p.id,
+              provider_key: p.provider_key,
+              status: 'unknown' as import('$lib/types').HealthStatus,
+              models: [],
+              avg_response_time_ms: null,
+              checked_at: new Date().toISOString(),
+            }
+          );
+        });
+      healthData = {
+        providers: initialProviders,
+        total_providers: initialProviders.length,
+        healthy_providers: initialProviders.filter(p => p.status === 'healthy')
+          .length,
+        unhealthy_providers: initialProviders.filter(
+          p => p.status === 'unhealthy'
+        ).length,
+      };
 
       // Check all providers in parallel, updating each as results come in
       const checkPromises = providerIds.map(async id => {
