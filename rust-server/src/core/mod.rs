@@ -14,6 +14,7 @@ pub mod cancel;
 pub mod config;
 pub mod database;
 pub mod error;
+pub mod error_logger;
 pub mod jsonl_logger;
 pub mod langfuse;
 pub mod logging;
@@ -33,6 +34,9 @@ pub use database::{
     DatabaseConfig, DynamicConfig, ProviderEntity, RuntimeConfig, UpdateCredential, UpdateProvider,
 };
 pub use error::{AppError, Result};
+pub use error_logger::{
+    init_error_logger, log_error, mask_headers, ErrorCategory, ErrorLogRecord, ErrorLogger,
+};
 pub use jsonl_logger::{
     get_jsonl_logger, init_jsonl_logger, log_request, log_response, log_streaming_response,
     JsonlLogger, JsonlLoggerConfig, LogRecord, RequestRecord, ResponseRecord,
@@ -44,8 +48,8 @@ pub use langfuse::{
 pub use logging::{get_provider_context, PROVIDER_CONTEXT};
 pub use metrics::{get_metrics, init_metrics, Metrics};
 pub use middleware::{
-    admin_logging_middleware, model_permission_middleware, HasCredentials, MetricsMiddleware,
-    ModelName, ProviderName,
+    admin_logging_middleware, model_permission_middleware, request_id_middleware, HasCredentials,
+    MetricsMiddleware, ModelName, ProviderName, RequestId,
 };
 pub use rate_limiter::RateLimiter;
 pub use stream_metrics::{record_stream_metrics, StreamStats};

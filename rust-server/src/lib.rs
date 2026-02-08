@@ -42,7 +42,7 @@ pub use api::{
     ClaudeResponse, V1ApiDoc,
 };
 pub use core::{
-    admin_logging_middleware, AppConfig, AppError, Database, DatabaseConfig, DynamicConfig, Result,
-    RuntimeConfig,
+    admin_logging_middleware, init_error_logger, request_id_middleware, AppConfig, AppError,
+    Database, DatabaseConfig, DynamicConfig, RequestId, Result, RuntimeConfig,
 };
 pub use services::{claude_to_openai_request, openai_to_claude_response, ProviderService};

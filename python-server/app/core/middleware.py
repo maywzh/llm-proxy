@@ -2,6 +2,7 @@
 
 import json
 import time
+import uuid
 from typing import Callable, Set
 from fastapi import Request, Response, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -200,3 +201,14 @@ class ModelPermissionMiddleware(BaseHTTPMiddleware):
             logger.error(f"Error in ModelPermissionMiddleware: {e}")
             # On any error, let the request proceed to handler
             return await call_next(request)
+
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Middleware to assign a request ID to each request."""
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["x-request-id"] = request_id
+        return response

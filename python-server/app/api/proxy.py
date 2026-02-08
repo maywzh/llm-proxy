@@ -36,6 +36,7 @@ from app.core.jsonl_logger import (
     log_provider_response,
     log_provider_streaming_response,
 )
+from app.core.error_logger import log_error, ErrorCategory
 from app.core.metrics import (
     BYPASS_REQUESTS,
     BYPASS_STREAMING_BYTES,
@@ -797,6 +798,27 @@ async def _handle_streaming_request(
                 body=error_json,
             )
 
+            if response.status_code < 500 and response.status_code != 429:
+                log_error(
+                    error_category=ErrorCategory.PROVIDER_4XX,
+                    error_code=response.status_code,
+                    error_message=generation_data.error_message,
+                    request_id=ctx.request_id,
+                    provider_name=ctx.provider_name,
+                    credential_name=generation_data.credential_name,
+                    model_requested=ctx.original_model,
+                    model_mapped=ctx.mapped_model,
+                    endpoint=generation_data.endpoint,
+                    client_protocol=ctx.client_protocol.value
+                    if ctx.client_protocol
+                    else None,
+                    provider_protocol=ctx.provider_protocol.value
+                    if ctx.provider_protocol
+                    else None,
+                    is_streaming=True,
+                    response_body=json.dumps(error_json) if error_json else None,
+                )
+
             return _build_protocol_error_response(
                 ctx.client_protocol,
                 response.status_code,
@@ -958,6 +980,27 @@ async def _handle_non_streaming_request(
             error_msg=generation_data.error_message,
             body=error_body,
         )
+
+        if response.status_code < 500 and response.status_code != 429:
+            log_error(
+                error_category=ErrorCategory.PROVIDER_4XX,
+                error_code=response.status_code,
+                error_message=generation_data.error_message,
+                request_id=ctx.request_id,
+                provider_name=ctx.provider_name,
+                credential_name=generation_data.credential_name,
+                model_requested=ctx.original_model,
+                model_mapped=ctx.mapped_model,
+                endpoint=generation_data.endpoint,
+                client_protocol=ctx.client_protocol.value
+                if ctx.client_protocol
+                else None,
+                provider_protocol=ctx.provider_protocol.value
+                if ctx.provider_protocol
+                else None,
+                is_streaming=False,
+                response_body=json.dumps(error_body) if error_body else None,
+            )
 
         return _build_protocol_error_response(
             ctx.client_protocol,

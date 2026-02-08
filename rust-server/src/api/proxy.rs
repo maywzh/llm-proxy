@@ -29,6 +29,7 @@ use crate::api::models::{
 use crate::api::streaming::{calculate_message_tokens_with_tools, create_sse_stream};
 use crate::core::config::CredentialConfig;
 use crate::core::database::hash_key;
+use crate::core::error_logger::{log_error, mask_headers, ErrorCategory, ErrorLogRecord};
 use crate::core::jsonl_logger::{
     log_provider_request, log_provider_response, log_request, log_response,
 };
@@ -214,7 +215,11 @@ pub async fn handle_proxy_request(
     payload: Value,
 ) -> Result<Response> {
     let request_start = Instant::now();
-    let request_id = generate_request_id();
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+        .unwrap_or_else(generate_request_id);
     let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
     let api_key_name = get_key_name(&key_config);
 
@@ -504,6 +509,30 @@ pub async fn handle_proxy_request(
 
                 // Handle error responses
                 if status.is_client_error() || status.is_server_error() {
+                    // Only log provider 4xx errors (excluding 429) as they indicate
+                    // potential issues with our request transformation
+                    if status.is_client_error() && status.as_u16() != 429 {
+                        log_error(ErrorLogRecord {
+                            request_id: request_id.clone(),
+                            error_category: ErrorCategory::Provider4xx,
+                            error_message: format!("HTTP {} from {}", status, provider.name),
+                            error_code: Some(status.as_u16() as i32),
+                            endpoint: path.to_string(),
+                            client_protocol: client_protocol.to_string(),
+                            request_headers: Some(mask_headers(&headers)),
+                            request_body: Some(payload.clone()),
+                            provider_name: provider.name.clone(),
+                            provider_api_base: provider.api_base.clone(),
+                            provider_protocol: provider_protocol.to_string(),
+                            mapped_model: transform_ctx.mapped_model.clone(),
+                            response_status_code: Some(status.as_u16() as i32),
+                            credential_name: api_key_name.clone(),
+                            client: client.clone(),
+                            is_streaming: generation_data.is_streaming,
+                            total_duration_ms: Some(request_start.elapsed().as_millis() as i32),
+                            ..Default::default()
+                        });
+                    }
                     return handle_error_response(
                         response,
                         status,
