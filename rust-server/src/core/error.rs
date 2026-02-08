@@ -3,6 +3,7 @@
 //! This module provides a unified error type [`AppError`] that wraps various error sources
 //! and implements proper HTTP response conversion.
 
+use crate::core::error_types::{ERROR_CODE_TTFT_TIMEOUT, ERROR_TYPE_API, ERROR_TYPE_TIMEOUT};
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -118,15 +119,15 @@ impl IntoResponse for AppError {
             Json(json!({
                 "error": {
                     "message": error_message,
-                    "type": "timeout_error",
-                    "code": "ttft_timeout"
+                    "type": ERROR_TYPE_TIMEOUT,
+                    "code": ERROR_CODE_TTFT_TIMEOUT
                 }
             }))
         } else {
             Json(json!({
                 "error": {
                     "message": error_message,
-                    "type": "error",
+                    "type": ERROR_TYPE_API,
                     "code": status.as_u16()
                 }
             }))

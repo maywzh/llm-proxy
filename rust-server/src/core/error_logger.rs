@@ -1,7 +1,7 @@
+pub use crate::core::error_types::ErrorCategoryCode as ErrorCategory;
 use axum::http::HeaderMap;
 use serde_json::Value;
 use sqlx::PgPool;
-use std::fmt;
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
@@ -14,30 +14,6 @@ const SENSITIVE_HEADERS: &[&str] = &[
 ];
 
 const MAX_STRING_LEN: usize = 200;
-
-pub enum ErrorCategory {
-    Provider4xx,
-    Provider5xx,
-    Timeout,
-    NetworkError,
-    ConnectError,
-    StreamError,
-    InternalError,
-}
-
-impl fmt::Display for ErrorCategory {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ErrorCategory::Provider4xx => write!(f, "provider_4xx"),
-            ErrorCategory::Provider5xx => write!(f, "provider_5xx"),
-            ErrorCategory::Timeout => write!(f, "timeout"),
-            ErrorCategory::NetworkError => write!(f, "network_error"),
-            ErrorCategory::ConnectError => write!(f, "connect_error"),
-            ErrorCategory::StreamError => write!(f, "stream_error"),
-            ErrorCategory::InternalError => write!(f, "internal_error"),
-        }
-    }
-}
 
 pub struct ErrorLogRecord {
     pub request_id: String,

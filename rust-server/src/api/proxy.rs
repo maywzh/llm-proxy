@@ -14,10 +14,10 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::Utc;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
+use crate::api::auth::{verify_auth, AuthFormat};
 use crate::api::claude_models::{ClaudeTokenCountRequest, ClaudeTokenCountResponse};
 use crate::api::disconnect::DisconnectStream;
 use crate::api::gemini3::{normalize_request_payload, strip_gemini3_provider_fields};
@@ -28,19 +28,22 @@ use crate::api::models::{
 };
 use crate::api::rectifier::sanitize_provider_payload;
 use crate::api::streaming::{calculate_message_tokens_with_tools, create_sse_stream};
-use crate::core::config::CredentialConfig;
-use crate::core::database::hash_key;
-use crate::core::error_logger::{log_error, mask_headers, ErrorCategory, ErrorLogRecord};
-use crate::core::header_policy::sanitize_anthropic_beta_header;
-use crate::core::jsonl_logger::{
-    log_provider_request, log_provider_response, log_request, log_response,
+use crate::api::upstream::{
+    attach_response_extensions, build_json_response, build_protocol_error_response,
+    build_protocol_upstream_request, build_provider_debug_headers,
+    build_unexpected_status_split_response, build_upstream_request,
+    execute_upstream_request_or_transport_error, finalize_non_streaming_response,
+    parse_upstream_json_or_error_with_log, split_upstream_status_error_with_log,
+    StatusErrorResponseMode, UpstreamAuth, UpstreamContext,
 };
-use crate::core::langfuse::{get_langfuse_service, init_langfuse_trace, GenerationData};
+use crate::core::error_logger::{log_error, mask_headers, ErrorCategory, ErrorLogRecord};
+use crate::core::error_types::{ERROR_TYPE_API, ERROR_TYPE_INVALID_REQUEST, ERROR_TYPE_TIMEOUT};
+use crate::core::header_policy::sanitize_anthropic_beta_header;
+use crate::core::jsonl_logger::{log_provider_request, log_provider_response, log_request};
+use crate::core::langfuse::{fail_generation_if_sampled, init_langfuse_trace, GenerationData};
 use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
-use crate::core::middleware::{
-    extract_client, ApiKeyName, HasCredentials, ModelName, ProviderName,
-};
+use crate::core::middleware::{extract_client, HasCredentials};
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::utils::{get_key_name, strip_provider_suffix};
 use crate::core::StreamCancelHandle;
@@ -84,107 +87,6 @@ impl HasCredentials for ProxyState {
 }
 
 // ============================================================================
-// Authentication Helpers
-// ============================================================================
-
-/// Verify API key authentication (supports both OpenAI and Claude formats)
-pub fn verify_auth_multi_format(
-    headers: &HeaderMap,
-    state: &AppState,
-) -> Result<Option<CredentialConfig>> {
-    // Extract the provided key from Authorization header or x-api-key (Claude style)
-    let provided_key = headers
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .or_else(|| {
-            headers.get("authorization").and_then(|auth_header| {
-                auth_header
-                    .to_str()
-                    .ok()
-                    .and_then(|auth_str| auth_str.strip_prefix("Bearer "))
-            })
-        });
-
-    let credentials = state.get_credentials();
-
-    if credentials.is_empty() {
-        return Ok(None);
-    }
-
-    let provided_key = provided_key.ok_or(AppError::Unauthorized)?;
-    let provided_key_hash = hash_key(provided_key);
-
-    for credential_config in credentials {
-        if credential_config.enabled && credential_config.credential_key == provided_key_hash {
-            state
-                .rate_limiter
-                .check_rate_limit(&credential_config.credential_key)?;
-
-            tracing::debug!(
-                credential_name = %credential_config.name,
-                "Request authenticated with credential"
-            );
-            return Ok(Some(credential_config.clone()));
-        }
-    }
-
-    Err(AppError::Unauthorized)
-}
-
-// ============================================================================
-// Error Response Builders
-// ============================================================================
-
-/// Build an error response in the appropriate protocol format
-pub fn build_protocol_error_response(
-    protocol: Protocol,
-    status: StatusCode,
-    error_type: &str,
-    message: &str,
-    model: Option<&str>,
-    provider: Option<&str>,
-    api_key_name: Option<&str>,
-) -> Response {
-    let body = match protocol {
-        Protocol::Anthropic | Protocol::GcpVertex => {
-            json!({
-                "type": "error",
-                "error": {
-                    "type": error_type,
-                    "message": message
-                }
-            })
-        }
-        Protocol::OpenAI | Protocol::ResponseApi => {
-            json!({
-                "error": {
-                    "message": message,
-                    "type": error_type,
-                    "code": status.as_u16()
-                }
-            })
-        }
-    };
-
-    let mut response = Json(body).into_response();
-    *response.status_mut() = status;
-
-    if let Some(m) = model {
-        response.extensions_mut().insert(ModelName(m.to_string()));
-    }
-    if let Some(p) = provider {
-        response
-            .extensions_mut()
-            .insert(ProviderName(p.to_string()));
-    }
-    if let Some(k) = api_key_name {
-        response.extensions_mut().insert(ApiKeyName(k.to_string()));
-    }
-
-    response
-}
-
-// ============================================================================
 // Protocol-Aware Proxy Handler
 // ============================================================================
 
@@ -222,7 +124,7 @@ pub async fn handle_proxy_request(
         .and_then(|v| v.to_str().ok())
         .map(String::from)
         .unwrap_or_else(generate_request_id);
-    let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+    let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
     let api_key_name = get_key_name(&key_config);
 
     // Detect client protocol
@@ -244,7 +146,7 @@ pub async fn handle_proxy_request(
         );
 
         generation_data.original_model = effective_model.clone();
-        generation_data.is_streaming = extract_stream_flag(&payload, client_protocol);
+        generation_data.is_streaming = extract_stream_flag(&payload);
 
         // Select provider
         let provider_service = state.app_state.get_provider_service();
@@ -260,7 +162,7 @@ pub async fn handle_proxy_request(
                 return Ok(build_protocol_error_response(
                     client_protocol,
                     StatusCode::BAD_REQUEST,
-                    "invalid_request_error",
+                    ERROR_TYPE_INVALID_REQUEST,
                     &err,
                     Some(&effective_model),
                     None,
@@ -349,14 +251,33 @@ pub async fn handle_proxy_request(
                 );
                 GcpVertexConfig::from_provider_with_defaults(&provider)
             });
-            build_gcp_vertex_url(
+            match crate::api::upstream::build_gcp_vertex_url(
                 &provider.api_base,
                 &gcp_config.project,
                 &gcp_config.location,
                 &gcp_config.publisher,
                 &transform_ctx.mapped_model,
                 generation_data.is_streaming,
-            )
+            ) {
+                Ok(url) => url,
+                Err(err) => {
+                    tracing::error!(
+                        request_id = %request_id,
+                        provider = %provider.name,
+                        error = %err,
+                        "GCP Vertex URL validation failed"
+                    );
+                    return Ok(build_protocol_error_response(
+                        client_protocol,
+                        StatusCode::BAD_REQUEST,
+                        ERROR_TYPE_INVALID_REQUEST,
+                        &err,
+                        Some(&effective_model),
+                        Some(&provider.name),
+                        Some(&api_key_name),
+                    ));
+                }
+            }
         } else {
             format!(
                 "{}{}",
@@ -433,89 +354,38 @@ pub async fn handle_proxy_request(
                     headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
                 );
 
-                // Send request to provider
-                // Handle different authentication methods based on protocol
-                let response = match if provider_protocol == Protocol::Anthropic {
-                    // Anthropic API requires x-api-key header and anthropic-version header
-                    let anthropic_version = headers
-                        .get("anthropic-version")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("2023-06-01");
+                let request = build_protocol_upstream_request(
+                    &state.app_state.http_client,
+                    &url,
+                    provider_protocol,
+                    &provider.api_key,
+                    &headers,
+                    anthropic_beta_header.as_deref(),
+                    &provider_payload,
+                );
 
-                    let mut req = state
-                        .app_state
-                        .http_client
-                        .post(&url)
-                        .header("x-api-key", &provider.api_key)
-                        .header("anthropic-version", anthropic_version)
-                        .header("Content-Type", "application/json");
+                let upstream_ctx = UpstreamContext {
+                    protocol: client_protocol,
+                    model: Some(&effective_model),
+                    provider: &provider.name,
+                    api_key_name: Some(&api_key_name),
+                    request_id: Some(&request_id),
+                };
 
-                    // Forward anthropic-beta header if provided by client
-                    if let Some(beta) = anthropic_beta_header.as_deref() {
-                        req = req.header("anthropic-beta", beta);
-                    }
-
-                    req.json(&provider_payload).send().await
-                } else if provider_protocol == Protocol::GcpVertex {
-                    // GCP Vertex AI uses Bearer token authentication
-                    // The api_key should be a valid GCP access token
-                    let anthropic_version = headers
-                        .get("anthropic-version")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("vertex-2023-10-16");
-
-                    let mut req = state
-                        .app_state
-                        .http_client
-                        .post(&url)
-                        .header("Authorization", format!("Bearer {}", provider.api_key))
-                        .header("Content-Type", "application/json");
-
-                    // GCP Vertex AI requires anthropic-version header for Claude models
-                    req = req.header("anthropic-version", anthropic_version);
-
-                    // Forward anthropic-beta header if provided by client
-                    if let Some(beta) = anthropic_beta_header.as_deref() {
-                        req = req.header("anthropic-beta", beta);
-                    }
-
-                    req.json(&provider_payload).send().await
-                } else {
-                    // OpenAI and other protocols use Authorization Bearer header
-                    state
-                        .app_state
-                        .http_client
-                        .post(&url)
-                        .header("Authorization", format!("Bearer {}", provider.api_key))
-                        .header("Content-Type", "application/json")
-                        .json(&provider_payload)
-                        .send()
-                        .await
-                } {
+                let response = match execute_upstream_request_or_transport_error(
+                    request,
+                    &provider_service,
+                    &upstream_ctx,
+                    None,
+                    Some(&effective_model),
+                    "HTTP request failed",
+                )
+                .await
+                .map_err(|(_, resp)| resp)
+                {
                     Ok(resp) => resp,
-                    Err(e) => {
-                        tracing::error!(
-                            request_id = %request_id,
-                            provider = %provider.name,
-                            error = %e,
-                            "HTTP request failed"
-                        );
-
-                        let (status, error_type) = if e.is_timeout() {
-                            (StatusCode::GATEWAY_TIMEOUT, "timeout_error")
-                        } else {
-                            (StatusCode::BAD_GATEWAY, "api_error")
-                        };
-
-                        return Ok(build_protocol_error_response(
-                            client_protocol,
-                            status,
-                            error_type,
-                            &format!("Upstream request failed: {}", e),
-                            Some(&effective_model),
-                            Some(&provider.name),
-                            Some(&api_key_name),
-                        ));
+                    Err(error_response) => {
+                        return Ok(error_response);
                     }
                 };
 
@@ -526,40 +396,12 @@ pub async fn handle_proxy_request(
                     // Only log provider 4xx errors (excluding 429) as they indicate
                     // potential issues with our request transformation
                     if status.is_client_error() && status.as_u16() != 429 {
-                        // Build provider request headers for debugging
-                        let provider_headers = {
-                            let mut h = serde_json::Map::new();
-                            h.insert("url".to_string(), json!(url));
-                            h.insert("content-type".to_string(), json!("application/json"));
-                            match provider_protocol {
-                                Protocol::Anthropic => {
-                                    h.insert("x-api-key".to_string(), json!("***"));
-                                    let av = headers
-                                        .get("anthropic-version")
-                                        .and_then(|v| v.to_str().ok())
-                                        .unwrap_or("2023-06-01");
-                                    h.insert("anthropic-version".to_string(), json!(av));
-                                    if let Some(beta) = anthropic_beta_header.as_deref() {
-                                        h.insert("anthropic-beta".to_string(), json!(beta));
-                                    }
-                                }
-                                Protocol::GcpVertex => {
-                                    h.insert("authorization".to_string(), json!("Bearer ***"));
-                                    let av = headers
-                                        .get("anthropic-version")
-                                        .and_then(|v| v.to_str().ok())
-                                        .unwrap_or("vertex-2023-10-16");
-                                    h.insert("anthropic-version".to_string(), json!(av));
-                                    if let Some(beta) = anthropic_beta_header.as_deref() {
-                                        h.insert("anthropic-beta".to_string(), json!(beta));
-                                    }
-                                }
-                                _ => {
-                                    h.insert("authorization".to_string(), json!("Bearer ***"));
-                                }
-                            }
-                            Value::Object(h)
-                        };
+                        let provider_headers = build_provider_debug_headers(
+                            provider_protocol,
+                            &url,
+                            &headers,
+                            anthropic_beta_header.as_deref(),
+                        );
 
                         log_error(ErrorLogRecord {
                             request_id: request_id.clone(),
@@ -586,11 +428,11 @@ pub async fn handle_proxy_request(
                     }
                     return handle_error_response(
                         response,
-                        status,
                         client_protocol,
                         &effective_model,
                         &provider.name,
                         &api_key_name,
+                        &request_id,
                     )
                     .await;
                 }
@@ -817,18 +659,12 @@ fn extract_model_from_request(payload: &Value, protocol: Protocol) -> String {
     }
 }
 
-/// Extract stream flag from request based on protocol
-fn extract_stream_flag(payload: &Value, protocol: Protocol) -> bool {
-    match protocol {
-        Protocol::OpenAI | Protocol::ResponseApi => payload
-            .get("stream")
-            .and_then(|s| s.as_bool())
-            .unwrap_or(false),
-        Protocol::Anthropic | Protocol::GcpVertex => payload
-            .get("stream")
-            .and_then(|s| s.as_bool())
-            .unwrap_or(false),
-    }
+/// Extract stream flag from request payload
+fn extract_stream_flag(payload: &Value) -> bool {
+    payload
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false)
 }
 
 fn normalize_gemini3_provider_payload(provider_payload: &mut Value, protocol: Protocol) {
@@ -853,120 +689,40 @@ fn get_provider_endpoint(protocol: Protocol) -> &'static str {
     }
 }
 
-/// Build the URL for a GCP Vertex AI request.
-///
-/// The api_base should include any custom prefix (e.g., `https://xxx.com/models/gcp-vertex`).
-/// This function only appends the dynamic GCP Vertex path.
-pub fn build_gcp_vertex_url(
-    api_base: &str,
-    gcp_project: &str,
-    gcp_location: &str,
-    gcp_publisher: &str,
-    model: &str,
-    is_streaming: bool,
-) -> String {
-    let action = if is_streaming {
-        "streamRawPredict"
-    } else {
-        "rawPredict"
-    };
-    format!(
-        "{}/v1/projects/{}/locations/{}/publishers/{}/models/{}:{}",
-        api_base, gcp_project, gcp_location, gcp_publisher, model, action
-    )
-}
-
 /// Handle error response from provider
 async fn handle_error_response(
     response: reqwest::Response,
-    status: reqwest::StatusCode,
     client_protocol: Protocol,
     model: &str,
     provider_name: &str,
     api_key_name: &str,
+    request_id: &str,
 ) -> Result<Response> {
-    let default_message = format!("HTTP {} from {}", status, provider_name);
-
-    let (error_body, raw_text) = match response.bytes().await {
-        Ok(bytes) => {
-            let text = String::from_utf8_lossy(&bytes).to_string();
-            let json = serde_json::from_slice::<Value>(&bytes).ok();
-            (json, text)
-        }
-        Err(e) => (None, format!("Failed to read response: {}", e)),
+    let ctx = UpstreamContext {
+        protocol: client_protocol,
+        model: Some(model),
+        provider: provider_name,
+        api_key_name: Some(api_key_name),
+        request_id: Some(request_id),
     };
-
-    // Try to extract error message from various formats
-    let error_message = if let Some(ref body) = error_body {
-        // Try OpenAI format: {"error": {"message": "..."}}
-        body.get("error")
-            .and_then(|e| e.get("message"))
-            .and_then(|m| m.as_str())
-            .map(|s| s.to_string())
-            // Try Anthropic format: {"type": "error", "error": {"message": "..."}}
-            .or_else(|| {
-                body.get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .map(|s| s.to_string())
-            })
-            // Try simple format: {"error": "..."}
-            .or_else(|| {
-                body.get("error")
-                    .and_then(|e| e.as_str())
-                    .map(|s| s.to_string())
-            })
-            // Try message field directly: {"message": "..."}
-            .or_else(|| {
-                body.get("message")
-                    .and_then(|m| m.as_str())
-                    .map(|s| s.to_string())
-            })
-            // Use raw text if no structured message found
-            .unwrap_or_else(|| {
-                if raw_text.is_empty() {
-                    default_message.clone()
-                } else {
-                    // Truncate long error bodies
-                    if raw_text.len() > 500 {
-                        format!("{}...", &raw_text[..500])
-                    } else {
-                        raw_text.clone()
-                    }
-                }
-            })
-    } else if raw_text.is_empty() {
-        default_message.clone()
-    } else {
-        raw_text.clone()
-    };
-
-    // TRACE level: log full error response body
-    if tracing::enabled!(tracing::Level::TRACE) {
-        tracing::trace!(
-            provider = %provider_name,
-            status = %status,
-            raw_body = %raw_text,
-            "Full error response body from provider"
-        );
+    match split_upstream_status_error_with_log(
+        response,
+        StatusErrorResponseMode::Protocol,
+        &ctx,
+        ERROR_TYPE_API,
+        "Backend API returned error",
+        true,
+        true,
+    )
+    .await
+    .map_err(|(_, resp)| resp)
+    {
+        Ok(_success_response) => Ok(build_unexpected_status_split_response(
+            &ctx,
+            "error response handler",
+        )),
+        Err(error_response) => Ok(error_response),
     }
-
-    tracing::error!(
-        provider = %provider_name,
-        status = %status,
-        error_message = %error_message,
-        "Backend API returned error"
-    );
-
-    Ok(build_protocol_error_response(
-        client_protocol,
-        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-        "api_error",
-        &error_message,
-        Some(model),
-        Some(provider_name),
-        Some(api_key_name),
-    ))
 }
 
 /// Handle streaming response with protocol conversion
@@ -1021,10 +777,12 @@ async fn handle_streaming_proxy_response(
         {
             Ok(sse_stream) => {
                 let mut resp = sse_stream.into_response();
-                resp.extensions_mut().insert(ModelName(model_label));
-                resp.extensions_mut().insert(ProviderName(provider_name));
-                resp.extensions_mut()
-                    .insert(ApiKeyName(api_key_name.to_string()));
+                attach_response_extensions(
+                    &mut resp,
+                    Some(&model_label),
+                    Some(&provider_name),
+                    Some(api_key_name),
+                );
 
                 // Wrap body with DisconnectStream to detect client disconnects
                 if let Some(handle) = cancel_handle {
@@ -1043,7 +801,7 @@ async fn handle_streaming_proxy_response(
                 Ok(build_protocol_error_response(
                     client_protocol,
                     StatusCode::GATEWAY_TIMEOUT,
-                    "timeout_error",
+                    ERROR_TYPE_TIMEOUT,
                     &e.to_string(),
                     Some(&model_label),
                     Some(&provider_name),
@@ -1359,23 +1117,20 @@ async fn handle_streaming_proxy_response(
             cancel_handle,
         });
 
-        let content_type = match client_protocol {
-            Protocol::Anthropic => "text/event-stream",
-            _ => "text/event-stream",
-        };
-
         let mut resp = Response::builder()
             .status(200)
-            .header("Content-Type", content_type)
+            .header("Content-Type", "text/event-stream")
             .header("Cache-Control", "no-cache")
             .header("Connection", "keep-alive")
             .body(body)
             .unwrap();
 
-        resp.extensions_mut().insert(ModelName(model_label));
-        resp.extensions_mut().insert(ProviderName(provider_name));
-        resp.extensions_mut()
-            .insert(ApiKeyName(api_key_name.to_string()));
+        attach_response_extensions(
+            &mut resp,
+            Some(&model_label),
+            Some(&provider_name),
+            Some(api_key_name),
+        );
 
         Ok(resp)
     }
@@ -1399,24 +1154,27 @@ async fn handle_non_streaming_proxy_response(
     let provider_name = ctx.provider_name.clone();
     let request_id = ctx.request_id.clone();
 
-    let status = response.status();
-
     // Parse response JSON
-    let response_data: Value = match response.json().await {
-        Ok(data) => data,
-        Err(e) => {
-            tracing::error!(provider = %provider_name, error = %e, "Failed to parse response");
-            return Ok(build_protocol_error_response(
-                client_protocol,
-                StatusCode::BAD_GATEWAY,
-                "api_error",
-                &format!("Invalid JSON from provider: {}", e),
-                Some(&model_label),
-                Some(&provider_name),
-                Some(api_key_name),
-            ));
-        }
-    };
+    let (status, response_data): (reqwest::StatusCode, Value) =
+        match parse_upstream_json_or_error_with_log(
+            response,
+            &UpstreamContext {
+                protocol: client_protocol,
+                model: Some(&model_label),
+                provider: &provider_name,
+                api_key_name: Some(api_key_name),
+                request_id: Some(&request_id),
+            },
+            "Failed to parse response",
+        )
+        .await
+        {
+            Ok((status, data)) => (status, data),
+            Err((error_message, error_response)) => {
+                fail_generation_if_sampled(&trace_id, &mut generation_data, error_message);
+                return Ok(error_response);
+            }
+        };
 
     // Log provider response to JSONL (raw response before transformation)
     log_provider_response(
@@ -1493,24 +1251,16 @@ async fn handle_non_streaming_proxy_response(
         );
     }
 
-    // Record Langfuse
-    generation_data.end_time = Some(Utc::now());
-    if trace_id.is_some() {
-        if let Ok(service) = get_langfuse_service().read() {
-            service.trace_generation(generation_data);
-        }
-    }
-
-    // Log response to JSONL file (non-streaming)
-    log_response(&request_id, status.as_u16(), None, &client_response);
-
-    let mut resp = Json(client_response).into_response();
-    resp.extensions_mut().insert(ModelName(model_label));
-    resp.extensions_mut().insert(ProviderName(provider_name));
-    resp.extensions_mut()
-        .insert(ApiKeyName(api_key_name.to_string()));
-
-    Ok(resp)
+    Ok(finalize_non_streaming_response(
+        trace_id.as_deref(),
+        &mut generation_data,
+        &request_id,
+        status.as_u16(),
+        client_response,
+        &model_label,
+        &provider_name,
+        api_key_name,
+    ))
 }
 
 // ============================================================================
@@ -1556,7 +1306,7 @@ pub async fn list_models_v2(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+            let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
 
             tracing::debug!(
                 request_id = %request_id,
@@ -1621,7 +1371,7 @@ pub async fn list_model_info_v1(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+            let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
 
             tracing::debug!(
                 request_id = %request_id,
@@ -1641,7 +1391,7 @@ pub async fn list_model_info_v1(
                 let mut model_keys: Vec<String> = provider.model_mapping.keys().cloned().collect();
                 model_keys.sort();
                 for model_name in model_keys {
-                    if !model_allowed_for_info(&model_name, &allowed_models) {
+                    if !crate::api::models::model_allowed_for_info(&model_name, &allowed_models) {
                         continue;
                     }
 
@@ -1700,7 +1450,7 @@ pub async fn list_model_info_v2(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+            let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
 
             tracing::debug!(
                 request_id = %request_id,
@@ -1720,7 +1470,7 @@ pub async fn list_model_info_v2(
                 let mut model_keys: Vec<String> = provider.model_mapping.keys().cloned().collect();
                 model_keys.sort();
                 for model_name in model_keys {
-                    if !model_allowed_for_info(&model_name, &allowed_models) {
+                    if !crate::api::models::model_allowed_for_info(&model_name, &allowed_models) {
                         continue;
                     }
 
@@ -1829,30 +1579,6 @@ pub async fn list_model_info_v2(
         .await
 }
 
-/// Helper function to check if a model is allowed for model info endpoint.
-fn model_allowed_for_info(model_name: &str, allowed_models: &[String]) -> bool {
-    if allowed_models.is_empty() {
-        return true;
-    }
-    if crate::api::auth::model_matches_allowed_list(model_name, allowed_models) {
-        return true;
-    }
-    if !crate::api::models::is_pattern(model_name) {
-        return false;
-    }
-    if let Some(regex) = crate::api::models::compile_pattern(model_name) {
-        for allowed in allowed_models {
-            if crate::api::models::is_pattern(allowed) {
-                continue;
-            }
-            if regex.is_match(allowed) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Handle legacy completions endpoint (V2).
 ///
 /// This endpoint is compatible with the OpenAI Completions API (legacy).
@@ -1862,7 +1588,7 @@ pub async fn completions_v2(
     Json(payload): Json<Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+    let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
     let api_key_name = key_config
         .as_ref()
         .map(|c| c.name.clone())
@@ -1911,124 +1637,80 @@ pub async fn completions_v2(
                         "Processing completions request (V2)"
                     );
 
-                    let response = match state
-                        .app_state
-                        .http_client
-                        .post(&url)
-                        .header("Authorization", format!("Bearer {}", provider.api_key))
-                        .header("Content-Type", "application/json")
-                        .json(&payload)
-                        .send()
-                        .await
+                    let request = build_upstream_request(
+                        &state.app_state.http_client,
+                        &url,
+                        &payload,
+                        UpstreamAuth::Bearer(&provider.api_key),
+                        None,
+                        None,
+                    );
+
+                    let upstream_ctx = UpstreamContext {
+                        protocol: Protocol::OpenAI,
+                        model: Some(&model_label),
+                        provider: &provider.name,
+                        api_key_name: Some(&api_key_name),
+                        request_id: Some(&request_id),
+                    };
+
+                    let response = match execute_upstream_request_or_transport_error(
+                        request,
+                        &provider_service,
+                        &upstream_ctx,
+                        Some(&url),
+                        Some(&model_label),
+                        "HTTP request failed to provider",
+                    )
+                    .await
+                    .map_err(|(_, resp)| resp)
                     {
                         Ok(resp) => resp,
-                        Err(e) => {
-                            tracing::error!(
-                                request_id = %request_id,
-                                provider = %provider.name,
-                                url = %url,
-                                model = %model_label,
-                                error = %e,
-                                "HTTP request failed to provider"
-                            );
-                            let status = if e.is_timeout() {
-                                StatusCode::GATEWAY_TIMEOUT
-                            } else {
-                                StatusCode::BAD_GATEWAY
-                            };
-                            let mut resp = Json(json!({
-                                "error": {
-                                    "message": format!("Upstream request failed: {}", e),
-                                    "type": "error"
-                                }
-                            }))
-                            .into_response();
-                            *resp.status_mut() = status;
-                            resp.extensions_mut().insert(ModelName(model_label.clone()));
-                            resp.extensions_mut()
-                                .insert(ProviderName(provider.name.clone()));
-                            resp.extensions_mut()
-                                .insert(ApiKeyName(api_key_name.clone()));
-                            return Ok(resp);
+                        Err(error_response) => {
+                            return Ok(error_response);
                         }
                     };
-
-                    let status = response.status();
 
                     // Check if backend API returned an error status code
-                    if status.is_client_error() || status.is_server_error() {
-                        let error_body = match response.bytes().await {
-                            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-                                Ok(body) => body,
-                                Err(_) => {
-                                    let text = String::from_utf8_lossy(&bytes).to_string();
-                                    json!({
-                                        "error": {
-                                            "message": text,
-                                            "type": "error",
-                                            "code": status.as_u16()
-                                        }
-                                    })
-                                }
-                            },
-                            Err(_) => json!({
-                                "error": {
-                                    "message": format!("HTTP {}", status),
-                                    "type": "error",
-                                    "code": status.as_u16()
-                                }
-                            }),
-                        };
-
-                        tracing::error!(
-                            request_id = %request_id,
-                            provider = %provider.name,
-                            status = %status,
-                            "Backend API returned error status"
-                        );
-
-                        let mut resp = Json(error_body).into_response();
-                        *resp.status_mut() = StatusCode::from_u16(status.as_u16())
-                            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-                        resp.extensions_mut().insert(ModelName(model_label.clone()));
-                        resp.extensions_mut()
-                            .insert(ProviderName(provider.name.clone()));
-                        resp.extensions_mut()
-                            .insert(ApiKeyName(api_key_name.clone()));
-                        return Ok(resp);
-                    }
-
-                    let response_data: Value = match response.json().await {
-                        Ok(data) => data,
-                        Err(e) => {
-                            tracing::error!(
-                                request_id = %request_id,
-                                provider = %provider.name,
-                                error = %e,
-                                "Failed to parse response JSON"
-                            );
-                            let mut resp = Json(json!({
-                                "error": {
-                                    "message": "Failed to parse upstream response",
-                                    "type": "error"
-                                }
-                            }))
-                            .into_response();
-                            *resp.status_mut() = StatusCode::BAD_GATEWAY;
-                            resp.extensions_mut().insert(ModelName(model_label.clone()));
-                            resp.extensions_mut()
-                                .insert(ProviderName(provider.name.clone()));
-                            resp.extensions_mut()
-                                .insert(ApiKeyName(api_key_name.clone()));
-                            return Ok(resp);
+                    let response = match split_upstream_status_error_with_log(
+                        response,
+                        StatusErrorResponseMode::Passthrough,
+                        &upstream_ctx,
+                        ERROR_TYPE_API,
+                        "Backend API returned error status",
+                        false,
+                        false,
+                    )
+                    .await
+                    .map_err(|(_, resp)| resp)
+                    {
+                        Ok(resp) => resp,
+                        Err(error_response) => {
+                            return Ok(error_response);
                         }
                     };
 
-                    let mut resp = Json(response_data).into_response();
-                    resp.extensions_mut().insert(ModelName(model_label));
-                    resp.extensions_mut().insert(ProviderName(provider.name));
-                    resp.extensions_mut().insert(ApiKeyName(api_key_name));
-                    Ok(resp)
+                    let response_data: Value = match parse_upstream_json_or_error_with_log(
+                        response,
+                        &upstream_ctx,
+                        "Failed to parse response JSON",
+                    )
+                    .await
+                    .map_err(|(_, resp)| resp)
+                    {
+                        Ok((_status, data)) => data,
+                        Err(error_response) => {
+                            return Ok(error_response);
+                        }
+                    };
+
+                    Ok(build_json_response(
+                        StatusCode::OK,
+                        response_data,
+                        Some(&model_label),
+                        Some(&provider.name),
+                        Some(&api_key_name),
+                    ))
                 })
                 .await
         })
@@ -2044,7 +1726,7 @@ pub async fn count_tokens_v2(
     Json(claude_request): Json<ClaudeTokenCountRequest>,
 ) -> Result<Json<ClaudeTokenCountResponse>> {
     let request_id = generate_request_id();
-    let _key_config = verify_auth_multi_format(&headers, &state.app_state)?;
+    let _key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
@@ -2184,6 +1866,7 @@ fn build_openai_tools_for_token_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::upstream::build_gcp_vertex_url;
 
     #[test]
     fn test_extract_model_from_request() {
@@ -2201,12 +1884,10 @@ mod tests {
     #[test]
     fn test_extract_stream_flag() {
         let payload = json!({ "model": "gpt-4", "stream": true });
-        assert!(extract_stream_flag(&payload, Protocol::OpenAI));
-        assert!(extract_stream_flag(&payload, Protocol::GcpVertex));
+        assert!(extract_stream_flag(&payload));
 
         let payload = json!({ "model": "gpt-4" });
-        assert!(!extract_stream_flag(&payload, Protocol::OpenAI));
-        assert!(!extract_stream_flag(&payload, Protocol::GcpVertex));
+        assert!(!extract_stream_flag(&payload));
     }
 
     #[test]
@@ -2229,7 +1910,8 @@ mod tests {
             "anthropic",
             "claude-3-5-sonnet@20241022",
             false,
-        );
+        )
+        .expect("valid GCP Vertex URL");
         assert_eq!(
             url,
             "https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet@20241022:rawPredict"
@@ -2242,7 +1924,8 @@ mod tests {
             "anthropic",
             "claude-3-5-sonnet@20241022",
             true,
-        );
+        )
+        .expect("valid GCP Vertex streaming URL");
         assert_eq!(
             url_streaming,
             "https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet@20241022:streamRawPredict"

@@ -14,7 +14,10 @@
 use axum::Router;
 use llm_proxy_rust::{
     api::AppState,
-    core::{init_metrics, AppConfig},
+    core::{
+        init_metrics, AppConfig, ERROR_TYPE_API, ERROR_TYPE_AUTHENTICATION,
+        ERROR_TYPE_INVALID_REQUEST, ERROR_TYPE_OVERLOADED, ERROR_TYPE_RATE_LIMIT,
+    },
     services::ProviderService,
     transformer::{Protocol, TransformContext, TransformPipeline, TransformerRegistry},
 };
@@ -570,7 +573,7 @@ fn convert_vertex_error(
     json!({
         "type": "error",
         "error": {
-            "type": "api_error",
+            "type": ERROR_TYPE_API,
             "message": error_response.to_string()
         }
     })
@@ -581,7 +584,7 @@ fn test_error_response_400_bad_request() {
     let error_response = json!({
         "type": "error",
         "error": {
-            "type": "invalid_request_error",
+            "type": ERROR_TYPE_INVALID_REQUEST,
             "message": "max_tokens must be a positive integer"
         }
     });
@@ -589,7 +592,7 @@ fn test_error_response_400_bad_request() {
     let result = convert_vertex_error(&error_response, 400);
 
     assert_eq!(result["type"], "error");
-    assert_eq!(result["error"]["type"], "invalid_request_error");
+    assert_eq!(result["error"]["type"], ERROR_TYPE_INVALID_REQUEST);
 }
 
 #[test]
@@ -597,14 +600,14 @@ fn test_error_response_401_unauthorized() {
     let error_response = json!({
         "type": "error",
         "error": {
-            "type": "authentication_error",
+            "type": ERROR_TYPE_AUTHENTICATION,
             "message": "Invalid API key or missing authentication"
         }
     });
 
     let result = convert_vertex_error(&error_response, 401);
 
-    assert_eq!(result["error"]["type"], "authentication_error");
+    assert_eq!(result["error"]["type"], ERROR_TYPE_AUTHENTICATION);
 }
 
 #[test]
@@ -612,14 +615,14 @@ fn test_error_response_429_rate_limit() {
     let error_response = json!({
         "type": "error",
         "error": {
-            "type": "rate_limit_error",
+            "type": ERROR_TYPE_RATE_LIMIT,
             "message": "Rate limit exceeded. Please retry after some time."
         }
     });
 
     let result = convert_vertex_error(&error_response, 429);
 
-    assert_eq!(result["error"]["type"], "rate_limit_error");
+    assert_eq!(result["error"]["type"], ERROR_TYPE_RATE_LIMIT);
 }
 
 #[test]
@@ -627,14 +630,14 @@ fn test_error_response_500_server_error() {
     let error_response = json!({
         "type": "error",
         "error": {
-            "type": "api_error",
+            "type": ERROR_TYPE_API,
             "message": "Internal server error"
         }
     });
 
     let result = convert_vertex_error(&error_response, 500);
 
-    assert_eq!(result["error"]["type"], "api_error");
+    assert_eq!(result["error"]["type"], ERROR_TYPE_API);
 }
 
 #[test]
@@ -867,7 +870,7 @@ async fn test_raw_predict_mock_error() {
         .respond_with(ResponseTemplate::new(400).set_body_json(json!({
             "type": "error",
             "error": {
-                "type": "invalid_request_error",
+                "type": ERROR_TYPE_INVALID_REQUEST,
                 "message": "max_tokens: Required field"
             }
         })))
@@ -893,7 +896,7 @@ async fn test_raw_predict_mock_error() {
 
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["type"], "error");
-    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(body["error"]["type"], ERROR_TYPE_INVALID_REQUEST);
 }
 
 #[tokio::test]
@@ -1013,7 +1016,7 @@ async fn test_rate_limit_error_mock() {
         .respond_with(ResponseTemplate::new(429).set_body_json(json!({
             "type": "error",
             "error": {
-                "type": "rate_limit_error",
+                "type": ERROR_TYPE_RATE_LIMIT,
                 "message": "Rate limit exceeded"
             }
         })))
@@ -1039,7 +1042,7 @@ async fn test_rate_limit_error_mock() {
     assert_eq!(response.status(), 429);
 
     let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["error"]["type"], "rate_limit_error");
+    assert_eq!(body["error"]["type"], ERROR_TYPE_RATE_LIMIT);
 }
 
 #[tokio::test]
@@ -1051,7 +1054,7 @@ async fn test_overloaded_error_mock() {
         .respond_with(ResponseTemplate::new(529).set_body_json(json!({
             "type": "error",
             "error": {
-                "type": "overloaded_error",
+                "type": ERROR_TYPE_OVERLOADED,
                 "message": "The API is temporarily overloaded"
             }
         })))
@@ -1077,7 +1080,7 @@ async fn test_overloaded_error_mock() {
     assert_eq!(response.status(), 529);
 
     let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["error"]["type"], "overloaded_error");
+    assert_eq!(body["error"]["type"], ERROR_TYPE_OVERLOADED);
 }
 
 // ============================================================================

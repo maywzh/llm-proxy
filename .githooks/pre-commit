@@ -87,7 +87,10 @@ if [[ ${#rust_files[@]} -gt 0 ]]; then
 
   # Clippy lint
   echo "   Running clippy..."
-  if ! cargo clippy --manifest-path rust-server/Cargo.toml --all-targets --all-features -- -D warnings 2>&1 | head -50; then
+  clippy_output=$(cargo clippy --manifest-path rust-server/Cargo.toml --all-targets --all-features -- -D warnings 2>&1)
+  clippy_exit=$?
+  if [[ $clippy_exit -ne 0 ]]; then
+    echo "$clippy_output" | tail -50
     echo "   ❌ Clippy found issues"
     lint_failed=1
   else

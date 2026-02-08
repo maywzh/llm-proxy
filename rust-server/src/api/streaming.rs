@@ -15,8 +15,11 @@
 use crate::api::gemini3::normalize_response_payload;
 use crate::api::models::Usage;
 use crate::core::error::AppError;
+use crate::core::error_types::{
+    ERROR_CODE_PROVIDER, ERROR_CODE_TTFT_TIMEOUT, ERROR_TYPE_STREAM, ERROR_TYPE_TIMEOUT,
+};
 use crate::core::jsonl_logger::{log_provider_streaming_response, log_streaming_response};
-use crate::core::langfuse::{get_langfuse_service, GenerationData};
+use crate::core::langfuse::{finish_generation_if_sampled, GenerationData};
 use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
@@ -996,8 +999,8 @@ pub async fn create_sse_stream(
                                     "TTFT timeout: first token not received within {} seconds",
                                     timeout_secs
                                 ),
-                                "type": "timeout_error",
-                                "code": "ttft_timeout"
+                                "type": ERROR_TYPE_TIMEOUT,
+                                "code": ERROR_CODE_TTFT_TIMEOUT
                             }
                         });
                         let error_message =
@@ -1093,8 +1096,8 @@ pub async fn create_sse_stream(
                 let error_event = json!({
                     "error": {
                         "message": e.to_string(),
-                        "type": "stream_error",
-                        "code": "provider_error"
+                        "type": ERROR_TYPE_STREAM,
+                        "code": ERROR_CODE_PROVIDER
                     }
                 });
                 let error_message =
@@ -1473,8 +1476,6 @@ fn finalize_stream(state: &mut StreamState) {
         };
         final_gen_data.output_content = Some(output_content);
         final_gen_data.finish_reason = state.finish_reason.clone();
-        final_gen_data.end_time = Some(Utc::now());
-
         // Set token usage from OutboundTokenCounter
         if !state.usage_found {
             final_gen_data.prompt_tokens = final_usage.input_tokens as u32;
@@ -1483,10 +1484,9 @@ fn finalize_stream(state: &mut StreamState) {
                 (final_usage.input_tokens + final_usage.output_tokens) as u32;
         }
 
-        // Send to Langfuse (non-blocking)
-        if let Ok(service) = get_langfuse_service().read() {
-            service.trace_generation(final_gen_data);
-        }
+        let sampled_trace_id =
+            (!final_gen_data.trace_id.is_empty()).then(|| final_gen_data.trace_id.clone());
+        finish_generation_if_sampled(&sampled_trace_id, &mut final_gen_data);
     }
 
     // Log streaming response to JSONL if enabled and request_id is set

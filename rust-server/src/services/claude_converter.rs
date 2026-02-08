@@ -10,6 +10,7 @@ use crate::api::claude_models::{
 };
 use crate::api::models::get_mapped_model;
 use crate::core::config::ModelMappingValue;
+use crate::core::error_types::ERROR_TYPE_API;
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use lazy_static::lazy_static;
@@ -608,7 +609,7 @@ pub fn convert_openai_streaming_to_claude(
                             "event: error\ndata: {}\n\n",
                             json!({
                                 "type": "error",
-                                "error": {"type": "api_error", "message": format!("Streaming error: {}", e)}
+                                "error": {"type": ERROR_TYPE_API, "message": format!("Streaming error: {}", e)}
                             })
                         );
                         return Some((
