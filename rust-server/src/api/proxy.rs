@@ -34,7 +34,7 @@ use crate::api::upstream::{
     build_unexpected_status_split_response, build_upstream_request,
     execute_upstream_request_or_transport_error, finalize_non_streaming_response,
     parse_upstream_json_or_error_with_log, split_upstream_status_error_with_log,
-    StatusErrorResponseMode, UpstreamAuth, UpstreamContext,
+    StatusErrorResponseMode, UpstreamAuth, UpstreamContext, UpstreamErrorPayload,
 };
 use crate::core::error_logger::{log_error, mask_headers, ErrorCategory, ErrorLogRecord};
 use crate::core::error_types::{ERROR_TYPE_API, ERROR_TYPE_INVALID_REQUEST, ERROR_TYPE_TIMEOUT};
@@ -393,7 +393,20 @@ pub async fn handle_proxy_request(
 
                 // Handle error responses
                 if status.is_client_error() || status.is_server_error() {
-                    // Only log provider 4xx errors (excluding 429) as they indicate
+                    // Consume the response body first via handle_error_response
+                    let (error_response, upstream_payload) = handle_error_response(
+                        response,
+                        client_protocol,
+                        &effective_model,
+                        &provider.name,
+                        &api_key_name,
+                        &request_id,
+                    )
+                    .await?;
+
+                    let response_body = upstream_payload.as_ref().map(|p| p.body.clone());
+
+                    // Log provider 4xx errors (excluding 429) as they indicate
                     // potential issues with our request transformation
                     if status.is_client_error() && status.as_u16() != 429 {
                         let provider_headers = build_provider_debug_headers(
@@ -417,24 +430,50 @@ pub async fn handle_proxy_request(
                             provider_protocol: provider_protocol.to_string(),
                             mapped_model: transform_ctx.mapped_model.clone(),
                             response_status_code: Some(status.as_u16() as i32),
+                            response_body: response_body.clone(),
                             credential_name: api_key_name.clone(),
                             client: client.clone(),
                             is_streaming: generation_data.is_streaming,
                             total_duration_ms: Some(request_start.elapsed().as_millis() as i32),
                             provider_request_body: Some(provider_payload.clone()),
                             provider_request_headers: Some(provider_headers),
-                            ..Default::default()
                         });
                     }
-                    return handle_error_response(
-                        response,
-                        client_protocol,
-                        &effective_model,
-                        &provider.name,
-                        &api_key_name,
-                        &request_id,
-                    )
-                    .await;
+
+                    // Log provider 5xx errors
+                    if status.is_server_error() {
+                        let provider_headers = build_provider_debug_headers(
+                            provider_protocol,
+                            &url,
+                            &headers,
+                            anthropic_beta_header.as_deref(),
+                        );
+
+                        log_error(ErrorLogRecord {
+                            request_id: request_id.clone(),
+                            error_category: ErrorCategory::Provider5xx,
+                            error_message: format!("HTTP {} from {}", status, provider.name),
+                            error_code: Some(status.as_u16() as i32),
+                            endpoint: path.to_string(),
+                            client_protocol: client_protocol.to_string(),
+                            request_headers: Some(mask_headers(&headers)),
+                            request_body: Some(payload.clone()),
+                            provider_name: provider.name.clone(),
+                            provider_api_base: provider.api_base.clone(),
+                            provider_protocol: provider_protocol.to_string(),
+                            mapped_model: transform_ctx.mapped_model.clone(),
+                            response_status_code: Some(status.as_u16() as i32),
+                            response_body,
+                            credential_name: api_key_name.clone(),
+                            client: client.clone(),
+                            is_streaming: generation_data.is_streaming,
+                            total_duration_ms: Some(request_start.elapsed().as_millis() as i32),
+                            provider_request_body: Some(provider_payload.clone()),
+                            provider_request_headers: Some(provider_headers),
+                        });
+                    }
+
+                    return Ok(error_response);
                 }
 
                 // Handle successful response
@@ -689,7 +728,8 @@ fn get_provider_endpoint(protocol: Protocol) -> &'static str {
     }
 }
 
-/// Handle error response from provider
+/// Handle error response from provider.
+/// Returns the HTTP response to send to the client and the parsed upstream error payload (if available).
 async fn handle_error_response(
     response: reqwest::Response,
     client_protocol: Protocol,
@@ -697,7 +737,7 @@ async fn handle_error_response(
     provider_name: &str,
     api_key_name: &str,
     request_id: &str,
-) -> Result<Response> {
+) -> Result<(Response, Option<UpstreamErrorPayload>)> {
     let ctx = UpstreamContext {
         protocol: client_protocol,
         model: Some(model),
@@ -715,13 +755,12 @@ async fn handle_error_response(
         true,
     )
     .await
-    .map_err(|(_, resp)| resp)
     {
-        Ok(_success_response) => Ok(build_unexpected_status_split_response(
-            &ctx,
-            "error response handler",
+        Ok(_success_response) => Ok((
+            build_unexpected_status_split_response(&ctx, "error response handler"),
+            None,
         )),
-        Err(error_response) => Ok(error_response),
+        Err((payload, error_response)) => Ok((error_response, Some(payload))),
     }
 }
 
