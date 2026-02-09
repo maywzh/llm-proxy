@@ -686,6 +686,8 @@ def _convert_claude_tool_results(msg: ClaudeMessage) -> List[Dict[str, Any]]:
         for block in msg.content:
             if block.type == ClaudeConstants.CONTENT_TOOL_RESULT:
                 content = _parse_tool_result_content(block.content)
+                if getattr(block, "is_error", None) and content:
+                    content = f"[Error] {content}"
                 tool_messages.append(
                     {
                         "role": ClaudeConstants.ROLE_TOOL,
