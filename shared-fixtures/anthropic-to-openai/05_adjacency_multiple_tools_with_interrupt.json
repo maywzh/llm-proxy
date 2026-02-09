@@ -1,0 +1,36 @@
+{
+  "name": "adjacency_multiple_tools_with_interrupt",
+  "description": "Multiple tool_results + user interrupt text: all tools must come before user text",
+  "input": {
+    "model": "claude-4-sonnet",
+    "max_tokens": 1024,
+    "messages": [
+      { "role": "user", "content": "do two things" },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "tool_use", "id": "tu_a", "name": "tool_a", "input": {} },
+          { "type": "tool_use", "id": "tu_b", "name": "tool_b", "input": {} }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "tu_a", "content": "result_a" },
+          { "type": "tool_result", "tool_use_id": "tu_b", "content": "result_b" },
+          { "type": "text", "text": "[Request interrupted by user for tool use]" },
+          { "type": "text", "text": "new user instruction" }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "message_count": 5,
+    "messages": [
+      { "index": 1, "role": "assistant", "has_tool_calls": true },
+      { "index": 2, "role": "tool", "tool_call_id": "tu_a" },
+      { "index": 3, "role": "tool", "tool_call_id": "tu_b" },
+      { "index": 4, "role": "user" }
+    ]
+  }
+}

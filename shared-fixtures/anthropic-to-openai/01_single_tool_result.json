@@ -1,0 +1,32 @@
+{
+  "name": "single_tool_result",
+  "description": "Single tool_result should become a role:tool message",
+  "input": {
+    "model": "claude-4-sonnet",
+    "max_tokens": 1024,
+    "messages": [
+      { "role": "user", "content": "Read the file" },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "Let me read that." },
+          { "type": "tool_use", "id": "tu_1", "name": "Read", "input": { "file": "a.rs" } }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "tu_1", "content": "file content here" }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "message_count": 3,
+    "messages": [
+      { "index": 0, "role": "user" },
+      { "index": 1, "role": "assistant", "has_tool_calls": true },
+      { "index": 2, "role": "tool", "tool_call_id": "tu_1", "content": "file content here" }
+    ]
+  }
+}

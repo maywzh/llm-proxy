@@ -1,0 +1,33 @@
+{
+  "name": "adjacency_with_system_reminder",
+  "description": "system-reminder text must NOT break assistant(tool_calls) -> tool(result) adjacency",
+  "input": {
+    "model": "claude-4-sonnet",
+    "max_tokens": 1024,
+    "messages": [
+      { "role": "user", "content": "search for chromium size" },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "Let me search." },
+          { "type": "tool_use", "id": "tu_search", "name": "web_search", "input": { "q": "chromium" } }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "tu_search", "content": "Found 5 results" },
+          { "type": "text", "text": "<system-reminder>Use TodoWrite</system-reminder>" }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "message_count": 4,
+    "messages": [
+      { "index": 1, "role": "assistant", "has_tool_calls": true },
+      { "index": 2, "role": "tool", "tool_call_id": "tu_search" },
+      { "index": 3, "role": "user", "content_contains": "system-reminder" }
+    ]
+  }
+}
