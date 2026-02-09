@@ -182,6 +182,15 @@ export interface CredentialFormData {
 }
 
 // Chat Types
+export interface ImageAttachment {
+  id: string; // Unique ID for React key and deduplication
+  dataUrl: string; // Data URL content
+  name: string; // Display name (pasted-xxx or original filename)
+  type: string; // MIME type
+  size: number; // File size in bytes
+  source: 'upload' | 'paste'; // Source indicator
+}
+
 export type ChatContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } };

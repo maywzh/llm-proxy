@@ -6,7 +6,9 @@ import {
   StopCircle,
   X,
 } from 'lucide-react';
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
+import type { ImageAttachment } from '../types';
+import { ImagePreviewModal } from './ImagePreviewModal';
 
 type ModelOption = {
   value: string;
@@ -17,6 +19,7 @@ type Props = {
   input: string;
   onInputChange: (value: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onPaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
 
   isLoading: boolean;
   isStreaming: boolean;
@@ -26,8 +29,8 @@ type Props = {
 
   onStop: () => void;
 
-  imageDataUrl: string | null;
-  onRemoveImage: () => void;
+  images: ImageAttachment[];
+  onRemoveImage: (id: string) => void;
   imageError: string | null;
   imageInputRef: React.RefObject<HTMLInputElement | null>;
   onImageChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -45,12 +48,13 @@ export function ChatComposer({
   input,
   onInputChange,
   onKeyDown,
+  onPaste,
   isLoading,
   isStreaming,
   onSend,
   sendDisabled,
   onStop,
-  imageDataUrl,
+  images,
   onRemoveImage,
   imageError,
   imageInputRef,
@@ -63,6 +67,7 @@ export function ChatComposer({
   onOpenSettings,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -81,22 +86,32 @@ export function ChatComposer({
         ) : null}
 
         <div className="rounded-2xl bg-gray-50 dark:bg-gray-700/30 ring-1 ring-gray-200/80 dark:ring-gray-600 shadow-sm">
-          {imageDataUrl ? (
+          {images.length > 0 ? (
             <div className="px-3 pt-3">
-              <div className="relative inline-block">
-                <img
-                  src={imageDataUrl}
-                  alt="preview"
-                  className="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600"
-                />
-                <button
-                  type="button"
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-gray-800/80 dark:bg-gray-600/90 text-white hover:bg-gray-900 dark:hover:bg-gray-500 transition-colors shadow-sm"
-                  title="Remove image"
-                  onClick={onRemoveImage}
-                >
-                  <X className="w-3 h-3" />
-                </button>
+              <div className="flex gap-2 overflow-x-auto">
+                {images.map((img, index) => (
+                  <div key={img.id} className="relative shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewIndex(index)}
+                      className="block"
+                    >
+                      <img
+                        src={img.dataUrl}
+                        alt={img.name}
+                        className="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600 hover:opacity-80 transition-opacity"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-gray-800/80 dark:bg-gray-600/90 text-white hover:bg-gray-900 dark:hover:bg-gray-500 transition-colors shadow-sm"
+                      title="Remove image"
+                      onClick={() => onRemoveImage(img.id)}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           ) : null}
@@ -106,6 +121,7 @@ export function ChatComposer({
             value={input}
             onChange={e => onInputChange(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             placeholder="Message..."
             className="w-full bg-transparent text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none resize-none px-4 py-3 min-h-11"
             rows={1}
@@ -191,6 +207,15 @@ export function ChatComposer({
           </div>
         </div>
       </div>
+
+      {previewIndex !== null && images.length > 0 && (
+        <ImagePreviewModal
+          images={images}
+          currentIndex={previewIndex}
+          onClose={() => setPreviewIndex(null)}
+          onNavigate={setPreviewIndex}
+        />
+      )}
     </div>
   );
 }
