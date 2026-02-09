@@ -1474,8 +1474,8 @@ _LEGACY_SHARED_FIXTURE_DIR = (
     / "anthropic-to-openai"
 )
 
-# Legacy path does not handle is_error prefix or content_to_string variants
-_LEGACY_SKIP = {"07_tool_result_with_error.json", "08_content_string_variants.json"}
+# Legacy path does not have a standalone content_to_string method
+_LEGACY_SKIP = {"08_content_string_variants.json"}
 
 _LEGACY_FIXTURES = sorted(
     f.name
