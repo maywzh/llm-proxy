@@ -11,6 +11,7 @@
   import ChatComposer from '$lib/components/ChatComposer.svelte';
   import ChatMessageActions from '$lib/components/ChatMessageActions.svelte';
   import TypingIndicator from '$lib/components/TypingIndicator.svelte';
+  import ImagePreviewModal from '$lib/components/ImagePreviewModal.svelte';
   import {
     Trash2,
     X,
@@ -27,6 +28,7 @@
     StreamChunk,
     Model,
     ChatContentPart,
+    ImageAttachment,
   } from '$lib/types';
 
   function isContentString(content: ChatMessage['content']): content is string {
@@ -42,6 +44,17 @@
     ?.split(',')
     .map(s => s.trim())
     .filter(Boolean);
+
+  const IMAGE_FORMAT_WHITELIST = [
+    'image/png',
+    'image/jpeg',
+    'image/jpg',
+    'image/webp',
+    'image/gif',
+  ];
+
+  const MAX_IMAGES = 5;
+  const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 
   function isVisionModel(model: string) {
     if (!VISION_MODEL_ALLOWLIST || VISION_MODEL_ALLOWLIST.length === 0)
@@ -63,10 +76,55 @@
     return `${trimmed.slice(0, prefixLen)}*****`;
   }
 
+  function validateImage(file: File, currentModel: string): string | null {
+    if (!isVisionModel(currentModel)) {
+      return '当前选择的模型不支持图片输入';
+    }
+    if (file.size > MAX_IMAGE_SIZE) {
+      return '图片过大（最大 5MB）';
+    }
+    if (!IMAGE_FORMAT_WHITELIST.includes(file.type)) {
+      return `不支持的图片格式（支持: ${IMAGE_FORMAT_WHITELIST.join(', ')}）`;
+    }
+    return null;
+  }
+
+  function isDuplicateImage(dataUrl: string): boolean {
+    return images.some(img => img.dataUrl === dataUrl);
+  }
+
+  function addImages(newImages: ImageAttachment[]): void {
+    const availableSlots = MAX_IMAGES - images.length;
+    if (availableSlots <= 0) {
+      imageError = `最多只能添加 ${MAX_IMAGES} 张图片`;
+      return;
+    }
+
+    const toAdd = newImages.slice(0, availableSlots);
+    const truncated = newImages.length > availableSlots;
+
+    const uniqueImages = toAdd.filter(img => !isDuplicateImage(img.dataUrl));
+    if (uniqueImages.length < toAdd.length) {
+      const duplicateCount = toAdd.length - uniqueImages.length;
+      imageError = `已跳过 ${duplicateCount} 张重复图片`;
+      setTimeout(() => {
+        if (imageError?.includes('重复图片')) imageError = null;
+      }, 3000);
+    }
+
+    if (uniqueImages.length > 0) {
+      images = [...images, ...uniqueImages];
+    }
+
+    if (truncated) {
+      imageError = `已达到最大图片数量限制（${MAX_IMAGES}张），仅添加前 ${availableSlots} 张`;
+    }
+  }
+
   let messages: ChatMessage[] = $state([]);
   let input = $state('');
   let isEditingCredentialKey = $state(false);
-  let imageDataUrl = $state<string | null>(null);
+  let images = $state<ImageAttachment[]>([]);
   let imageError = $state<string | null>(null);
   let isLoading = $state(false);
   let isStreaming = $state(false);
@@ -83,6 +141,8 @@
   let messagesArea = $state<HTMLElement | null>(null);
   let credentialKeyInput: HTMLInputElement | null = $state(null);
   let imageInput: HTMLInputElement | null = $state(null);
+  let showPreviewModal = $state(false);
+  let previewImageIndex = $state(0);
 
   onMount(() => {
     initChatSettings();
@@ -378,21 +438,9 @@
     const file = target.files?.[0];
     if (!file) return;
 
-    if (!isVisionModel($chatSettings.selectedModel)) {
-      imageError = '当前选择的模型不支持图片输入';
-      target.value = '';
-      return;
-    }
-
-    const maxBytes = 5 * 1024 * 1024;
-    if (file.size > maxBytes) {
-      imageError = '图片过大（最大 5MB）';
-      target.value = '';
-      return;
-    }
-
-    if (!file.type.startsWith('image/')) {
-      imageError = '仅支持图片文件';
+    const validationError = validateImage(file, $chatSettings.selectedModel);
+    if (validationError) {
+      imageError = validationError;
       target.value = '';
       return;
     }
@@ -401,7 +449,15 @@
     reader.onload = () => {
       const result = reader.result;
       if (typeof result === 'string') {
-        imageDataUrl = result;
+        const attachment: ImageAttachment = {
+          id: `upload-${Date.now()}`,
+          dataUrl: result,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          source: 'upload',
+        };
+        addImages([attachment]);
       } else {
         imageError = '读取图片失败';
       }
@@ -414,26 +470,92 @@
     target.value = '';
   }
 
+  async function handlePaste(e: ClipboardEvent) {
+    imageError = null;
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imageFiles: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+
+    if (imageFiles.length === 0) return;
+    e.preventDefault();
+
+    const attachments: ImageAttachment[] = [];
+    const errors: string[] = [];
+
+    for (const file of imageFiles) {
+      const validationError = validateImage(file, $chatSettings.selectedModel);
+      if (validationError) {
+        errors.push(validationError);
+        continue;
+      }
+
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            if (typeof reader.result === 'string') resolve(reader.result);
+            else reject(new Error('Invalid result type'));
+          };
+          reader.onerror = () => reject(new Error('Failed to read file'));
+          reader.readAsDataURL(file);
+        });
+
+        const ext =
+          file.name.split('.').pop() || file.type.split('/')[1] || 'png';
+        const timestamp = Date.now();
+        const attachment: ImageAttachment = {
+          id: `paste-${timestamp}-${attachments.length}`,
+          dataUrl,
+          name: `pasted-${timestamp}-${attachments.length}.${ext}`,
+          type: file.type,
+          size: file.size,
+          source: 'paste',
+        };
+        attachments.push(attachment);
+      } catch {
+        errors.push('读取图片失败');
+      }
+    }
+
+    if (attachments.length > 0) {
+      addImages(attachments);
+    }
+
+    if (errors.length > 0 && !imageError) {
+      imageError = errors[0];
+    }
+  }
+
   async function handleSend() {
     if (
-      (!input.trim() && !imageDataUrl) ||
+      (!input.trim() && images.length === 0) ||
       !$chatSettings.selectedModel ||
       !$chatSettings.credentialKey.trim() ||
       isLoading
     )
       return;
 
-    if (imageDataUrl && !isVisionModel($chatSettings.selectedModel)) {
+    if (images.length > 0 && !isVisionModel($chatSettings.selectedModel)) {
       imageError = '当前选择的模型不支持图片输入';
       return;
     }
 
     const contentText = input.trim();
     let content: ChatMessage['content'];
-    if (imageDataUrl) {
+    if (images.length > 0) {
       const parts: ChatContentPart[] = [];
       if (contentText) parts.push({ type: 'text', text: contentText });
-      parts.push({ type: 'image_url', image_url: { url: imageDataUrl } });
+      for (const img of images) {
+        parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+      }
       content = parts;
     } else {
       content = contentText;
@@ -442,7 +564,7 @@
     const userMessage: ChatMessage = { role: 'user', content };
     const newMessages = [...messages, userMessage];
     input = '';
-    imageDataUrl = null;
+    images = [];
     await startStreaming(newMessages);
   }
 
@@ -458,7 +580,7 @@
 
   function handleClear() {
     messages = [];
-    imageDataUrl = null;
+    images = [];
     imageError = null;
   }
 
@@ -498,6 +620,19 @@
 
   function handleSuggestionClick(prompt: string) {
     input = prompt;
+  }
+
+  function handleThumbnailClick(index: number) {
+    previewImageIndex = index;
+    showPreviewModal = true;
+  }
+
+  function handleClosePreview() {
+    showPreviewModal = false;
+  }
+
+  function handleNavigatePreview(index: number) {
+    previewImageIndex = index;
   }
 </script>
 
@@ -803,23 +938,34 @@
       </div>
     {/if}
 
+    {#if showPreviewModal && images.length > 0}
+      <ImagePreviewModal
+        {images}
+        currentIndex={previewImageIndex}
+        onClose={handleClosePreview}
+        onNavigate={handleNavigatePreview}
+      />
+    {/if}
+
     <ChatComposer
       bind:input
       bind:imageInput
       onKeyDown={handleKeyDown}
+      onPaste={handlePaste}
       {isLoading}
       {isStreaming}
       onSend={handleSend}
-      sendDisabled={(!input.trim() && !imageDataUrl) ||
+      sendDisabled={(!input.trim() && images.length === 0) ||
         !$chatSettings.credentialKey.trim() ||
         !$chatSettings.selectedModel ||
         isLoading}
       onStop={handleStop}
-      {imageDataUrl}
+      {images}
       {imageError}
-      onRemoveImage={() => (imageDataUrl = null)}
+      onRemoveImage={id => (images = images.filter(img => img.id !== id))}
       onImageChange={handleImageChange}
       onPickImage={handlePickImage}
+      onThumbnailClick={handleThumbnailClick}
       showImageButton={isVisionModel($chatSettings.selectedModel)}
       selectedModel={$chatSettings.selectedModel}
       onSelectModel={value => updateChatSettings({ selectedModel: value })}
