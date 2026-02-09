@@ -8,18 +8,20 @@
     X,
   } from 'lucide-svelte';
   import { tick } from 'svelte';
+  import type { ImageAttachment } from '$lib/types';
 
   type Props = {
     input: string;
     onKeyDown: (e: KeyboardEvent) => void;
+    onPaste: (e: ClipboardEvent) => void;
     isLoading: boolean;
     isStreaming: boolean;
     onSend: () => void;
     sendDisabled: boolean;
     onStop: () => void;
-    imageDataUrl: string | null;
+    images: ImageAttachment[];
     imageError: string | null;
-    onRemoveImage: () => void;
+    onRemoveImage: (id: string) => void;
     imageInput?: HTMLInputElement | null;
     onImageChange: (e: Event) => void;
     onPickImage: () => void;
@@ -28,17 +30,19 @@
     onSelectModel: (value: string) => void;
     modelOptions: Array<{ value: string; label: string }>;
     onOpenSettings: () => void;
+    onThumbnailClick?: (index: number) => void;
   };
 
   let {
     input = $bindable(),
     onKeyDown,
+    onPaste,
     isLoading,
     isStreaming,
     onSend,
     sendDisabled,
     onStop,
-    imageDataUrl,
+    images,
     imageError,
     onRemoveImage,
     imageInput = $bindable(null),
@@ -49,6 +53,7 @@
     onSelectModel,
     modelOptions,
     onOpenSettings,
+    onThumbnailClick,
   }: Props = $props();
 
   let textareaEl: HTMLTextAreaElement | null = $state(null);
@@ -72,23 +77,40 @@
     <div
       class="rounded-2xl bg-gray-50 dark:bg-gray-700/30 ring-1 ring-gray-200/80 dark:ring-gray-600 shadow-sm"
     >
-      {#if imageDataUrl}
-        <div class="px-3 pt-3">
-          <div class="relative inline-block">
-            <img
-              src={imageDataUrl}
-              alt="preview"
-              class="h-16 w-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600"
-            />
-            <button
-              type="button"
-              class="absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-gray-800/80 dark:bg-gray-600/90 text-white hover:bg-gray-900 dark:hover:bg-gray-500 transition-colors shadow-sm"
-              title="Remove image"
-              onclick={onRemoveImage}
-            >
-              <X class="w-3 h-3" />
-            </button>
-          </div>
+      {#if images.length > 0}
+        <div class="px-3 pt-3 flex gap-2 overflow-x-auto">
+          {#each images as image (image.id)}
+            <div class="relative inline-block flex-shrink-0">
+              {#if onThumbnailClick}
+                <button
+                  type="button"
+                  class="block"
+                  onclick={() => onThumbnailClick(images.indexOf(image))}
+                  aria-label={`Preview ${image.name}`}
+                >
+                  <img
+                    src={image.dataUrl}
+                    alt={image.name}
+                    class="w-16 h-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600 cursor-pointer hover:opacity-80 transition-opacity"
+                  />
+                </button>
+              {:else}
+                <img
+                  src={image.dataUrl}
+                  alt={image.name}
+                  class="w-16 h-16 object-cover rounded-lg border border-gray-200 dark:border-gray-600"
+                />
+              {/if}
+              <button
+                type="button"
+                class="absolute -top-1.5 -right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-gray-800/80 dark:bg-gray-600/90 text-white hover:bg-gray-900 dark:hover:bg-gray-500 transition-colors shadow-sm"
+                title="Remove image"
+                onclick={() => onRemoveImage(image.id)}
+              >
+                <X class="w-3 h-3" />
+              </button>
+            </div>
+          {/each}
         </div>
       {/if}
 
@@ -96,6 +118,7 @@
         bind:this={textareaEl}
         bind:value={input}
         onkeydown={onKeyDown}
+        onpaste={onPaste}
         placeholder="Message..."
         class="w-full bg-transparent text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none resize-none px-4 py-3 min-h-11"
         rows={1}

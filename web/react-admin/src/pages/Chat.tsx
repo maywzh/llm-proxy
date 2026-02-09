@@ -17,6 +17,7 @@ import type {
   StreamChunk,
   Model,
   ChatContentPart,
+  ImageAttachment,
 } from '../types';
 import { renderMarkdownToHtml } from '../utils/markdown';
 import { renderMermaidBlocks } from '../utils/mermaid';
@@ -47,6 +48,17 @@ const isVisionModel = (model: string) => {
     normalized.startsWith(prefix.toLowerCase())
   );
 };
+
+const IMAGE_FORMAT_WHITELIST = [
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/webp',
+  'image/gif',
+];
+
+const MAX_IMAGES = 5;
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 
 const maskCredentialKey = (key: string) => {
   const trimmed = key.trim();
@@ -143,7 +155,7 @@ const Chat: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isEditingCredentialKey, setIsEditingCredentialKey] = useState(false);
-  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [images, setImages] = useState<ImageAttachment[]>([]);
   const [imageError, setImageError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -234,6 +246,48 @@ const Chat: React.FC = () => {
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const validateImage = (file: File): string | null => {
+    if (!isVisionModel(selectedModel)) {
+      return '当前选择的模型不支持图片输入';
+    }
+    if (file.size > MAX_IMAGE_SIZE) {
+      return '图片过大（最大 5MB）';
+    }
+    if (!IMAGE_FORMAT_WHITELIST.includes(file.type)) {
+      return `不支持的图片格式（支持: ${IMAGE_FORMAT_WHITELIST.join(', ')}）`;
+    }
+    return null;
+  };
+
+  const isDuplicateImage = (dataUrl: string): boolean => {
+    return images.some(img => img.dataUrl === dataUrl);
+  };
+
+  const addImages = (newImages: ImageAttachment[]) => {
+    const availableSlots = MAX_IMAGES - images.length;
+    if (availableSlots <= 0) {
+      setImageError(`最多只能添加 ${MAX_IMAGES} 张图片`);
+      return;
+    }
+
+    const toAdd = newImages.slice(0, availableSlots);
+    const deduped = toAdd.filter(img => !isDuplicateImage(img.dataUrl));
+
+    if (deduped.length < toAdd.length) {
+      setImageError('已过滤重复图片');
+    }
+
+    if (newImages.length > availableSlots) {
+      setImageError(
+        `已达到最大图片数量限制（${MAX_IMAGES}张），仅添加前 ${availableSlots} 张`
+      );
+    }
+
+    if (deduped.length > 0) {
+      setImages(prev => [...prev, ...deduped]);
+    }
   };
 
   // loadModels moved to useCallback above
@@ -354,21 +408,9 @@ const Chat: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!isVisionModel(selectedModel)) {
-      setImageError('当前选择的模型不支持图片输入');
-      e.target.value = '';
-      return;
-    }
-
-    const maxBytes = 5 * 1024 * 1024;
-    if (file.size > maxBytes) {
-      setImageError('图片过大（最大 5MB）');
-      e.target.value = '';
-      return;
-    }
-
-    if (!file.type.startsWith('image/')) {
-      setImageError('仅支持图片文件');
+    const error = validateImage(file);
+    if (error) {
+      setImageError(error);
       e.target.value = '';
       return;
     }
@@ -377,7 +419,15 @@ const Chat: React.FC = () => {
     reader.onload = () => {
       const result = reader.result;
       if (typeof result === 'string') {
-        setImageDataUrl(result);
+        const attachment: ImageAttachment = {
+          id: `upload-${Date.now()}`,
+          dataUrl: result,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          source: 'upload',
+        };
+        addImages([attachment]);
       } else {
         setImageError('读取图片失败');
       }
@@ -388,26 +438,98 @@ const Chat: React.FC = () => {
     e.target.value = '';
   };
 
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData.items);
+    const imageItems = items.filter(item => item.type.startsWith('image/'));
+
+    if (imageItems.length === 0) return;
+
+    e.preventDefault();
+    setImageError(null);
+
+    if (!isVisionModel(selectedModel)) {
+      setImageError('当前选择的模型不支持图片输入');
+      return;
+    }
+
+    const timestamp = Date.now();
+    const newAttachments: ImageAttachment[] = [];
+
+    for (let i = 0; i < imageItems.length; i++) {
+      const item = imageItems[i];
+      const file = item.getAsFile();
+      if (!file) continue;
+
+      const error = validateImage(file);
+      if (error) {
+        setImageError(error);
+        continue;
+      }
+
+      try {
+        const dataUrl = await readFileAsDataURL(file);
+        const ext = file.type.split('/')[1] || 'png';
+        const attachment: ImageAttachment = {
+          id: `paste-${timestamp}-${i}`,
+          dataUrl,
+          name: `pasted-${timestamp}-${i}.${ext}`,
+          type: file.type,
+          size: file.size,
+          source: 'paste',
+        };
+        newAttachments.push(attachment);
+      } catch {
+        setImageError('读取图片失败');
+      }
+    }
+
+    if (newAttachments.length > 0) {
+      addImages(newAttachments);
+    }
+  };
+
+  const readFileAsDataURL = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+        } else {
+          reject(new Error('Failed to read file'));
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleRemoveImage = (id: string) => {
+    setImages(prev => prev.filter(img => img.id !== id));
+    setImageError(null);
+  };
+
   const handleSend = async () => {
     if (
-      (!input.trim() && !imageDataUrl) ||
+      (!input.trim() && images.length === 0) ||
       !selectedModel ||
       !credentialKey.trim() ||
       isLoading
     )
       return;
 
-    if (imageDataUrl && !isVisionModel(selectedModel)) {
+    if (images.length > 0 && !isVisionModel(selectedModel)) {
       setImageError('当前选择的模型不支持图片输入');
       return;
     }
 
     const contentText = input.trim();
     let content: ChatMessage['content'];
-    if (imageDataUrl) {
+    if (images.length > 0) {
       const parts: ChatContentPart[] = [];
       if (contentText) parts.push({ type: 'text', text: contentText });
-      parts.push({ type: 'image_url', image_url: { url: imageDataUrl } });
+      images.forEach(img => {
+        parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+      });
       content = parts;
     } else {
       content = contentText;
@@ -421,7 +543,7 @@ const Chat: React.FC = () => {
 
     const newMessages = [...messages, userMessage];
     setInput('');
-    setImageDataUrl(null);
+    setImages([]);
     await startStreaming(newMessages);
   };
 
@@ -469,7 +591,7 @@ const Chat: React.FC = () => {
 
   const handleClear = () => {
     setMessages([]);
-    setImageDataUrl(null);
+    setImages([]);
     setImageError(null);
   };
 
@@ -841,18 +963,19 @@ const Chat: React.FC = () => {
           input={input}
           onInputChange={setInput}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           isLoading={isLoading}
           isStreaming={isStreaming}
           onSend={() => void handleSend()}
           sendDisabled={
-            (!input.trim() && !imageDataUrl) ||
+            (!input.trim() && images.length === 0) ||
             !credentialKey.trim() ||
             !selectedModel ||
             isLoading
           }
           onStop={handleStop}
-          imageDataUrl={imageDataUrl}
-          onRemoveImage={() => setImageDataUrl(null)}
+          images={images}
+          onRemoveImage={handleRemoveImage}
           imageError={imageError}
           imageInputRef={imageInputRef}
           onImageChange={handleImageChange}

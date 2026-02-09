@@ -182,6 +182,15 @@ export type ChatContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } };
 
+export interface ImageAttachment {
+  id: string;
+  dataUrl: string;
+  name: string;
+  type: string;
+  size: number;
+  source: 'upload' | 'paste';
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string | ChatContentPart[];
