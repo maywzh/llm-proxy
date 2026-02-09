@@ -1,0 +1,41 @@
+{
+  "name": "multiple_tool_results",
+  "description": "Multiple tool_results in one user message should each become a separate role:tool message",
+  "input": {
+    "model": "claude-4-sonnet",
+    "max_tokens": 1024,
+    "messages": [
+      { "role": "user", "content": "Read files and search" },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "I'll read the files and search." },
+          { "type": "tool_use", "id": "tu_1", "name": "Read", "input": { "file": "a.rs" } },
+          { "type": "tool_use", "id": "tu_2", "name": "Read", "input": { "file": "b.rs" } },
+          { "type": "tool_use", "id": "tu_3", "name": "Grep", "input": { "pattern": "foo" } },
+          { "type": "tool_use", "id": "tu_4", "name": "Edit", "input": { "file": "a.rs" } }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "tu_1", "content": "content a" },
+          { "type": "tool_result", "tool_use_id": "tu_2", "content": "content b" },
+          { "type": "tool_result", "tool_use_id": "tu_3", "content": "grep result" },
+          { "type": "tool_result", "tool_use_id": "tu_4", "content": "edit done" }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "message_count": 6,
+    "messages": [
+      { "index": 0, "role": "user" },
+      { "index": 1, "role": "assistant", "has_tool_calls": true },
+      { "index": 2, "role": "tool", "tool_call_id": "tu_1", "content": "content a" },
+      { "index": 3, "role": "tool", "tool_call_id": "tu_2", "content": "content b" },
+      { "index": 4, "role": "tool", "tool_call_id": "tu_3", "content": "grep result" },
+      { "index": 5, "role": "tool", "tool_call_id": "tu_4", "content": "edit done" }
+    ]
+  }
+}

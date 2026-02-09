@@ -1,0 +1,18 @@
+{
+  "name": "content_string_variants",
+  "description": "Test tool_result_content_to_string with various input types",
+  "variants": [
+    { "content": "hello", "is_error": false, "expected": "hello" },
+    { "content": null, "is_error": false, "expected": "" },
+    {
+      "content": [
+        { "type": "text", "text": "line1" },
+        { "type": "text", "text": "line2" }
+      ],
+      "is_error": false,
+      "expected": "line1\nline2"
+    },
+    { "content": "oops", "is_error": true, "expected": "[Error] oops" },
+    { "content": null, "is_error": true, "expected": "" }
+  ]
+}

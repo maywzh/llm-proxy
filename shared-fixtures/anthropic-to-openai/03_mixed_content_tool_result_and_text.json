@@ -1,0 +1,33 @@
+{
+  "name": "mixed_content_tool_result_and_text",
+  "description": "User message with tool_result + text: tool must come before user to preserve adjacency",
+  "input": {
+    "model": "claude-4-sonnet",
+    "max_tokens": 1024,
+    "messages": [
+      { "role": "user", "content": "Read it" },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "Reading now." },
+          { "type": "tool_use", "id": "tu_1", "name": "Read", "input": {} }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "tu_1", "content": "result" },
+          { "type": "text", "text": "Now edit it please" }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "message_count": 4,
+    "messages": [
+      { "index": 1, "role": "assistant", "has_tool_calls": true },
+      { "index": 2, "role": "tool", "tool_call_id": "tu_1", "content": "result" },
+      { "index": 3, "role": "user" }
+    ]
+  }
+}

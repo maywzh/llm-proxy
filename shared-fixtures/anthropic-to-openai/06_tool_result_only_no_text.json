@@ -1,0 +1,30 @@
+{
+  "name": "tool_result_only_no_text",
+  "description": "Pure tool_result without text should not emit an extra user message",
+  "input": {
+    "model": "claude-4-sonnet",
+    "max_tokens": 1024,
+    "messages": [
+      { "role": "user", "content": "read file" },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "tool_use", "id": "tu_1", "name": "Read", "input": {} }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "tu_1", "content": "file contents" }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "message_count": 3,
+    "messages": [
+      { "index": 1, "role": "assistant", "has_tool_calls": true },
+      { "index": 2, "role": "tool", "tool_call_id": "tu_1" }
+    ]
+  }
+}
