@@ -1,5 +1,8 @@
 """Tests for Claude API implementation."""
 
+import json
+from pathlib import Path
+
 import pytest
 import httpx
 import respx
@@ -1459,3 +1462,64 @@ class TestToolResultTextSplitOrdering:
         assert messages[-2]["role"] == "assistant"
         assert messages[-1]["role"] == "tool"
         assert messages[-1]["tool_call_id"] == "tu_1"
+
+
+# =============================================================================
+# Shared Fixture Tests — cross-language consistency verification (legacy path)
+# =============================================================================
+
+_LEGACY_SHARED_FIXTURE_DIR = (
+    Path(__file__).resolve().parent.parent.parent
+    / "shared-fixtures"
+    / "anthropic-to-openai"
+)
+
+# Legacy path does not handle is_error prefix or content_to_string variants
+_LEGACY_SKIP = {"07_tool_result_with_error.json", "08_content_string_variants.json"}
+
+_LEGACY_FIXTURES = sorted(
+    f.name
+    for f in _LEGACY_SHARED_FIXTURE_DIR.glob("*.json")
+    if f.name not in _LEGACY_SKIP and "variants" not in json.loads(f.read_text())
+)
+
+
+@pytest.mark.unit
+class TestSharedFixtures:
+    """Shared fixture tests for legacy Claude→OpenAI path."""
+
+    @pytest.mark.parametrize("fixture_name", _LEGACY_FIXTURES)
+    def test_pipeline(self, fixture_name):
+        fixture = json.loads((_LEGACY_SHARED_FIXTURE_DIR / fixture_name).read_text())
+        claude_request = ClaudeMessagesRequest(**fixture["input"])
+        openai_request = claude_to_openai_request(claude_request)
+        messages = openai_request["messages"]
+
+        expected = fixture["expected"]
+        if "message_count" in expected:
+            assert len(messages) == expected["message_count"], (
+                f"fixture {fixture_name}: message_count mismatch"
+            )
+
+        for exp_msg in expected.get("messages", []):
+            idx = exp_msg["index"]
+            msg = messages[idx]
+            ctx = f"fixture {fixture_name}, index {idx}"
+
+            if "role" in exp_msg:
+                assert msg["role"] == exp_msg["role"], f"{ctx}: role"
+            if "content" in exp_msg:
+                assert msg["content"] == exp_msg["content"], f"{ctx}: content"
+            if "content_contains" in exp_msg:
+                actual = str(msg.get("content", ""))
+                assert exp_msg["content_contains"] in actual, (
+                    f"{ctx}: content should contain '{exp_msg['content_contains']}'"
+                )
+            if "tool_call_id" in exp_msg:
+                assert msg["tool_call_id"] == exp_msg["tool_call_id"], (
+                    f"{ctx}: tool_call_id"
+                )
+            if "has_tool_calls" in exp_msg:
+                assert ("tool_calls" in msg) == exp_msg["has_tool_calls"], (
+                    f"{ctx}: has_tool_calls"
+                )

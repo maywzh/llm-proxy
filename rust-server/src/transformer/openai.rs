@@ -1961,4 +1961,141 @@ mod tests {
             ""
         );
     }
+
+    // ========================================================================
+    // Shared fixture tests — cross-language consistency verification
+    // ========================================================================
+
+    fn shared_fixture_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("shared-fixtures")
+            .join("anthropic-to-openai")
+    }
+
+    fn load_shared_fixture(name: &str) -> Value {
+        let path = shared_fixture_dir().join(name);
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to load fixture {}: {}", path.display(), e));
+        serde_json::from_str(&content).unwrap()
+    }
+
+    fn run_pipeline_fixture(fixture_name: &str) {
+        use crate::transformer::anthropic::AnthropicTransformer;
+
+        let fixture = load_shared_fixture(fixture_name);
+        let anthropic = AnthropicTransformer::new();
+        let openai = OpenAITransformer::new();
+
+        let unified = anthropic
+            .transform_request_out(fixture["input"].clone())
+            .unwrap();
+        let openai_req = openai.transform_request_in(&unified).unwrap();
+        let messages = openai_req["messages"].as_array().unwrap();
+
+        let expected = &fixture["expected"];
+        if let Some(count) = expected.get("message_count") {
+            assert_eq!(
+                messages.len(),
+                count.as_u64().unwrap() as usize,
+                "fixture {}: message_count mismatch",
+                fixture_name
+            );
+        }
+
+        if let Some(expected_msgs) = expected.get("messages").and_then(|m| m.as_array()) {
+            for exp in expected_msgs {
+                let idx = exp["index"].as_u64().unwrap() as usize;
+                let msg = &messages[idx];
+                let ctx = format!("fixture {}, index {}", fixture_name, idx);
+
+                if let Some(role) = exp.get("role").and_then(|v| v.as_str()) {
+                    assert_eq!(msg["role"].as_str().unwrap(), role, "{}: role", ctx);
+                }
+                if let Some(content) = exp.get("content").and_then(|v| v.as_str()) {
+                    assert_eq!(
+                        msg["content"].as_str().unwrap(),
+                        content,
+                        "{}: content",
+                        ctx
+                    );
+                }
+                if let Some(content_contains) = exp.get("content_contains").and_then(|v| v.as_str())
+                {
+                    let actual = msg["content"].to_string();
+                    assert!(
+                        actual.contains(content_contains),
+                        "{}: content should contain '{}', got '{}'",
+                        ctx,
+                        content_contains,
+                        actual
+                    );
+                }
+                if let Some(tcid) = exp.get("tool_call_id").and_then(|v| v.as_str()) {
+                    assert_eq!(
+                        msg["tool_call_id"].as_str().unwrap(),
+                        tcid,
+                        "{}: tool_call_id",
+                        ctx
+                    );
+                }
+                if let Some(has_tc) = exp.get("has_tool_calls").and_then(|v| v.as_bool()) {
+                    assert_eq!(
+                        msg["tool_calls"].is_array(),
+                        has_tc,
+                        "{}: has_tool_calls",
+                        ctx
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_shared_fixture_01_single_tool_result() {
+        run_pipeline_fixture("01_single_tool_result.json");
+    }
+
+    #[test]
+    fn test_shared_fixture_02_multiple_tool_results() {
+        run_pipeline_fixture("02_multiple_tool_results.json");
+    }
+
+    #[test]
+    fn test_shared_fixture_03_mixed_content() {
+        run_pipeline_fixture("03_mixed_content_tool_result_and_text.json");
+    }
+
+    #[test]
+    fn test_shared_fixture_04_adjacency_system_reminder() {
+        run_pipeline_fixture("04_adjacency_with_system_reminder.json");
+    }
+
+    #[test]
+    fn test_shared_fixture_05_adjacency_multiple_tools_interrupt() {
+        run_pipeline_fixture("05_adjacency_multiple_tools_with_interrupt.json");
+    }
+
+    #[test]
+    fn test_shared_fixture_06_tool_result_only() {
+        run_pipeline_fixture("06_tool_result_only_no_text.json");
+    }
+
+    #[test]
+    fn test_shared_fixture_07_tool_result_with_error() {
+        run_pipeline_fixture("07_tool_result_with_error.json");
+    }
+
+    #[test]
+    fn test_shared_fixture_08_content_string_variants() {
+        let fixture = load_shared_fixture("08_content_string_variants.json");
+        let variants = fixture["variants"].as_array().unwrap();
+        for (i, v) in variants.iter().enumerate() {
+            let content = &v["content"];
+            let is_error = v["is_error"].as_bool().unwrap();
+            let expected = v["expected"].as_str().unwrap();
+            let actual = OpenAITransformer::tool_result_content_to_string(content, is_error);
+            assert_eq!(actual, expected, "variant {}", i);
+        }
+    }
 }
