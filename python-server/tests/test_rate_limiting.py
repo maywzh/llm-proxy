@@ -320,3 +320,251 @@ class TestRateLimitingIntegration:
         with pytest.raises(HTTPException) as exc_info:
             verify_credential_key(f"Bearer {raw_key_1}")
         assert exc_info.value.status_code == 429
+
+
+class TestRateLimitHotReload:
+    """Tests for rate limit hot reload via init_rate_limiter"""
+
+    def test_hot_reload_adds_new_credential(self, monkeypatch):
+        """After reload, newly added credential's rate limit is enforced"""
+        from app.core import security as security_module
+
+        raw_key_a = "sk-key-a"
+        raw_key_b = "sk-key-b"
+
+        # Initial: only key-a
+        creds_v1 = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key_a),
+                name="key-a",
+                rate_limit=RateLimitConfig(requests_per_second=10, burst_size=10),
+            ),
+        ]
+
+        class ConfigV1:
+            credentials = creds_v1
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV1())
+        security_module.init_rate_limiter()
+
+        # key-a works
+        is_valid, _ = verify_credential_key(f"Bearer {raw_key_a}")
+        assert is_valid is True
+
+        # Hot reload: add key-b with strict limit
+        creds_v2 = creds_v1 + [
+            CredentialConfig(
+                credential_key=hash_key(raw_key_b),
+                name="key-b",
+                rate_limit=RateLimitConfig(requests_per_second=2, burst_size=2),
+            ),
+        ]
+
+        class ConfigV2:
+            credentials = creds_v2
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV2())
+        security_module.init_rate_limiter()
+
+        # key-b should now be enforced
+        verify_credential_key(f"Bearer {raw_key_b}")
+        verify_credential_key(f"Bearer {raw_key_b}")
+        with pytest.raises(HTTPException) as exc_info:
+            verify_credential_key(f"Bearer {raw_key_b}")
+        assert exc_info.value.status_code == 429
+
+    def test_hot_reload_removes_rate_limit(self, monkeypatch):
+        """After reload, credential whose rate_limit is removed becomes unlimited"""
+        from app.core import security as security_module
+
+        raw_key = "sk-key-remove"
+
+        # Initial: key with rate limit
+        creds_v1 = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
+                name="key-remove",
+                rate_limit=RateLimitConfig(requests_per_second=2, burst_size=2),
+            ),
+        ]
+
+        class ConfigV1:
+            credentials = creds_v1
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV1())
+        security_module.init_rate_limiter()
+
+        # Exhaust the limit
+        verify_credential_key(f"Bearer {raw_key}")
+        verify_credential_key(f"Bearer {raw_key}")
+        with pytest.raises(HTTPException):
+            verify_credential_key(f"Bearer {raw_key}")
+
+        # Hot reload: remove rate limit
+        creds_v2 = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
+                name="key-remove",
+                rate_limit=None,
+            ),
+        ]
+
+        class ConfigV2:
+            credentials = creds_v2
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV2())
+        security_module.init_rate_limiter()
+
+        # Should now be unlimited
+        for _ in range(50):
+            is_valid, _ = verify_credential_key(f"Bearer {raw_key}")
+            assert is_valid is True
+
+    def test_hot_reload_updates_rate_limit(self, monkeypatch):
+        """After reload, changed rate limit takes effect"""
+        from app.core import security as security_module
+
+        raw_key = "sk-key-update"
+
+        # Initial: strict limit (2 rps)
+        creds_v1 = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
+                name="key-update",
+                rate_limit=RateLimitConfig(requests_per_second=2, burst_size=2),
+            ),
+        ]
+
+        class ConfigV1:
+            credentials = creds_v1
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV1())
+        security_module.init_rate_limiter()
+
+        # Exhaust the limit
+        verify_credential_key(f"Bearer {raw_key}")
+        verify_credential_key(f"Bearer {raw_key}")
+        with pytest.raises(HTTPException):
+            verify_credential_key(f"Bearer {raw_key}")
+
+        # Hot reload: increase to 100 rps
+        creds_v2 = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
+                name="key-update",
+                rate_limit=RateLimitConfig(requests_per_second=100, burst_size=100),
+            ),
+        ]
+
+        class ConfigV2:
+            credentials = creds_v2
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV2())
+        security_module.init_rate_limiter()
+
+        # Should now allow many more requests
+        for _ in range(50):
+            is_valid, _ = verify_credential_key(f"Bearer {raw_key}")
+            assert is_valid is True
+
+    def test_hot_reload_removes_credential(self, monkeypatch):
+        """After reload, removed credential is rejected with 401"""
+        from app.core import security as security_module
+
+        raw_key_a = "sk-key-keep"
+        raw_key_b = "sk-key-drop"
+
+        creds_v1 = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key_a),
+                name="key-keep",
+                rate_limit=RateLimitConfig(requests_per_second=10, burst_size=10),
+            ),
+            CredentialConfig(
+                credential_key=hash_key(raw_key_b),
+                name="key-drop",
+                rate_limit=RateLimitConfig(requests_per_second=10, burst_size=10),
+            ),
+        ]
+
+        class ConfigV1:
+            credentials = creds_v1
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV1())
+        security_module.init_rate_limiter()
+
+        # Both work initially
+        verify_credential_key(f"Bearer {raw_key_a}")
+        verify_credential_key(f"Bearer {raw_key_b}")
+
+        # Hot reload: remove key-b
+        creds_v2 = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key_a),
+                name="key-keep",
+                rate_limit=RateLimitConfig(requests_per_second=10, burst_size=10),
+            ),
+        ]
+
+        class ConfigV2:
+            credentials = creds_v2
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV2())
+        security_module.init_rate_limiter()
+
+        # key-a still works
+        is_valid, _ = verify_credential_key(f"Bearer {raw_key_a}")
+        assert is_valid is True
+
+        # key-b should now be rejected (401, not in credentials)
+        with pytest.raises(HTTPException) as exc_info:
+            verify_credential_key(f"Bearer {raw_key_b}")
+        assert exc_info.value.status_code == 401
+
+    def test_hot_reload_adds_rate_limit_to_existing(self, monkeypatch):
+        """After reload, credential that gains a rate_limit is enforced"""
+        from app.core import security as security_module
+
+        raw_key = "sk-key-gain-limit"
+
+        # Initial: no rate limit
+        creds_v1 = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
+                name="key-gain",
+                rate_limit=None,
+            ),
+        ]
+
+        class ConfigV1:
+            credentials = creds_v1
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV1())
+        security_module.init_rate_limiter()
+
+        # Unlimited
+        for _ in range(50):
+            is_valid, _ = verify_credential_key(f"Bearer {raw_key}")
+            assert is_valid is True
+
+        # Hot reload: add strict rate limit
+        creds_v2 = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
+                name="key-gain",
+                rate_limit=RateLimitConfig(requests_per_second=2, burst_size=2),
+            ),
+        ]
+
+        class ConfigV2:
+            credentials = creds_v2
+
+        monkeypatch.setattr(security_module, "get_config", lambda: ConfigV2())
+        security_module.init_rate_limiter()
+
+        # Should now be limited
+        verify_credential_key(f"Bearer {raw_key}")
+        verify_credential_key(f"Bearer {raw_key}")
+        with pytest.raises(HTTPException) as exc_info:
+            verify_credential_key(f"Bearer {raw_key}")
+        assert exc_info.value.status_code == 429
