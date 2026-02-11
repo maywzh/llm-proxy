@@ -339,6 +339,34 @@ pub async fn model_permission_middleware<S: HasCredentials>(
     next.run(request).await
 }
 
+/// RAII guard that decrements active_requests gauge on drop.
+/// Ensures gauge is decremented even when the async future is cancelled
+/// (e.g., client disconnect causes Hyper to drop the future).
+struct ActiveRequestGuard {
+    endpoint: String,
+}
+
+impl ActiveRequestGuard {
+    fn new(endpoint: &str) -> Self {
+        get_metrics()
+            .active_requests
+            .with_label_values(&[endpoint])
+            .inc();
+        Self {
+            endpoint: endpoint.to_string(),
+        }
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        get_metrics()
+            .active_requests
+            .with_label_values(&[&self.endpoint])
+            .dec();
+    }
+}
+
 /// Middleware for tracking request metrics.
 pub struct MetricsMiddleware;
 
@@ -365,13 +393,9 @@ impl MetricsMiddleware {
             return next.run(request).await;
         }
 
-        let metrics = get_metrics();
-
-        // Increment active requests
-        metrics
-            .active_requests
-            .with_label_values(&[&endpoint])
-            .inc();
+        // Use RAII guard to ensure gauge is decremented even on future cancellation
+        // (e.g., client disconnect). The guard's Drop impl calls .dec().
+        let _active_guard = ActiveRequestGuard::new(&endpoint);
 
         let start = Instant::now();
 
@@ -401,6 +425,7 @@ impl MetricsMiddleware {
         // Record metrics only for LLM requests (where provider is set)
         // Skip non-LLM endpoints like /api/event_logging, /debug/pprof, /v1/models, etc.
         if provider != "unknown" {
+            let metrics = get_metrics();
             metrics
                 .request_count
                 .with_label_values(&[
@@ -484,12 +509,7 @@ impl MetricsMiddleware {
             );
         }
 
-        // Decrement active requests
-        metrics
-            .active_requests
-            .with_label_values(&[&endpoint])
-            .dec();
-
+        // _active_guard is dropped here, calling .dec() automatically
         response
     }
 }
@@ -685,6 +705,311 @@ mod tests {
 
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // =========================================================================
+    // Active Requests Gauge Leak Tests
+    // =========================================================================
+    // These tests verify that the active_requests gauge is correctly
+    // decremented in all scenarios, including client disconnect (future
+    // cancellation), handler panic, and handler error.
+
+    #[tokio::test]
+    async fn test_active_requests_leak_on_future_cancellation() {
+        // Simulates client disconnect: the middleware future is dropped
+        // while next.run(request).await is pending.
+        // BUG: Without a Drop guard, .dec() is never called.
+        init_metrics();
+        let metrics = get_metrics();
+
+        let endpoint = "/test-cancel-leak";
+        let initial = metrics.active_requests.with_label_values(&[endpoint]).get();
+
+        // Handler that blocks until signalled (simulating a long-running request)
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
+
+        let app = Router::new()
+            .route(
+                endpoint,
+                get(move || {
+                    let tx = tx.clone();
+                    async move {
+                        // Signal that handler has started
+                        if let Some(tx) = tx.lock().await.take() {
+                            let _ = tx.send(());
+                        }
+                        // Block forever (simulating a streaming response)
+                        futures::future::pending::<()>().await;
+                        "never reached"
+                    }
+                }),
+            )
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
+
+        let request = Request::builder()
+            .uri(endpoint)
+            .body(Body::empty())
+            .unwrap();
+
+        // Spawn the request handler in a task
+        let handle = tokio::spawn(async move { app.oneshot(request).await });
+
+        // Wait for handler to start (gauge should be incremented)
+        rx.await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        let during = metrics.active_requests.with_label_values(&[endpoint]).get();
+        assert!(
+            during > initial,
+            "Gauge should be incremented while request is in-flight"
+        );
+
+        // Simulate client disconnect: abort the task (cancels the future)
+        handle.abort();
+        let _ = handle.await; // wait for abort to complete
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        let after_cancel = metrics.active_requests.with_label_values(&[endpoint]).get();
+
+        // BUG DETECTION: If this assertion fails, gauge leaked.
+        // With the current implementation (no Drop guard), this WILL fail,
+        // proving the leak exists.
+        //
+        // After fix (with Drop guard), this should pass.
+        assert_eq!(
+            after_cancel, initial,
+            "BUG: active_requests gauge leaked! \
+             Expected {} but got {}. \
+             The .dec() was not called because the future was cancelled \
+             (client disconnect). Fix: use a Drop guard for the gauge.",
+            initial, after_cancel
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_requests_no_leak_on_normal_completion() {
+        // Baseline: gauge should be correctly decremented for normal requests.
+        init_metrics();
+        let metrics = get_metrics();
+
+        let endpoint = "/test-normal-completion";
+        let initial = metrics.active_requests.with_label_values(&[endpoint]).get();
+
+        let app = Router::new()
+            .route(endpoint, get(|| async { "ok" }))
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
+
+        let request = Request::builder()
+            .uri(endpoint)
+            .body(Body::empty())
+            .unwrap();
+
+        let _response = app.oneshot(request).await.unwrap();
+
+        let final_count = metrics.active_requests.with_label_values(&[endpoint]).get();
+        assert_eq!(
+            final_count, initial,
+            "Gauge should return to initial value after normal completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_requests_no_leak_on_handler_error() {
+        // Handler returns an error response (e.g., 500). Gauge should still dec.
+        init_metrics();
+        let metrics = get_metrics();
+
+        let endpoint = "/test-handler-error";
+        let initial = metrics.active_requests.with_label_values(&[endpoint]).get();
+
+        let app = Router::new()
+            .route(
+                endpoint,
+                get(|| async { StatusCode::INTERNAL_SERVER_ERROR.into_response() }),
+            )
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
+
+        let request = Request::builder()
+            .uri(endpoint)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let final_count = metrics.active_requests.with_label_values(&[endpoint]).get();
+        assert_eq!(
+            final_count, initial,
+            "Gauge should return to initial value after error response"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_requests_no_leak_on_streaming_response_returned() {
+        // When handler returns a streaming Response (Body::from_stream),
+        // next.run().await completes immediately because the stream is lazy.
+        // So .dec() IS called. This scenario does NOT leak.
+        init_metrics();
+        let metrics = get_metrics();
+
+        let endpoint = "/test-stream-returned";
+        let initial = metrics.active_requests.with_label_values(&[endpoint]).get();
+
+        let app = Router::new()
+            .route(
+                endpoint,
+                get(|| async {
+                    let stream = async_stream::stream! {
+                        for i in 0..3 {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                            yield Ok::<_, std::io::Error>(
+                                bytes::Bytes::from(format!("data: chunk {}\n\n", i))
+                            );
+                        }
+                    };
+                    let body = Body::from_stream(stream);
+                    Response::builder()
+                        .status(200)
+                        .header("content-type", "text/event-stream")
+                        .body(body)
+                        .unwrap()
+                }),
+            )
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
+
+        let request = Request::builder()
+            .uri(endpoint)
+            .body(Body::empty())
+            .unwrap();
+
+        let _response = app.oneshot(request).await.unwrap();
+
+        let final_count = metrics.active_requests.with_label_values(&[endpoint]).get();
+        assert_eq!(
+            final_count, initial,
+            "Streaming response (Body::from_stream) returns immediately, \
+             so .dec() is called and gauge should not leak."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_requests_leak_on_upstream_connect_cancelled() {
+        // Real production scenario: handler is waiting for upstream provider
+        // connection (e.g., waiting for Anthropic API to respond) when client
+        // disconnects. The handler hasn't returned a Response yet.
+        init_metrics();
+        let metrics = get_metrics();
+
+        let endpoint = "/test-upstream-cancel";
+        let initial = metrics.active_requests.with_label_values(&[endpoint]).get();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
+
+        let app = Router::new()
+            .route(
+                endpoint,
+                get(move || {
+                    let tx = tx.clone();
+                    async move {
+                        // Signal that handler has started
+                        if let Some(tx) = tx.lock().await.take() {
+                            let _ = tx.send(());
+                        }
+                        // Simulate waiting for upstream provider (TTFB wait)
+                        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                        // Would return streaming response, but never gets here
+                        "never reached"
+                    }
+                }),
+            )
+            .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
+
+        let request = Request::builder()
+            .uri(endpoint)
+            .body(Body::empty())
+            .unwrap();
+
+        let handle = tokio::spawn(async move { app.oneshot(request).await });
+
+        rx.await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        // Client disconnects while waiting for upstream
+        handle.abort();
+        let _ = handle.await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        let after_cancel = metrics.active_requests.with_label_values(&[endpoint]).get();
+        assert_eq!(
+            after_cancel, initial,
+            "BUG: active_requests gauge leaked when client disconnected \
+             during upstream connection wait! Expected {} but got {}.",
+            initial, after_cancel
+        );
+    }
+
+    #[tokio::test]
+    async fn test_active_requests_multiple_cancellations_accumulate() {
+        // Demonstrates that each cancelled request adds +1 to the gauge,
+        // confirming the leak is cumulative (matching the 290 observed in prod).
+        init_metrics();
+        let metrics = get_metrics();
+
+        let endpoint = "/test-multi-cancel";
+        let initial = metrics.active_requests.with_label_values(&[endpoint]).get();
+
+        let cancel_count = 5;
+
+        for _ in 0..cancel_count {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
+
+            let app = Router::new()
+                .route(
+                    endpoint,
+                    get(move || {
+                        let tx = tx.clone();
+                        async move {
+                            if let Some(tx) = tx.lock().await.take() {
+                                let _ = tx.send(());
+                            }
+                            futures::future::pending::<()>().await;
+                            "never"
+                        }
+                    }),
+                )
+                .layer(middleware::from_fn(MetricsMiddleware::track_metrics));
+
+            let request = Request::builder()
+                .uri(endpoint)
+                .body(Body::empty())
+                .unwrap();
+
+            let handle = tokio::spawn(async move { app.oneshot(request).await });
+            rx.await.unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+
+            handle.abort();
+            let _ = handle.await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        }
+
+        let final_count = metrics.active_requests.with_label_values(&[endpoint]).get();
+        let leaked = final_count - initial;
+
+        // If leak exists, leaked should equal cancel_count
+        // After fix, leaked should be 0
+        assert_eq!(
+            leaked, 0.0,
+            "BUG: {} gauge increments leaked across {} cancellations. \
+             This matches the production behavior where gauge accumulates \
+             to 290+ over time.",
+            leaked, cancel_count
+        );
     }
 
     // Tests for extract_client function
