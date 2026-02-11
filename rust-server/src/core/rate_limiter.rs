@@ -63,13 +63,60 @@ impl RateLimiter {
         if let Some(limiter) = self.limiters.get(key) {
             match limiter.check() {
                 Ok(_) => Ok(()),
-                Err(_) => Err(AppError::RateLimitExceeded(
-                    "Rate limit exceeded for key".to_string(),
-                )),
+                Err(_) => {
+                    tracing::warn!(
+                        credential_key_prefix = &key[..key.len().min(8)],
+                        "Rate limit exceeded"
+                    );
+                    Err(AppError::RateLimitExceeded(
+                        "Rate limit exceeded for key".to_string(),
+                    ))
+                }
             }
         } else {
             // No rate limit configured for this key
             Ok(())
+        }
+    }
+
+    /// Synchronize rate limits from a list of credential configs.
+    ///
+    /// This performs a full diff: adds new keys, updates changed limits,
+    /// and removes keys that are no longer present.
+    pub fn sync_from_credentials(&self, credentials: &[crate::core::config::CredentialConfig]) {
+        use std::collections::HashSet;
+
+        let mut desired_keys: HashSet<String> = HashSet::new();
+
+        for cred in credentials {
+            if !cred.enabled {
+                continue;
+            }
+            if let Some(ref rl) = cred.rate_limit {
+                desired_keys.insert(cred.credential_key.clone());
+                // Re-register unconditionally — governor limiter has no way to
+                // inspect its current quota, so we just replace it.
+                self.register_key(&cred.credential_key, rl);
+            }
+        }
+
+        // Remove keys that are no longer in the desired set
+        let stale_keys: Vec<String> = self
+            .limiters
+            .iter()
+            .filter(|entry| !desired_keys.contains(entry.key().as_str()))
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for key in &stale_keys {
+            self.limiters.remove(key);
+        }
+
+        if !stale_keys.is_empty() {
+            tracing::info!(
+                removed_count = stale_keys.len(),
+                "Removed stale rate limit entries"
+            );
         }
     }
 
@@ -97,6 +144,7 @@ impl Default for RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::config::CredentialConfig;
 
     #[test]
     fn test_rate_limiter_allows_within_limit() {
@@ -213,5 +261,199 @@ mod tests {
             assert!(limiter.check_rate_limit("key2").is_ok());
         }
         assert!(limiter.check_rate_limit("key2").is_err());
+    }
+
+    fn make_credential(key: &str, rps: Option<u32>, enabled: bool) -> CredentialConfig {
+        CredentialConfig {
+            credential_key: key.to_string(),
+            name: format!("cred-{}", key),
+            description: None,
+            rate_limit: rps.map(|r| RateLimitConfig {
+                requests_per_second: r,
+                burst_size: r,
+            }),
+            enabled,
+            allowed_models: vec![],
+        }
+    }
+
+    #[test]
+    fn test_sync_adds_new_keys() {
+        let limiter = RateLimiter::new();
+        let creds = vec![
+            make_credential("key-a", Some(5), true),
+            make_credential("key-b", Some(10), true),
+        ];
+
+        limiter.sync_from_credentials(&creds);
+
+        // key-a: burst=5
+        for _ in 0..5 {
+            assert!(limiter.check_rate_limit("key-a").is_ok());
+        }
+        assert!(limiter.check_rate_limit("key-a").is_err());
+
+        // key-b: burst=10
+        for _ in 0..10 {
+            assert!(limiter.check_rate_limit("key-b").is_ok());
+        }
+        assert!(limiter.check_rate_limit("key-b").is_err());
+    }
+
+    #[test]
+    fn test_sync_removes_stale_keys() {
+        let limiter = RateLimiter::new();
+
+        // Initial: register key-a and key-b
+        limiter.register_key(
+            "key-a",
+            &RateLimitConfig {
+                requests_per_second: 5,
+                burst_size: 5,
+            },
+        );
+        limiter.register_key(
+            "key-b",
+            &RateLimitConfig {
+                requests_per_second: 5,
+                burst_size: 5,
+            },
+        );
+
+        // Sync with only key-a — key-b should be removed
+        let creds = vec![make_credential("key-a", Some(5), true)];
+        limiter.sync_from_credentials(&creds);
+
+        // key-b should now be unlimited (removed from limiter)
+        for _ in 0..100 {
+            assert!(limiter.check_rate_limit("key-b").is_ok());
+        }
+
+        // key-a should still be limited
+        for _ in 0..5 {
+            assert!(limiter.check_rate_limit("key-a").is_ok());
+        }
+        assert!(limiter.check_rate_limit("key-a").is_err());
+    }
+
+    #[test]
+    fn test_sync_updates_existing_key_limit() {
+        let limiter = RateLimiter::new();
+
+        // Register with burst=3
+        limiter.register_key(
+            "key-a",
+            &RateLimitConfig {
+                requests_per_second: 3,
+                burst_size: 3,
+            },
+        );
+
+        // Sync with burst=10 — should reset the limiter
+        let creds = vec![make_credential("key-a", Some(10), true)];
+        limiter.sync_from_credentials(&creds);
+
+        // Should now allow 10 requests
+        for _ in 0..10 {
+            assert!(limiter.check_rate_limit("key-a").is_ok());
+        }
+        assert!(limiter.check_rate_limit("key-a").is_err());
+    }
+
+    #[test]
+    fn test_sync_skips_disabled_credentials() {
+        let limiter = RateLimiter::new();
+
+        let creds = vec![
+            make_credential("enabled-key", Some(5), true),
+            make_credential("disabled-key", Some(5), false),
+        ];
+
+        limiter.sync_from_credentials(&creds);
+
+        // enabled-key should be limited
+        for _ in 0..5 {
+            assert!(limiter.check_rate_limit("enabled-key").is_ok());
+        }
+        assert!(limiter.check_rate_limit("enabled-key").is_err());
+
+        // disabled-key should be unlimited (not registered)
+        for _ in 0..100 {
+            assert!(limiter.check_rate_limit("disabled-key").is_ok());
+        }
+    }
+
+    #[test]
+    fn test_sync_skips_credentials_without_rate_limit() {
+        let limiter = RateLimiter::new();
+
+        let creds = vec![
+            make_credential("limited-key", Some(5), true),
+            make_credential("unlimited-key", None, true),
+        ];
+
+        limiter.sync_from_credentials(&creds);
+
+        // limited-key should be limited
+        for _ in 0..5 {
+            assert!(limiter.check_rate_limit("limited-key").is_ok());
+        }
+        assert!(limiter.check_rate_limit("limited-key").is_err());
+
+        // unlimited-key should be unlimited
+        for _ in 0..100 {
+            assert!(limiter.check_rate_limit("unlimited-key").is_ok());
+        }
+    }
+
+    #[test]
+    fn test_sync_removes_key_when_rate_limit_cleared() {
+        let limiter = RateLimiter::new();
+
+        // Register with rate limit
+        limiter.register_key(
+            "key-a",
+            &RateLimitConfig {
+                requests_per_second: 5,
+                burst_size: 5,
+            },
+        );
+
+        // Sync with same key but no rate limit — should remove from limiter
+        let creds = vec![make_credential("key-a", None, true)];
+        limiter.sync_from_credentials(&creds);
+
+        // key-a should now be unlimited
+        for _ in 0..100 {
+            assert!(limiter.check_rate_limit("key-a").is_ok());
+        }
+    }
+
+    #[test]
+    fn test_sync_empty_credentials_clears_all() {
+        let limiter = RateLimiter::new();
+
+        limiter.register_key(
+            "key-a",
+            &RateLimitConfig {
+                requests_per_second: 5,
+                burst_size: 5,
+            },
+        );
+        limiter.register_key(
+            "key-b",
+            &RateLimitConfig {
+                requests_per_second: 5,
+                burst_size: 5,
+            },
+        );
+
+        limiter.sync_from_credentials(&[]);
+
+        // All keys should be unlimited
+        for _ in 0..100 {
+            assert!(limiter.check_rate_limit("key-a").is_ok());
+            assert!(limiter.check_rate_limit("key-b").is_ok());
+        }
     }
 }

@@ -346,3 +346,202 @@ fn test_mixed_rate_limits() {
         assert!(rate_limiter.check_rate_limit("unlimited-key-2").is_ok());
     }
 }
+
+// ============================================================================
+// Hot-reload (sync_from_credentials) integration tests
+// ============================================================================
+
+fn make_credential(key: &str, rps: Option<u32>, enabled: bool) -> CredentialConfig {
+    CredentialConfig {
+        credential_key: key.to_string(),
+        name: format!("cred-{}", key),
+        description: None,
+        rate_limit: rps.map(|r| RateLimitConfig {
+            requests_per_second: r,
+            burst_size: r.saturating_mul(2),
+        }),
+        enabled,
+        allowed_models: vec![],
+    }
+}
+
+#[test]
+fn test_sync_hot_reload_add_new_credential() {
+    let rate_limiter = Arc::new(RateLimiter::new());
+
+    // Initial: one credential with rate limit
+    let creds_v1 = vec![make_credential("key-a", Some(5), true)];
+    rate_limiter.sync_from_credentials(&creds_v1);
+
+    // key-a should be limited at burst=10 (rps=5, burst=5*2)
+    for _ in 0..10 {
+        assert!(rate_limiter.check_rate_limit("key-a").is_ok());
+    }
+    assert!(rate_limiter.check_rate_limit("key-a").is_err());
+
+    // Hot reload: add key-b
+    let creds_v2 = vec![
+        make_credential("key-a", Some(5), true),
+        make_credential("key-b", Some(3), true),
+    ];
+    rate_limiter.sync_from_credentials(&creds_v2);
+
+    // key-b should now be limited at burst=6 (rps=3, burst=3*2)
+    for _ in 0..6 {
+        assert!(rate_limiter.check_rate_limit("key-b").is_ok());
+    }
+    assert!(rate_limiter.check_rate_limit("key-b").is_err());
+}
+
+#[test]
+fn test_sync_hot_reload_remove_credential() {
+    let rate_limiter = Arc::new(RateLimiter::new());
+
+    // Initial: two credentials
+    let creds_v1 = vec![
+        make_credential("key-a", Some(5), true),
+        make_credential("key-b", Some(5), true),
+    ];
+    rate_limiter.sync_from_credentials(&creds_v1);
+
+    // Both should be limited
+    for _ in 0..10 {
+        assert!(rate_limiter.check_rate_limit("key-a").is_ok());
+        assert!(rate_limiter.check_rate_limit("key-b").is_ok());
+    }
+
+    // Hot reload: remove key-b
+    let creds_v2 = vec![make_credential("key-a", Some(5), true)];
+    rate_limiter.sync_from_credentials(&creds_v2);
+
+    // key-b should now be unlimited (removed from limiter)
+    for _ in 0..100 {
+        assert!(rate_limiter.check_rate_limit("key-b").is_ok());
+    }
+}
+
+#[test]
+fn test_sync_hot_reload_update_rate_limit() {
+    let rate_limiter = Arc::new(RateLimiter::new());
+
+    // Initial: key-a with rps=3 (burst=6)
+    let creds_v1 = vec![make_credential("key-a", Some(3), true)];
+    rate_limiter.sync_from_credentials(&creds_v1);
+
+    for _ in 0..6 {
+        assert!(rate_limiter.check_rate_limit("key-a").is_ok());
+    }
+    assert!(rate_limiter.check_rate_limit("key-a").is_err());
+
+    // Hot reload: increase to rps=10 (burst=20)
+    let creds_v2 = vec![make_credential("key-a", Some(10), true)];
+    rate_limiter.sync_from_credentials(&creds_v2);
+
+    // Should now allow 20 requests (new burst)
+    for _ in 0..20 {
+        assert!(rate_limiter.check_rate_limit("key-a").is_ok());
+    }
+    assert!(rate_limiter.check_rate_limit("key-a").is_err());
+}
+
+#[test]
+fn test_sync_hot_reload_disable_credential() {
+    let rate_limiter = Arc::new(RateLimiter::new());
+
+    // Initial: key-a enabled with rate limit
+    let creds_v1 = vec![make_credential("key-a", Some(5), true)];
+    rate_limiter.sync_from_credentials(&creds_v1);
+
+    // Hot reload: disable key-a
+    let creds_v2 = vec![make_credential("key-a", Some(5), false)];
+    rate_limiter.sync_from_credentials(&creds_v2);
+
+    // Disabled credential's rate limit should be removed
+    for _ in 0..100 {
+        assert!(rate_limiter.check_rate_limit("key-a").is_ok());
+    }
+}
+
+#[test]
+fn test_sync_hot_reload_remove_rate_limit_from_credential() {
+    let rate_limiter = Arc::new(RateLimiter::new());
+
+    // Initial: key-a with rate limit
+    let creds_v1 = vec![make_credential("key-a", Some(5), true)];
+    rate_limiter.sync_from_credentials(&creds_v1);
+
+    // Hot reload: remove rate limit (set to None)
+    let creds_v2 = vec![make_credential("key-a", None, true)];
+    rate_limiter.sync_from_credentials(&creds_v2);
+
+    // Should now be unlimited
+    for _ in 0..100 {
+        assert!(rate_limiter.check_rate_limit("key-a").is_ok());
+    }
+}
+
+#[test]
+fn test_sync_hot_reload_add_rate_limit_to_existing_credential() {
+    let rate_limiter = Arc::new(RateLimiter::new());
+
+    // Initial: key-a without rate limit
+    let creds_v1 = vec![make_credential("key-a", None, true)];
+    rate_limiter.sync_from_credentials(&creds_v1);
+
+    // Should be unlimited
+    for _ in 0..100 {
+        assert!(rate_limiter.check_rate_limit("key-a").is_ok());
+    }
+
+    // Hot reload: add rate limit
+    let creds_v2 = vec![make_credential("key-a", Some(3), true)];
+    rate_limiter.sync_from_credentials(&creds_v2);
+
+    // Should now be limited at burst=6
+    for _ in 0..6 {
+        assert!(rate_limiter.check_rate_limit("key-a").is_ok());
+    }
+    assert!(rate_limiter.check_rate_limit("key-a").is_err());
+}
+
+#[test]
+fn test_sync_via_app_state_rebuild() {
+    // Verify that sync_from_credentials is accessible through the rate_limiter
+    // in the same way AppState.rebuild_cache would use it
+    let rate_limiter = Arc::new(RateLimiter::new());
+
+    // Simulate initial registration (as main.rs does at startup)
+    let initial_creds = vec![make_credential("hash-key-1", Some(5), true)];
+    for cred in &initial_creds {
+        if cred.enabled {
+            if let Some(ref rl) = cred.rate_limit {
+                rate_limiter.register_key(&cred.credential_key, rl);
+            }
+        }
+    }
+
+    // Verify initial limit works
+    for _ in 0..10 {
+        assert!(rate_limiter.check_rate_limit("hash-key-1").is_ok());
+    }
+    assert!(rate_limiter.check_rate_limit("hash-key-1").is_err());
+
+    // Simulate rebuild_cache calling sync_from_credentials with updated creds
+    let updated_creds = vec![
+        make_credential("hash-key-1", Some(20), true), // increased limit
+        make_credential("hash-key-2", Some(3), true),  // new key
+    ];
+    rate_limiter.sync_from_credentials(&updated_creds);
+
+    // hash-key-1: should have new burst=40
+    for _ in 0..40 {
+        assert!(rate_limiter.check_rate_limit("hash-key-1").is_ok());
+    }
+    assert!(rate_limiter.check_rate_limit("hash-key-1").is_err());
+
+    // hash-key-2: should be limited at burst=6
+    for _ in 0..6 {
+        assert!(rate_limiter.check_rate_limit("hash-key-2").is_ok());
+    }
+    assert!(rate_limiter.check_rate_limit("hash-key-2").is_err());
+}

@@ -415,6 +415,7 @@ class DynamicConfig:
             ServerConfig,
         )
         from app.services.provider_service import get_provider_service
+        from app.core.security import init_rate_limiter
 
         env_config = get_env_config()
 
@@ -462,6 +463,9 @@ class DynamicConfig:
 
         provider_svc = get_provider_service()
         provider_svc.reinitialize()
+
+        # Sync rate limiter with updated credentials
+        init_rate_limiter()
 
         logger.info(
             f"AppConfig and ProviderService synced: {len(providers)} providers, {len(credentials)} credentials"

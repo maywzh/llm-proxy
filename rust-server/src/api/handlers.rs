@@ -239,6 +239,9 @@ impl AppState {
             max_tokens_limit: self.config.max_tokens_limit,
         };
 
+        // Sync rate limiter with updated credentials
+        self.rate_limiter.sync_from_credentials(&credentials);
+
         CachedProviderService {
             version: runtime_config.version,
             service: ProviderService::new(app_config),
