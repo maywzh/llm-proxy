@@ -20,6 +20,13 @@
 - `llm_proxy_provider_circuit_state{provider,state}`：熔断状态 one-hot 指标。
 - `llm_proxy_provider_ejections_total{provider,reason}`：按原因统计剔除次数。
 
+## Grafana 面板建议
+
+- 参考面板文档：[docs/grafana_adaptive_panels.md](../docs/grafana_adaptive_panels.md#L1)
+- `Provider Effective Weight` 建议使用 `percentunit`（0~1 映射到 0%~100%）。
+- `Circuit Breaker State` 建议先按 `provider` 聚合后编码成 `0/0.5/1`，避免标签匹配导致空时序。
+- `Provider Ejections` 建议使用 `increase(...[5m])` 展示窗口增量。
+
 ## 相关实现
 
 - 自适应权重与熔断核心：[rust-server/src/services/provider_service.rs](../rust-server/src/services/provider_service.rs#L408)
@@ -56,4 +63,4 @@
 - GCP Vertex 路由调用入口：[rust-server/src/api/gcp_vertex.rs](../rust-server/src/api/gcp_vertex.rs#L88)
 - V2 代理路由调用入口：[rust-server/src/api/proxy.rs](../rust-server/src/api/proxy.rs#L119)
 
-**Last Updated**: 2026-02-09
+**Last Updated**: 2026-02-11
