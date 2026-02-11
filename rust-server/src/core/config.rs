@@ -216,7 +216,7 @@ fn default_enabled() -> bool {
 }
 
 fn default_burst() -> u32 {
-    10
+    1
 }
 
 /// Configuration for a single LLM provider.

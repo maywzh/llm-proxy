@@ -225,7 +225,7 @@ fn build_router(
             if let Some(rps) = credential.rate_limit {
                 let rate_config = llm_proxy_rust::core::config::RateLimitConfig {
                     requests_per_second: rps as u32,
-                    burst_size: (rps as u32).saturating_mul(2),
+                    burst_size: rps as u32,
                 };
                 rate_limiter.register_key(&credential.credential_key, &rate_config);
                 tracing::info!(
@@ -339,7 +339,7 @@ fn convert_runtime_to_app_config(runtime: &RuntimeConfig, base: &AppConfig) -> A
                 .rate_limit
                 .map(|rps| llm_proxy_rust::core::config::RateLimitConfig {
                     requests_per_second: rps as u32,
-                    burst_size: (rps as u32).saturating_mul(2),
+                    burst_size: rps as u32,
                 }),
             enabled: c.is_enabled,
             allowed_models: c.allowed_models.clone(),

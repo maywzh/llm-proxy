@@ -67,7 +67,7 @@ fn convert_credential(
             .rate_limit
             .map(|rps| crate::core::config::RateLimitConfig {
                 requests_per_second: rps as u32,
-                burst_size: (rps as u32).saturating_mul(2),
+                burst_size: rps as u32,
             }),
         enabled: c.is_enabled,
         allowed_models: c.allowed_models.clone(),
