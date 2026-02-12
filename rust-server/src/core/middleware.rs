@@ -26,6 +26,7 @@ const MODEL_CHECK_PATHS: &[&str] = &[
     "/v1/completions",
     "/v1/messages",
     "/v1/messages/count_tokens",
+    "/v1/responses",
     "/v2/chat/completions",
     "/v2/messages",
     "/v2/responses",
@@ -464,6 +465,7 @@ impl MetricsMiddleware {
         let is_llm_endpoint = endpoint == "/v1/chat/completions"
             || endpoint == "/v1/messages"
             || endpoint == "/v1/completions"
+            || endpoint == "/v1/responses"
             || endpoint == "/v2/chat/completions"
             || endpoint == "/v2/messages"
             || endpoint == "/v2/completions"

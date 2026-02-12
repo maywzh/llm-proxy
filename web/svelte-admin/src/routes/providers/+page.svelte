@@ -321,6 +321,7 @@
                 <option value="anthropic">Anthropic</option>
                 <option value="google">Google</option>
                 <option value="gcp-vertex">GCP Vertex AI</option>
+                <option value="response_api">Response API</option>
                 <option value="custom">Custom</option>
               </select>
             </div>

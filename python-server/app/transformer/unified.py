@@ -31,6 +31,8 @@ class Protocol(str, Enum):
             return cls.ANTHROPIC
         if provider_lower in ("gcp-vertex", "gcp_vertex", "vertex"):
             return cls.GCP_VERTEX
+        if provider_lower in ("response_api", "response-api", "responses"):
+            return cls.RESPONSE_API
         # OpenAI, Azure, and unknown types default to OpenAI
         return cls.OPENAI
 

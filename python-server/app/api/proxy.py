@@ -109,7 +109,7 @@ def _get_provider_endpoint(protocol: Protocol) -> str:
     elif protocol == Protocol.ANTHROPIC:
         return "/v1/messages"
     elif protocol == Protocol.RESPONSE_API:
-        return "/v1/responses"
+        return "/responses"
     elif protocol == Protocol.GCP_VERTEX:
         # GCP Vertex endpoint is built dynamically in _build_gcp_vertex_url
         return ""

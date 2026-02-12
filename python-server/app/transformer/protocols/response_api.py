@@ -841,7 +841,7 @@ class ResponseApiTransformer(Transformer):
             chunks.append(UnifiedStreamChunk.content_block_stop(index))
 
         elif event_type == "response.completed":
-            # Message delta with usage
+            # Message delta with usage, then stop
             response = event.get("response", {})
             usage_data = response.get("usage", {})
             usage = UnifiedUsage(
@@ -849,6 +849,7 @@ class ResponseApiTransformer(Transformer):
                 output_tokens=usage_data.get("output_tokens", 0),
             )
             chunks.append(UnifiedStreamChunk.message_delta(StopReason.END_TURN, usage))
+            chunks.append(UnifiedStreamChunk.message_stop())
 
         elif event_type == "response.done":
             # Message stop

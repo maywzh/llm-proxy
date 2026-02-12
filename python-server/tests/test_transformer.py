@@ -139,6 +139,14 @@ class TestProtocolEnum:
         assert Protocol.from_provider_type("azure") == Protocol.OPENAI
         assert Protocol.from_provider_type("unknown") == Protocol.OPENAI
 
+    def test_from_provider_type_response_api(self):
+        """Test Protocol.from_provider_type for Response API."""
+        assert Protocol.from_provider_type("response_api") == Protocol.RESPONSE_API
+        assert Protocol.from_provider_type("response-api") == Protocol.RESPONSE_API
+        assert Protocol.from_provider_type("responses") == Protocol.RESPONSE_API
+        assert Protocol.from_provider_type("Response_API") == Protocol.RESPONSE_API
+        assert Protocol.from_provider_type("RESPONSES") == Protocol.RESPONSE_API
+
 
 class TestRoleEnum:
     """Tests for Role enum."""

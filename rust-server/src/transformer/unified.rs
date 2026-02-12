@@ -40,7 +40,7 @@ impl std::str::FromStr for Protocol {
         match s.to_lowercase().as_str() {
             "openai" => Ok(Protocol::OpenAI),
             "anthropic" | "claude" => Ok(Protocol::Anthropic),
-            "response_api" | "responses" => Ok(Protocol::ResponseApi),
+            "response_api" | "response-api" | "responses" => Ok(Protocol::ResponseApi),
             "gcp_vertex" | "gcp-vertex" | "vertex" => Ok(Protocol::GcpVertex),
             _ => Err(format!("Unknown protocol: {}", s)),
         }
@@ -67,12 +67,14 @@ impl std::str::FromStr for Protocol {
 /// assert_eq!(provider_type_to_protocol("anthropic"), Protocol::Anthropic);
 /// assert_eq!(provider_type_to_protocol("azure"), Protocol::OpenAI);
 /// assert_eq!(provider_type_to_protocol("gcp-vertex"), Protocol::GcpVertex);
+/// assert_eq!(provider_type_to_protocol("response_api"), Protocol::ResponseApi);
 /// assert_eq!(provider_type_to_protocol("unknown"), Protocol::OpenAI);
 /// ```
 pub fn provider_type_to_protocol(provider_type: &str) -> Protocol {
     match provider_type.to_lowercase().as_str() {
         "anthropic" | "claude" => Protocol::Anthropic,
         "gcp-vertex" | "gcp_vertex" | "vertex" => Protocol::GcpVertex,
+        "response_api" | "response-api" | "responses" => Protocol::ResponseApi,
         _ => Protocol::OpenAI,
     }
 }
@@ -882,6 +884,30 @@ mod tests {
         assert_eq!(provider_type_to_protocol("vertex"), Protocol::GcpVertex);
         assert_eq!(provider_type_to_protocol("GCP-VERTEX"), Protocol::GcpVertex);
         assert_eq!(provider_type_to_protocol("Vertex"), Protocol::GcpVertex);
+    }
+
+    #[test]
+    fn test_provider_type_to_protocol_response_api() {
+        assert_eq!(
+            provider_type_to_protocol("response_api"),
+            Protocol::ResponseApi
+        );
+        assert_eq!(
+            provider_type_to_protocol("response-api"),
+            Protocol::ResponseApi
+        );
+        assert_eq!(
+            provider_type_to_protocol("responses"),
+            Protocol::ResponseApi
+        );
+        assert_eq!(
+            provider_type_to_protocol("Response_API"),
+            Protocol::ResponseApi
+        );
+        assert_eq!(
+            provider_type_to_protocol("RESPONSES"),
+            Protocol::ResponseApi
+        );
     }
 
     #[test]

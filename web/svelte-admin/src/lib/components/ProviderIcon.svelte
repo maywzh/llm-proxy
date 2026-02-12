@@ -13,6 +13,12 @@
     if (k.includes('gcp') || k.includes('vertex')) return 'gcp-vertex';
     if (k.includes('google') || k.includes('gemini')) return 'google';
     if (k.includes('grok') || k.includes('xai')) return 'xai';
+    if (
+      k.includes('response_api') ||
+      k.includes('response-api') ||
+      k.includes('responses')
+    )
+      return 'response_api';
     if (k.includes('deepseek')) return 'deepseek';
     if (
       k.includes('zhipu') ||
@@ -59,6 +65,22 @@
     <path d="M12 3L2 9l10 6 10-6-10-6z" fill="#4285F4" />
     <path d="M2 9v6l10 6V15L2 9z" fill="#34A853" />
     <path d="M22 9v6l-10 6V15l10-6z" fill="#FBBC05" />
+  </svg>
+{:else if providerType === 'response_api'}
+  <svg
+    class={className}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="#10B981"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M4 12h16" />
+    <path d="M16 8l4 4-4 4" />
+    <path
+      d="M20 6V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+    />
   </svg>
 {:else if providerType === 'xai'}
   <svg class={className} viewBox="0 0 1024 1024" fill="currentColor">

@@ -326,6 +326,25 @@ impl HealthCheckService {
                 Some("2023-06-01"),
                 None,
             )
+        } else if provider_type == "response_api"
+            || provider_type == "response-api"
+            || provider_type == "responses"
+        {
+            let url = format!("{}/responses", provider.api_base);
+            let response_api_payload = json!({
+                "model": actual_model,
+                "input": "Hi",
+                "max_output_tokens": 5,
+                "stream": false,
+            });
+            build_upstream_request(
+                client,
+                &url,
+                &response_api_payload,
+                UpstreamAuth::Bearer(&provider.api_key),
+                None,
+                None,
+            )
         } else {
             let url = format!("{}/chat/completions", provider.api_base);
             build_upstream_request(

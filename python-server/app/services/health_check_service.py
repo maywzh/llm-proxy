@@ -248,6 +248,18 @@ class HealthCheckService:
                 "anthropic-version": "2023-06-01",
                 "Content-Type": "application/json",
             }
+        elif provider_type in ("response_api", "response-api", "responses"):
+            # Response API: Bearer auth + /responses endpoint
+            url = f"{provider.api_base}/responses"
+            headers = {
+                "Authorization": f"Bearer {provider.api_key}",
+            }
+            test_payload = {
+                "model": actual_model,
+                "input": "Hi",
+                "max_output_tokens": 5,
+                "stream": False,
+            }
         else:
             # OpenAI-compatible (openai, azure, etc.): Bearer auth + /chat/completions
             url = f"{provider.api_base}/chat/completions"
