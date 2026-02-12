@@ -124,7 +124,12 @@ pub async fn handle_proxy_request(
         .and_then(|v| v.to_str().ok())
         .map(String::from)
         .unwrap_or_else(generate_request_id);
-    let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
+    let key_config = verify_auth(
+        &headers,
+        &state.app_state,
+        AuthFormat::MultiFormat,
+        Some(path),
+    )?;
     let api_key_name = get_key_name(&key_config);
 
     // Detect client protocol
@@ -1345,7 +1350,12 @@ pub async fn list_models_v2(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
+            let key_config = verify_auth(
+                &headers,
+                &state.app_state,
+                AuthFormat::MultiFormat,
+                Some("/v2/models"),
+            )?;
 
             tracing::debug!(
                 request_id = %request_id,
@@ -1410,7 +1420,12 @@ pub async fn list_model_info_v1(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
+            let key_config = verify_auth(
+                &headers,
+                &state.app_state,
+                AuthFormat::MultiFormat,
+                Some("/v1/model/info"),
+            )?;
 
             tracing::debug!(
                 request_id = %request_id,
@@ -1489,7 +1504,12 @@ pub async fn list_model_info_v2(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
+            let key_config = verify_auth(
+                &headers,
+                &state.app_state,
+                AuthFormat::MultiFormat,
+                Some("/v2/model/info"),
+            )?;
 
             tracing::debug!(
                 request_id = %request_id,
@@ -1627,7 +1647,12 @@ pub async fn completions_v2(
     Json(payload): Json<Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
+    let key_config = verify_auth(
+        &headers,
+        &state.app_state,
+        AuthFormat::MultiFormat,
+        Some("/v2/completions"),
+    )?;
     let api_key_name = key_config
         .as_ref()
         .map(|c| c.name.clone())
@@ -1765,7 +1790,12 @@ pub async fn count_tokens_v2(
     Json(claude_request): Json<ClaudeTokenCountRequest>,
 ) -> Result<Json<ClaudeTokenCountResponse>> {
     let request_id = generate_request_id();
-    let _key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
+    let _key_config = verify_auth(
+        &headers,
+        &state.app_state,
+        AuthFormat::MultiFormat,
+        Some("/v2/messages/count_tokens"),
+    )?;
 
     REQUEST_ID
         .scope(request_id.clone(), async move {

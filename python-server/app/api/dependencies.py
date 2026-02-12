@@ -2,7 +2,7 @@
 
 from typing import Optional, List
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, status, Request
 
 from app.core.security import verify_credential_key
 from app.core.logging import set_api_key_context
@@ -12,6 +12,7 @@ from app.services.provider_service import get_provider_service, ProviderService
 
 
 async def verify_auth(
+    request: Request,
     authorization: Optional[str] = Header(None),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
 ) -> Optional[CredentialConfig]:
@@ -27,9 +28,10 @@ async def verify_auth(
     Raises:
         HTTPException: 401 if authentication failed, 429 if rate limit exceeded
     """
-    is_valid, credential_config = verify_credential_key(
+    _, credential_config = verify_credential_key(
         authorization=authorization,
         x_api_key=x_api_key,
+        request_path=request.url.path,
     )
     key_name = credential_config.name if credential_config else None
     set_api_key_context(key_name or "anonymous")

@@ -13,6 +13,15 @@ use crate::core::AppError;
 use crate::AppState;
 
 // ============================================================================
+// Rate Limit Exemptions
+// ============================================================================
+
+/// Paths that should be exempt from rate limiting.
+/// These endpoints perform local computation and don't consume upstream LLM resources.
+pub const RATE_LIMIT_EXEMPT_PATHS: &[&str] =
+    &["/v1/messages/count_tokens", "/v2/messages/count_tokens"];
+
+// ============================================================================
 // Authentication Format
 // ============================================================================
 
@@ -69,6 +78,7 @@ fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
 /// * `headers` - Request headers containing authentication info
 /// * `state` - Application state containing credentials and rate limiter
 /// * `format` - Which authentication header format to accept
+/// * `request_path` - The request path (used to skip rate limiting for exempt endpoints)
 ///
 /// # Returns
 ///
@@ -82,15 +92,16 @@ fn extract_bearer(headers: &HeaderMap) -> Option<&str> {
 /// use llm_proxy_rust::api::auth::{verify_auth, AuthFormat};
 ///
 /// // For OpenAI-compatible endpoints
-/// let credential = verify_auth(&headers, &state, AuthFormat::BearerOnly)?;
+/// let credential = verify_auth(&headers, &state, AuthFormat::BearerOnly, Some("/v1/chat/completions"))?;
 ///
 /// // For Claude-compatible endpoints
-/// let credential = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
+/// let credential = verify_auth(&headers, &state, AuthFormat::MultiFormat, Some("/v1/messages"))?;
 /// ```
 pub fn verify_auth(
     headers: &HeaderMap,
     state: &AppState,
     format: AuthFormat,
+    request_path: Option<&str>,
 ) -> Result<Option<CredentialConfig>> {
     // Extract the provided key from headers
     let provided_key = extract_api_key(headers, format);
@@ -112,16 +123,24 @@ pub fn verify_auth(
     // Check against credentials configuration
     for credential_config in credentials {
         if credential_config.enabled && credential_config.credential_key == provided_key_hash {
-            // Check rate limit for this credential using the hash
-            // Wrap error with key_name context at auth layer
-            if let Err(AppError::RateLimitExceeded { message, .. }) = state
-                .rate_limiter
-                .check_rate_limit(&credential_config.credential_key)
-            {
-                return Err(AppError::RateLimitExceeded {
-                    message,
-                    key_name: Some(credential_config.name.clone()),
-                });
+            // Check if request path is exempt from rate limiting
+            let is_exempt = request_path
+                .map(|path| RATE_LIMIT_EXEMPT_PATHS.contains(&path))
+                .unwrap_or(false);
+
+            // Only check rate limit if path is not exempt
+            if !is_exempt {
+                // Check rate limit for this credential using the hash
+                // Wrap error with key_name context at auth layer
+                if let Err(AppError::RateLimitExceeded { message, .. }) = state
+                    .rate_limiter
+                    .check_rate_limit(&credential_config.credential_key)
+                {
+                    return Err(AppError::RateLimitExceeded {
+                        message,
+                        key_name: Some(credential_config.name.clone()),
+                    });
+                }
             }
 
             tracing::debug!(

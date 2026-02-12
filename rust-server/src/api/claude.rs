@@ -87,7 +87,12 @@ pub async fn create_message(
     Json(claude_request): Json<ClaudeMessagesRequest>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
+    let key_config = verify_auth(
+        &headers,
+        &state,
+        AuthFormat::MultiFormat,
+        Some("/v1/messages"),
+    )?;
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
@@ -783,7 +788,12 @@ pub async fn count_tokens(
     Json(claude_request): Json<ClaudeTokenCountRequest>,
 ) -> Result<Json<ClaudeTokenCountResponse>> {
     let request_id = generate_request_id();
-    let _key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
+    let _key_config = verify_auth(
+        &headers,
+        &state,
+        AuthFormat::MultiFormat,
+        Some("/v1/messages/count_tokens"),
+    )?;
 
     REQUEST_ID
         .scope(request_id.clone(), async move {

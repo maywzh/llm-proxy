@@ -545,3 +545,17 @@ fn test_sync_via_app_state_rebuild() {
     }
     assert!(rate_limiter.check_rate_limit("hash-key-2").is_err());
 }
+
+// ============================================================================
+// Rate Limit Exempt Paths Tests
+// ============================================================================
+
+#[test]
+fn test_rate_limit_exempt_paths_constant() {
+    // Verify the exempt paths constant is defined correctly
+    use llm_proxy_rust::api::auth::RATE_LIMIT_EXEMPT_PATHS;
+
+    assert!(RATE_LIMIT_EXEMPT_PATHS.contains(&"/v1/messages/count_tokens"));
+    assert!(RATE_LIMIT_EXEMPT_PATHS.contains(&"/v2/messages/count_tokens"));
+    assert_eq!(RATE_LIMIT_EXEMPT_PATHS.len(), 2);
+}

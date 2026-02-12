@@ -563,8 +563,107 @@ class TestRateLimitHotReload:
         security_module.init_rate_limiter()
 
         # Should now be limited
-        verify_credential_key(f"Bearer {raw_key}")
-        verify_credential_key(f"Bearer {raw_key}")
+        verify_credential_key(authorization=f"Bearer {raw_key}")
+        verify_credential_key(authorization=f"Bearer {raw_key}")
         with pytest.raises(HTTPException) as exc_info:
-            verify_credential_key(f"Bearer {raw_key}")
+            verify_credential_key(authorization=f"Bearer {raw_key}")
+        assert exc_info.value.status_code == 429
+
+
+class TestRateLimitExemptPaths:
+    """Test rate limit exemptions for specific paths"""
+
+    def test_count_tokens_exempt_from_rate_limit(self, monkeypatch):
+        """Test that count_tokens endpoints bypass rate limiting"""
+        import app.core.security as security_module
+
+        raw_key = "test-token-key"
+
+        # Setup credential with strict rate limit
+        creds = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
+                name="limited-key",
+                rate_limit=RateLimitConfig(requests_per_second=1, burst_size=1),
+            ),
+        ]
+
+        class Config:
+            credentials = creds
+
+        monkeypatch.setattr(security_module, "get_config", lambda: Config())
+        security_module.init_rate_limiter()
+
+        # Test /v1/messages/count_tokens - should not consume rate limit
+        for _ in range(10):
+            is_valid, cred = verify_credential_key(
+                authorization=f"Bearer {raw_key}",
+                request_path="/v1/messages/count_tokens",
+            )
+            assert is_valid is True
+            assert cred.name == "limited-key"
+
+        # Test /v2/messages/count_tokens - should not consume rate limit
+        for _ in range(10):
+            is_valid, cred = verify_credential_key(
+                authorization=f"Bearer {raw_key}",
+                request_path="/v2/messages/count_tokens",
+            )
+            assert is_valid is True
+            assert cred.name == "limited-key"
+
+        # Now test regular endpoint - should hit rate limit quickly
+        verify_credential_key(
+            authorization=f"Bearer {raw_key}", request_path="/v1/messages"
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            verify_credential_key(
+                authorization=f"Bearer {raw_key}", request_path="/v1/messages"
+            )
+        assert exc_info.value.status_code == 429
+
+    def test_mixed_exempt_and_limited_paths(self, monkeypatch):
+        """Test that exempt and limited paths work independently"""
+        import app.core.security as security_module
+
+        raw_key = "test-mixed-key"
+
+        # Setup credential with rate limit of 2 req/s
+        creds = [
+            CredentialConfig(
+                credential_key=hash_key(raw_key),
+                name="mixed-key",
+                rate_limit=RateLimitConfig(requests_per_second=2, burst_size=2),
+            ),
+        ]
+
+        class Config:
+            credentials = creds
+
+        monkeypatch.setattr(security_module, "get_config", lambda: Config())
+        security_module.init_rate_limiter()
+
+        # Consume 1 regular request
+        verify_credential_key(
+            authorization=f"Bearer {raw_key}", request_path="/v1/chat/completions"
+        )
+
+        # Make 10 exempt requests - should not affect rate limit
+        for _ in range(10):
+            verify_credential_key(
+                authorization=f"Bearer {raw_key}",
+                request_path="/v1/messages/count_tokens",
+            )
+
+        # Should still have 1 more regular request available
+        verify_credential_key(
+            authorization=f"Bearer {raw_key}", request_path="/v1/messages"
+        )
+
+        # Third regular request should fail
+        with pytest.raises(HTTPException) as exc_info:
+            verify_credential_key(
+                authorization=f"Bearer {raw_key}", request_path="/v1/chat/completions"
+            )
         assert exc_info.value.status_code == 429
