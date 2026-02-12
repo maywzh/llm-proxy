@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 from app.core.config import get_config
 from app.core.rate_limiter import RateLimiter
 from app.core.database import hash_key
+from app.core.logging import set_api_key_context
 from app.models.config import CredentialConfig
 
 
@@ -99,6 +100,8 @@ def verify_credential_key(
         if rate_limiter and not rate_limiter.check_rate_limit(
             matching_credential.credential_key
         ):
+            # Set api_key context before raising exception so middleware can log it
+            set_api_key_context(matching_credential.name)
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Rate limit exceeded for this credential key",

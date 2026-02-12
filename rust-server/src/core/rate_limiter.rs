@@ -68,9 +68,10 @@ impl RateLimiter {
                         credential_key_prefix = &key[..key.len().min(8)],
                         "Rate limit exceeded"
                     );
-                    Err(AppError::RateLimitExceeded(
-                        "Rate limit exceeded for key".to_string(),
-                    ))
+                    Err(AppError::RateLimitExceeded {
+                        message: "Rate limit exceeded for key".to_string(),
+                        key_name: None,
+                    })
                 }
             }
         } else {
