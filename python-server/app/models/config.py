@@ -144,7 +144,7 @@ class RateLimitConfig(BaseModel):
     """Rate limiting configuration for a credential"""
 
     requests_per_second: int = Field(gt=0, description="Maximum requests per second")
-    burst_size: int = Field(default=10, gt=0, description="Maximum burst size")
+    burst_size: int = Field(default=1, gt=0, description="Maximum burst size")
 
 
 class CredentialConfig(BaseModel):
