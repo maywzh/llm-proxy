@@ -1,7 +1,7 @@
 """Security utilities"""
 
 import hmac
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Set
 from fastapi import HTTPException, status
 
 from app.core.config import get_config
@@ -9,6 +9,14 @@ from app.core.rate_limiter import RateLimiter
 from app.core.database import hash_key
 from app.core.logging import set_api_key_context
 from app.models.config import CredentialConfig
+
+
+# Paths that should be exempt from rate limiting
+# These endpoints perform local computation and don't consume upstream LLM resources
+RATE_LIMIT_EXEMPT_PATHS: Set[str] = {
+    "/v1/messages/count_tokens",
+    "/v2/messages/count_tokens",
+}
 
 
 _rate_limiter: Optional[RateLimiter] = None
@@ -40,6 +48,7 @@ def get_rate_limiter() -> Optional[RateLimiter]:
 def verify_credential_key(
     authorization: Optional[str] = None,
     x_api_key: Optional[str] = None,
+    request_path: Optional[str] = None,
 ) -> Tuple[bool, Optional[CredentialConfig]]:
     """
     Verify the credential API key and check rate limits.
@@ -50,6 +59,7 @@ def verify_credential_key(
     Args:
         authorization: The Authorization header value (e.g., "Bearer sk-xxx")
         x_api_key: The x-api-key header value (Claude API style)
+        request_path: The request path (used to skip rate limiting for certain endpoints)
 
     Returns:
         Tuple[bool, Optional[CredentialConfig]]: (is_valid, credential_config)
@@ -96,6 +106,10 @@ def verify_credential_key(
         )
 
     if matching_credential.rate_limit is not None:
+        # Skip rate limiting for exempt paths (e.g., token counting endpoints)
+        if request_path and request_path in RATE_LIMIT_EXEMPT_PATHS:
+            return True, matching_credential
+
         rate_limiter = get_rate_limiter()
         if rate_limiter and not rate_limiter.check_rate_limit(
             matching_credential.credential_key

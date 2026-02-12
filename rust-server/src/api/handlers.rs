@@ -828,7 +828,12 @@ pub async fn chat_completions(
     Json(mut payload): Json<serde_json::Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
+    let key_config = verify_auth(
+        &headers,
+        &state,
+        AuthFormat::MultiFormat,
+        Some("/v1/chat/completions"),
+    )?;
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
@@ -1137,7 +1142,12 @@ pub async fn completions(
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
+    let key_config = verify_auth(
+        &headers,
+        &state,
+        AuthFormat::MultiFormat,
+        Some("/v1/completions"),
+    )?;
     let api_key_name = get_key_name(&key_config);
 
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
@@ -1302,7 +1312,12 @@ pub async fn list_models(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
+            let key_config = verify_auth(
+                &headers,
+                &state,
+                AuthFormat::MultiFormat,
+                Some("/v1/models"),
+            )?;
 
             tracing::debug!(
                 request_id = %request_id,
@@ -1376,7 +1391,12 @@ pub async fn list_model_info(
 
     REQUEST_ID
         .scope(request_id.clone(), async move {
-            let key_config = verify_auth(&headers, &state, AuthFormat::MultiFormat)?;
+            let key_config = verify_auth(
+                &headers,
+                &state,
+                AuthFormat::MultiFormat,
+                Some("/model/info"),
+            )?;
 
             tracing::debug!(
                 request_id = %request_id,

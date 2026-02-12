@@ -92,7 +92,13 @@ pub async fn gcp_vertex_proxy(
     Json(mut payload): Json<Value>,
 ) -> Result<Response> {
     let request_id = generate_request_id();
-    let key_config = verify_auth(&headers, &state.app_state, AuthFormat::MultiFormat)?;
+    // GCP Vertex proxy forwards to upstream LLM, so it should be rate limited
+    let key_config = verify_auth(
+        &headers,
+        &state.app_state,
+        AuthFormat::MultiFormat,
+        Some("/models/gcp-vertex"),
+    )?;
     let api_key_name = get_key_name(&key_config);
 
     // Parse model and action from path
