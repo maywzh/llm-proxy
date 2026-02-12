@@ -113,9 +113,16 @@ pub fn verify_auth(
     for credential_config in credentials {
         if credential_config.enabled && credential_config.credential_key == provided_key_hash {
             // Check rate limit for this credential using the hash
-            state
+            // Wrap error with key_name context at auth layer
+            if let Err(AppError::RateLimitExceeded { message, .. }) = state
                 .rate_limiter
-                .check_rate_limit(&credential_config.credential_key)?;
+                .check_rate_limit(&credential_config.credential_key)
+            {
+                return Err(AppError::RateLimitExceeded {
+                    message,
+                    key_name: Some(credential_config.name.clone()),
+                });
+            }
 
             tracing::debug!(
                 credential_name = %credential_config.name,

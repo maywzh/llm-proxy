@@ -4,6 +4,7 @@
 //! and implements proper HTTP response conversion.
 
 use crate::core::error_types::{ERROR_CODE_TTFT_TIMEOUT, ERROR_TYPE_API, ERROR_TYPE_TIMEOUT};
+use crate::core::middleware::ApiKeyName;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -55,8 +56,11 @@ pub enum AppError {
     },
 
     /// Rate limit exceeded errors
-    #[error("Rate limit exceeded: {0}")]
-    RateLimitExceeded(String),
+    #[error("Rate limit exceeded: {message}")]
+    RateLimitExceeded {
+        message: String,
+        key_name: Option<String>,
+    },
 
     /// Client disconnected before request completed
     /// This is a normal scenario (user cancelled request, timeout, etc.)
@@ -72,6 +76,13 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         // Determine if this is a TTFT timeout (before moving self)
         let is_ttft_timeout = matches!(&self, AppError::TTFTTimeout { .. });
+
+        // Extract key_name for rate limit errors before matching
+        let rate_limit_key_name = if let AppError::RateLimitExceeded { key_name, .. } = &self {
+            key_name.clone()
+        } else {
+            None
+        };
 
         let (status, error_message) = match self {
             AppError::Config(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -102,7 +113,7 @@ impl IntoResponse for AppError {
                     timeout_secs, provider_name
                 ),
             ),
-            AppError::RateLimitExceeded(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
+            AppError::RateLimitExceeded { message, .. } => (StatusCode::TOO_MANY_REQUESTS, message),
             AppError::ClientDisconnect => {
                 // Use HTTP 408 Request Timeout for client disconnect
                 // This is a standard status code per RFC 7231, more compatible than nginx's 499
@@ -133,7 +144,14 @@ impl IntoResponse for AppError {
             }))
         };
 
-        (status, body).into_response()
+        let mut response = (status, body).into_response();
+
+        // Add ApiKeyName extension for rate limit errors so middleware can log it
+        if let Some(key_name) = rate_limit_key_name {
+            response.extensions_mut().insert(ApiKeyName(key_name));
+        }
+
+        response
     }
 }
 
