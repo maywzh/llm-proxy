@@ -11,6 +11,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   google: '#4285F4',
   azure: '#0078D4',
   'gcp-vertex': '#4285F4',
+  response_api: '#10B981',
   xai: '#000000',
   deepseek: '#4D6BFE',
   zhipu: '#3D5AFE',
@@ -24,6 +25,12 @@ function getProviderType(providerKey: string): string {
   if (key.includes('gcp') || key.includes('vertex')) return 'gcp-vertex';
   if (key.includes('google') || key.includes('gemini')) return 'google';
   if (key.includes('grok') || key.includes('xai')) return 'xai';
+  if (
+    key.includes('response_api') ||
+    key.includes('response-api') ||
+    key.includes('responses')
+  )
+    return 'response_api';
   if (key.includes('deepseek')) return 'deepseek';
   if (
     key.includes('zhipu') ||
@@ -82,6 +89,22 @@ const ProviderIcon: React.FC<ProviderIconProps> = ({
           <path d="M12 3L2 9l10 6 10-6-10-6z" fill="#4285F4" />
           <path d="M2 9v6l10 6V15L2 9z" fill="#34A853" />
           <path d="M22 9v6l-10 6V15l10-6z" fill="#FBBC05" />
+        </svg>
+      );
+    case 'response_api':
+      return (
+        <svg
+          className={className}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#10B981"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M4 12h16" />
+          <path d="M16 8l4 4-4 4" />
+          <path d="M20 6V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
         </svg>
       );
     case 'xai':

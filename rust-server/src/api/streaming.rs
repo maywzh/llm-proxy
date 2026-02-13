@@ -1353,12 +1353,17 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
     }
 
     // Return rewritten chunk with proper SSE formatting (\n\n between events)
-    if chunk_modified {
+    // Always use rewritten_lines when events were extracted from the SSE buffer,
+    // because the original bytes may be a TCP fragment that doesn't align with
+    // SSE event boundaries (the buffer consumed and reassembled them).
+    if !rewritten_lines.is_empty() {
         let mut result = rewritten_lines.join("\n\n");
         if !result.is_empty() {
             result.push_str("\n\n");
         }
         result.into_bytes()
+    } else if chunk_modified {
+        Vec::new()
     } else {
         bytes.to_vec()
     }
