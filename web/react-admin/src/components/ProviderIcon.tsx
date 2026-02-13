@@ -2,6 +2,7 @@ import React from 'react';
 
 interface ProviderIconProps {
   providerKey: string;
+  providerType?: string;
   className?: string;
 }
 
@@ -17,6 +18,23 @@ const PROVIDER_COLORS: Record<string, string> = {
   zhipu: '#3D5AFE',
   moonshot: '#16191E',
 };
+
+function normalizeProviderType(providerType: string): string {
+  const t = providerType.toLowerCase();
+  if (t === 'anthropic' || t === 'claude') return 'anthropic';
+  if (t === 'azure') return 'azure';
+  if (t === 'gcp-vertex' || t === 'gcp_vertex' || t === 'vertex')
+    return 'gcp-vertex';
+  if (t === 'google') return 'google';
+  if (t === 'response_api' || t === 'response-api' || t === 'responses')
+    return 'response_api';
+  if (t === 'xai') return 'xai';
+  if (t === 'deepseek') return 'deepseek';
+  if (t === 'zhipu') return 'zhipu';
+  if (t === 'moonshot') return 'moonshot';
+  if (t === 'openai') return 'openai';
+  return '';
+}
 
 function getProviderType(providerKey: string): string {
   const key = providerKey.toLowerCase();
@@ -44,16 +62,24 @@ function getProviderType(providerKey: string): string {
   return 'unknown';
 }
 
-export function getProviderColor(providerKey: string): string {
-  const type = getProviderType(providerKey);
+export function getProviderColor(
+  providerKey: string,
+  providerType?: string
+): string {
+  const type =
+    (providerType && normalizeProviderType(providerType)) ||
+    getProviderType(providerKey);
   return PROVIDER_COLORS[type] || '#6B7280';
 }
 
 const ProviderIcon: React.FC<ProviderIconProps> = ({
   providerKey,
+  providerType,
   className = 'w-6 h-6',
 }) => {
-  const type = getProviderType(providerKey);
+  const type =
+    (providerType && normalizeProviderType(providerType)) ||
+    getProviderType(providerKey);
 
   switch (type) {
     case 'openai':

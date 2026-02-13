@@ -90,6 +90,7 @@ const Health: React.FC = () => {
             existing || {
               provider_id: p.id,
               provider_key: p.provider_key,
+              provider_type: p.provider_type,
               status: 'unknown' as HealthStatus,
               models: [],
               avg_response_time_ms: null,
@@ -142,6 +143,7 @@ const Health: React.FC = () => {
             existing || {
               provider_id: p.id,
               provider_key: p.provider_key,
+              provider_type: p.provider_type,
               status: 'unknown' as HealthStatus,
               models: [],
               avg_response_time_ms: null,
@@ -175,6 +177,7 @@ const Health: React.FC = () => {
                 return {
                   provider_id: response.provider_id,
                   provider_key: response.provider_key,
+                  provider_type: response.provider_type,
                   status: response.status,
                   models: response.models,
                   avg_response_time_ms:
@@ -255,6 +258,7 @@ const Health: React.FC = () => {
               return {
                 provider_id: response.provider_id,
                 provider_key: response.provider_key,
+                provider_type: response.provider_type,
                 status: response.status,
                 models: response.models,
                 avg_response_time_ms:
@@ -688,6 +692,7 @@ const Health: React.FC = () => {
                       <div className="shrink-0 p-1.5 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
                         <ProviderIcon
                           providerKey={provider.provider_key}
+                          providerType={provider.provider_type}
                           className="w-6 h-6"
                         />
                       </div>

@@ -78,6 +78,7 @@
             existing || {
               provider_id: p.id,
               provider_key: p.provider_key,
+              provider_type: p.provider_type,
               status: 'unknown' as import('$lib/types').HealthStatus,
               models: [],
               avg_response_time_ms: null,
@@ -129,6 +130,7 @@
             existing || {
               provider_id: p.id,
               provider_key: p.provider_key,
+              provider_type: p.provider_type,
               status: 'unknown' as import('$lib/types').HealthStatus,
               models: [],
               avg_response_time_ms: null,
@@ -161,6 +163,7 @@
                 return {
                   provider_id: response.provider_id,
                   provider_key: response.provider_key,
+                  provider_type: response.provider_type,
                   status: response.status,
                   models: response.models,
                   avg_response_time_ms:
@@ -238,6 +241,7 @@
             return {
               provider_id: response.provider_id,
               provider_key: response.provider_key,
+              provider_type: response.provider_type,
               status: response.status,
               models: response.models,
               avg_response_time_ms:
@@ -619,6 +623,7 @@
                   >
                     <ProviderIcon
                       providerKey={provider.provider_key}
+                      providerType={provider.provider_type}
                       class="w-6 h-6"
                     />
                   </div>
