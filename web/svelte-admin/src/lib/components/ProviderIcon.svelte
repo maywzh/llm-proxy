@@ -1,10 +1,32 @@
 <script lang="ts">
   interface Props {
     providerKey: string;
+    providerType?: string;
     class?: string;
   }
 
-  let { providerKey, class: className = 'w-6 h-6' }: Props = $props();
+  let {
+    providerKey,
+    providerType: providerTypeProp,
+    class: className = 'w-6 h-6',
+  }: Props = $props();
+
+  function normalizeProviderType(pt: string): string {
+    const t = pt.toLowerCase();
+    if (t === 'anthropic' || t === 'claude') return 'anthropic';
+    if (t === 'azure') return 'azure';
+    if (t === 'gcp-vertex' || t === 'gcp_vertex' || t === 'vertex')
+      return 'gcp-vertex';
+    if (t === 'google') return 'google';
+    if (t === 'response_api' || t === 'response-api' || t === 'responses')
+      return 'response_api';
+    if (t === 'xai') return 'xai';
+    if (t === 'deepseek') return 'deepseek';
+    if (t === 'zhipu') return 'zhipu';
+    if (t === 'moonshot') return 'moonshot';
+    if (t === 'openai') return 'openai';
+    return '';
+  }
 
   function getProviderType(key: string): string {
     const k = key.toLowerCase();
@@ -32,7 +54,10 @@
     return 'unknown';
   }
 
-  let providerType = $derived(getProviderType(providerKey));
+  let providerType = $derived(
+    (providerTypeProp && normalizeProviderType(providerTypeProp)) ||
+      getProviderType(providerKey)
+  );
 </script>
 
 {#if providerType === 'openai'}

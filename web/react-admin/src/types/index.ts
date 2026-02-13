@@ -279,6 +279,7 @@ export interface ModelHealthStatus {
 export interface ProviderHealthStatus {
   provider_id: number;
   provider_key: string;
+  provider_type: string;
   status: HealthStatus;
   models: ModelHealthStatus[];
   avg_response_time_ms: number | null;
@@ -315,6 +316,7 @@ export interface ProviderHealthSummary {
 export interface CheckProviderHealthResponse {
   provider_id: number;
   provider_key: string;
+  provider_type: string;
   status: HealthStatus;
   summary: ProviderHealthSummary;
   models: ModelHealthStatus[];
