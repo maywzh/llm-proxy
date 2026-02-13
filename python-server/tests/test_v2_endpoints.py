@@ -12,6 +12,13 @@ from app.api.dependencies import verify_auth, check_model_permission
 from app.core.database import hash_key
 
 
+def _mock_request():
+    """Create a mock Request with url.path for verify_auth."""
+    req = MagicMock()
+    req.url.path = "/v2/test"
+    return req
+
+
 @pytest.mark.unit
 class TestV2EndpointsAuthDependency:
     """Tests for V2 endpoints authentication dependency."""
@@ -54,7 +61,7 @@ class TestV2EndpointsAuthDependency:
 
         # No authorization should raise 401
         with pytest.raises(HTTPException) as exc_info:
-            await verify_auth(authorization=None, x_api_key=None)
+            await verify_auth(_mock_request(), authorization=None, x_api_key=None)
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
@@ -92,7 +99,9 @@ class TestV2EndpointsAuthDependency:
         init_rate_limiter()
 
         # x-api-key should work
-        result = await verify_auth(authorization=None, x_api_key=raw_key)
+        result = await verify_auth(
+            _mock_request(), authorization=None, x_api_key=raw_key
+        )
         assert result is not None
         assert result.name == "test-key"
 
@@ -135,6 +144,7 @@ class TestV2EndpointsAuthDependency:
 
         # Valid x-api-key with invalid Bearer should succeed
         result = await verify_auth(
+            _mock_request(),
             authorization=f"Bearer {invalid_key}",
             x_api_key=valid_key,
         )
@@ -144,6 +154,7 @@ class TestV2EndpointsAuthDependency:
         # Invalid x-api-key with valid Bearer should fail (x-api-key takes precedence)
         with pytest.raises(HTTPException) as exc_info:
             await verify_auth(
+                _mock_request(),
                 authorization=f"Bearer {valid_key}",
                 x_api_key=invalid_key,
             )
