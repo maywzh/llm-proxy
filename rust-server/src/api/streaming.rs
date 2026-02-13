@@ -1231,85 +1231,147 @@ fn process_chunk(state: &mut StreamState, bytes: Bytes) -> Vec<u8> {
                     chunk_modified = true;
                 }
 
-                // Check for usage first - only accept if prompt_tokens > 0
-                // Update provider usage in OutboundTokenCounter
-                if !state.usage_found {
-                    if let Some(usage_value) = json_obj.get("usage") {
-                        if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone()) {
-                            // Only accept valid usage (prompt_tokens > 0), otherwise keep fallback
-                            if usage.prompt_tokens > 0 {
-                                // Update provider usage in OutboundTokenCounter
+                // Detect Response API events by "type" field
+                if let Some(event_type) = json_obj.get("type").and_then(|t| t.as_str()) {
+                    // Response API: extract usage from response.completed or response.done
+                    if !state.usage_found
+                        && (event_type == "response.completed" || event_type == "response.done")
+                    {
+                        if let Some(usage) = json_obj.get("response").and_then(|r| r.get("usage")) {
+                            let input = usage
+                                .get("input_tokens")
+                                .and_then(|t| t.as_i64())
+                                .unwrap_or(0);
+                            let output = usage
+                                .get("output_tokens")
+                                .and_then(|t| t.as_i64())
+                                .unwrap_or(0);
+                            if input > 0 || output > 0 {
                                 let unified_usage = UnifiedUsage {
-                                    input_tokens: usage.prompt_tokens as i32,
-                                    output_tokens: usage.completion_tokens as i32,
+                                    input_tokens: input as i32,
+                                    output_tokens: output as i32,
                                     ..Default::default()
                                 };
                                 state.token_counter.update_provider_usage(&unified_usage);
                                 state.usage_found = true;
 
-                                // Capture usage for Langfuse
                                 if let Some(ref mut gen_data) = state.generation_data {
-                                    gen_data.prompt_tokens = usage.prompt_tokens;
-                                    gen_data.completion_tokens = usage.completion_tokens;
-                                    gen_data.total_tokens = usage.total_tokens;
+                                    gen_data.prompt_tokens = input as u32;
+                                    gen_data.completion_tokens = output as u32;
+                                    gen_data.total_tokens = (input + output) as u32;
                                 }
                             }
                         }
                     }
-                }
 
-                // Extract content and finish_reason for token counting and Langfuse
-                let contents = extract_stream_text(&json_obj);
-
-                // Capture finish_reason for Langfuse and check if we need to inject usage
-                let mut has_finish_reason = false;
-                if let Some(choices) = json_obj.get("choices").and_then(|c| c.as_array()) {
-                    for choice in choices {
-                        if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
-                            state.finish_reason = Some(reason.to_string());
-                            has_finish_reason = true;
-                        }
-                    }
-                }
-
-                if !contents.is_empty() {
-                    let now = Instant::now();
-
-                    // Record provider first token time (TTFT metrics recorded at stream end)
-                    if state.provider_first_token_time.is_none() {
-                        state.provider_first_token_time = Some(now);
-
-                        // Capture TTFT for Langfuse
-                        if let Some(ref mut gen_data) = state.generation_data {
-                            gen_data.ttft_time = Some(Utc::now());
+                    // Response API: extract text content from delta events
+                    if event_type == "response.output_text.delta" {
+                        if let Some(delta) = json_obj.get("delta").and_then(|d| d.as_str()) {
+                            if !delta.is_empty() {
+                                if state.provider_first_token_time.is_none() {
+                                    state.provider_first_token_time = Some(Instant::now());
+                                    if let Some(ref mut gen_data) = state.generation_data {
+                                        gen_data.ttft_time = Some(Utc::now());
+                                    }
+                                }
+                                state.token_counter.accumulate_content(delta);
+                                if state.generation_data.is_some() {
+                                    state.accumulated_output.push(delta.to_string());
+                                }
+                            }
                         }
                     }
 
-                    // Accumulate output content using OutboundTokenCounter
-                    for content in &contents {
-                        state.token_counter.accumulate_content(content);
+                    // Response API: detect finish for Langfuse
+                    if event_type == "response.completed" || event_type == "response.done" {
+                        state.finish_reason = Some("stop".to_string());
                     }
+                } else {
+                    // Chat completions format: usage, content, finish_reason extraction
 
-                    // Also keep accumulated_output for Langfuse (backward compatibility)
-                    if state.generation_data.is_some() {
-                        for content in contents {
-                            state.accumulated_output.push(content);
+                    // Check for usage first - only accept if prompt_tokens > 0
+                    // Update provider usage in OutboundTokenCounter
+                    if !state.usage_found {
+                        if let Some(usage_value) = json_obj.get("usage") {
+                            if let Ok(usage) = serde_json::from_value::<Usage>(usage_value.clone())
+                            {
+                                // Only accept valid usage (prompt_tokens > 0), otherwise keep fallback
+                                if usage.prompt_tokens > 0 {
+                                    // Update provider usage in OutboundTokenCounter
+                                    let unified_usage = UnifiedUsage {
+                                        input_tokens: usage.prompt_tokens as i32,
+                                        output_tokens: usage.completion_tokens as i32,
+                                        ..Default::default()
+                                    };
+                                    state.token_counter.update_provider_usage(&unified_usage);
+                                    state.usage_found = true;
+
+                                    // Capture usage for Langfuse
+                                    if let Some(ref mut gen_data) = state.generation_data {
+                                        gen_data.prompt_tokens = usage.prompt_tokens;
+                                        gen_data.completion_tokens = usage.completion_tokens;
+                                        gen_data.total_tokens = usage.total_tokens;
+                                    }
+                                }
+                            }
                         }
                     }
-                }
 
-                // Inject fallback usage into finish_reason chunk if provider didn't provide it
-                if has_finish_reason && !state.usage_found {
-                    // Use OutboundTokenCounter to get final usage
-                    let final_usage = state.token_counter.finalize();
-                    if final_usage.input_tokens > 0 || final_usage.output_tokens > 0 {
-                        json_obj["usage"] = json!({
-                            "prompt_tokens": final_usage.input_tokens,
-                            "completion_tokens": final_usage.output_tokens,
-                            "total_tokens": final_usage.input_tokens + final_usage.output_tokens
-                        });
-                        chunk_modified = true;
-                        state.usage_chunk_sent = true;
+                    // Extract content and finish_reason for token counting and Langfuse
+                    let contents = extract_stream_text(&json_obj);
+
+                    // Capture finish_reason for Langfuse and check if we need to inject usage
+                    let mut has_finish_reason = false;
+                    if let Some(choices) = json_obj.get("choices").and_then(|c| c.as_array()) {
+                        for choice in choices {
+                            if let Some(reason) =
+                                choice.get("finish_reason").and_then(|r| r.as_str())
+                            {
+                                state.finish_reason = Some(reason.to_string());
+                                has_finish_reason = true;
+                            }
+                        }
+                    }
+
+                    if !contents.is_empty() {
+                        let now = Instant::now();
+
+                        // Record provider first token time (TTFT metrics recorded at stream end)
+                        if state.provider_first_token_time.is_none() {
+                            state.provider_first_token_time = Some(now);
+
+                            // Capture TTFT for Langfuse
+                            if let Some(ref mut gen_data) = state.generation_data {
+                                gen_data.ttft_time = Some(Utc::now());
+                            }
+                        }
+
+                        // Accumulate output content using OutboundTokenCounter
+                        for content in &contents {
+                            state.token_counter.accumulate_content(content);
+                        }
+
+                        // Also keep accumulated_output for Langfuse (backward compatibility)
+                        if state.generation_data.is_some() {
+                            for content in contents {
+                                state.accumulated_output.push(content);
+                            }
+                        }
+                    }
+
+                    // Inject fallback usage into finish_reason chunk if provider didn't provide it
+                    if has_finish_reason && !state.usage_found {
+                        // Use OutboundTokenCounter to get final usage
+                        let final_usage = state.token_counter.finalize();
+                        if final_usage.input_tokens > 0 || final_usage.output_tokens > 0 {
+                            json_obj["usage"] = json!({
+                                "prompt_tokens": final_usage.input_tokens,
+                                "completion_tokens": final_usage.output_tokens,
+                                "total_tokens": final_usage.input_tokens + final_usage.output_tokens
+                            });
+                            chunk_modified = true;
+                            state.usage_chunk_sent = true;
+                        }
                     }
                 }
 

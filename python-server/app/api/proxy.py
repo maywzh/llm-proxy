@@ -539,6 +539,8 @@ async def _create_cross_protocol_stream(
         # Use aiter_lines() to ensure complete SSE lines (prevents JSON truncation)
         total_bypass_bytes = 0
         sse_buffer = ""
+        is_response_api = client_protocol == Protocol.RESPONSE_API
+        bypass_usage_found = False
         async for line in response.aiter_lines():
             # Accumulate lines into SSE events (events are separated by blank lines)
             sse_buffer += line + "\n"
@@ -577,6 +579,43 @@ async def _create_cross_protocol_stream(
             # Collect raw SSE data for JSONL logging
             if chunk_collector is not None:
                 chunk_collector.append(chunk_str)
+
+            # Extract usage/content from Response API events in bypass mode
+            if is_response_api and usage_tracker is not None:
+                for buf_line in chunk_str.splitlines():
+                    if not buf_line.startswith("data: "):
+                        continue
+                    data_str = buf_line[6:].strip()
+                    if not data_str or data_str == "[DONE]":
+                        continue
+                    try:
+                        event_obj = json.loads(data_str)
+                        event_type = event_obj.get("type", "")
+
+                        if not bypass_usage_found and event_type in (
+                            "response.completed",
+                            "response.done",
+                        ):
+                            resp_usage = (event_obj.get("response") or {}).get("usage")
+                            if resp_usage:
+                                inp = resp_usage.get("input_tokens", 0)
+                                out = resp_usage.get("output_tokens", 0)
+                                if inp > 0 or out > 0:
+                                    usage_tracker.input_tokens = inp
+                                    usage_tracker.output_tokens = out
+                                    usage_tracker.usage_from_provider = True
+                                    bypass_usage_found = True
+                                    generation_data.prompt_tokens = inp
+                                    generation_data.completion_tokens = out
+                                    generation_data.total_tokens = inp + out
+
+                        if event_type == "response.output_text.delta":
+                            delta = event_obj.get("delta", "")
+                            if delta:
+                                generation_data.output_content += delta
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
             # Track bytes for bypass streaming metrics
             total_bypass_bytes += len(chunk)
             yield chunk

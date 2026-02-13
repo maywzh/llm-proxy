@@ -1175,7 +1175,7 @@ class TestToolResultWithError:
         tool_msg = openai_request["messages"][2]
         assert tool_msg["role"] == "tool"
         assert tool_msg["tool_call_id"] == "tool_123"
-        assert tool_msg["content"] == "Error: City not found"
+        assert tool_msg["content"] == "[Error] Error: City not found"
 
     def test_tool_result_with_is_error_false(self):
         """Test converting tool result message with is_error=False (default)."""
