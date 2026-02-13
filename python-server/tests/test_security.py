@@ -1,6 +1,7 @@
 """Tests for security utilities"""
 
 import pytest
+from unittest.mock import MagicMock
 
 from app.core.security import verify_credential_key, init_rate_limiter
 from app.core.database import hash_key
@@ -10,6 +11,13 @@ from app.models.config import (
     CredentialConfig,
     RateLimitConfig,
 )
+
+
+def _mock_request():
+    """Create a mock Request with url.path for verify_auth."""
+    req = MagicMock()
+    req.url.path = "/v2/test"
+    return req
 
 
 @pytest.mark.unit
@@ -274,10 +282,10 @@ class TestSecurityIntegration:
 
         monkeypatch.setattr(security_module, "get_config", lambda: config)
 
-        assert await verify_auth(None) is None
-        assert await verify_auth("") is None
-        assert await verify_auth("Bearer any-key") is None
-        assert await verify_auth("invalid-format") is None
+        assert await verify_auth(_mock_request(), None) is None
+        assert await verify_auth(_mock_request(), "") is None
+        assert await verify_auth(_mock_request(), "Bearer any-key") is None
+        assert await verify_auth(_mock_request(), "invalid-format") is None
 
 
 @pytest.mark.unit
@@ -426,6 +434,8 @@ class TestXApiKeyAuth:
         init_rate_limiter()
 
         # Test with x-api-key
-        result = await verify_auth(authorization=None, x_api_key=raw_key)
+        result = await verify_auth(
+            _mock_request(), authorization=None, x_api_key=raw_key
+        )
         assert result is not None
         assert result.name == "test-key"
