@@ -699,6 +699,38 @@ impl Transformer for ResponseApiTransformer {
                                     StopReason::EndTurn,
                                     usage,
                                 ));
+                                chunks.push(UnifiedStreamChunk::message_stop());
+                            }
+                            "response.done" => {
+                                // response.done is the final event; if we haven't
+                                // already emitted message_stop via response.completed,
+                                // extract usage from here and terminate.
+                                if !chunks
+                                    .iter()
+                                    .any(|c| c.chunk_type == ChunkType::MessageStop)
+                                {
+                                    let usage = json
+                                        .get("response")
+                                        .and_then(|r| r.get("usage"))
+                                        .map(|u| {
+                                            UnifiedUsage::new(
+                                                u.get("input_tokens")
+                                                    .and_then(|t| t.as_i64())
+                                                    .unwrap_or(0)
+                                                    as i32,
+                                                u.get("output_tokens")
+                                                    .and_then(|t| t.as_i64())
+                                                    .unwrap_or(0)
+                                                    as i32,
+                                            )
+                                        })
+                                        .unwrap_or_default();
+                                    chunks.push(UnifiedStreamChunk::message_delta(
+                                        StopReason::EndTurn,
+                                        usage,
+                                    ));
+                                    chunks.push(UnifiedStreamChunk::message_stop());
+                                }
                             }
                             _ => {}
                         }

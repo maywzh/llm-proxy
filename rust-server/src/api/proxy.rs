@@ -728,7 +728,7 @@ fn get_provider_endpoint(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::OpenAI => "/chat/completions",
         Protocol::Anthropic => "/v1/messages",
-        Protocol::ResponseApi => "/v1/responses",
+        Protocol::ResponseApi => "/responses",
         Protocol::GcpVertex => "", // GCP Vertex uses dynamic endpoints constructed elsewhere
     }
 }
@@ -1963,10 +1963,7 @@ mod tests {
     fn test_get_provider_endpoint() {
         assert_eq!(get_provider_endpoint(Protocol::OpenAI), "/chat/completions");
         assert_eq!(get_provider_endpoint(Protocol::Anthropic), "/v1/messages");
-        assert_eq!(
-            get_provider_endpoint(Protocol::ResponseApi),
-            "/v1/responses"
-        );
+        assert_eq!(get_provider_endpoint(Protocol::ResponseApi), "/responses");
         assert_eq!(get_provider_endpoint(Protocol::GcpVertex), "");
     }
 

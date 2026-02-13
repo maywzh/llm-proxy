@@ -21,10 +21,14 @@ MODEL_CHECK_PATHS: Set[str] = {
     "/v1/chat/completions",
     "/v1/completions",
     "/v1/messages",
+    "/v1/responses",
     "/messages/count_tokens",
     "/v2/chat/completions",
     "/v2/messages",
     "/v2/responses",
+    "/chat/completions",
+    "/messages",
+    "/responses",
 }
 
 
@@ -42,10 +46,14 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             "/v1/chat/completions",
             "/v1/messages",
             "/v1/completions",
+            "/v1/responses",
             "/v2/chat/completions",
             "/v2/messages",
             "/v2/completions",
             "/v2/responses",
+            "/chat/completions",
+            "/messages",
+            "/responses",
         )
 
         # Skip metrics endpoint itself
