@@ -72,6 +72,8 @@ pub struct ProviderHealthStatus {
     pub provider_id: i32,
     /// Provider key
     pub provider_key: String,
+    /// Provider type (e.g. openai, anthropic, response_api)
+    pub provider_type: String,
     /// Overall provider health status
     pub status: HealthStatus,
     /// Health status of each model

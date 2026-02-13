@@ -52,6 +52,7 @@ impl HealthCheckService {
             return ProviderHealthStatus {
                 provider_id: provider.id,
                 provider_key: provider.provider_key.clone(),
+                provider_type: provider.provider_type.clone(),
                 status: HealthStatus::Disabled,
                 models: vec![],
                 avg_response_time_ms: None,
@@ -78,6 +79,7 @@ impl HealthCheckService {
         ProviderHealthStatus {
             provider_id: provider.id,
             provider_key: provider.provider_key.clone(),
+            provider_type: provider.provider_type.clone(),
             status: provider_status,
             models: model_statuses,
             avg_response_time_ms: avg_response_time,
@@ -107,6 +109,7 @@ impl HealthCheckService {
             return CheckProviderHealthResponse {
                 provider_id: provider.id,
                 provider_key: provider.provider_key.clone(),
+                provider_type: provider.provider_type.clone(),
                 status: "disabled".to_string(),
                 models: vec![],
                 summary: ProviderHealthSummary {
@@ -126,6 +129,7 @@ impl HealthCheckService {
             return CheckProviderHealthResponse {
                 provider_id: provider.id,
                 provider_key: provider.provider_key.clone(),
+                provider_type: provider.provider_type.clone(),
                 status: "unknown".to_string(),
                 models: vec![],
                 summary: ProviderHealthSummary {
@@ -225,6 +229,7 @@ impl HealthCheckService {
         CheckProviderHealthResponse {
             provider_id: provider.id,
             provider_key: provider.provider_key.clone(),
+            provider_type: provider.provider_type.clone(),
             status: status_str.to_string(),
             models: model_results,
             summary,
@@ -333,8 +338,7 @@ impl HealthCheckService {
             let url = format!("{}/responses", provider.api_base);
             let response_api_payload = json!({
                 "model": actual_model,
-                "input": "Hi",
-                "max_output_tokens": 5,
+                "input": [{"role": "user", "content": "Hi"}],
                 "stream": false,
             });
             build_upstream_request(
@@ -376,8 +380,11 @@ impl HealthCheckService {
                     }
                 } else {
                     let error_msg = match response.json::<serde_json::Value>().await {
-                        Ok(json) => extract_error_message(&json)
-                            .unwrap_or_else(|| format!("HTTP {}", status_code.as_u16())),
+                        Ok(json) => {
+                            let detail = extract_error_message(&json)
+                                .unwrap_or_else(|| format!("HTTP {}", status_code.as_u16()));
+                            format!("HTTP {} - {}", status_code.as_u16(), detail)
+                        }
                         Err(_) => format!("HTTP {}", status_code.as_u16()),
                     };
 
@@ -933,6 +940,7 @@ mod tests {
         let response = CheckProviderHealthResponse {
             provider_id: 1,
             provider_key: "test-provider".to_string(),
+            provider_type: "openai".to_string(),
             status: "healthy".to_string(),
             models: vec![],
             summary: ProviderHealthSummary {

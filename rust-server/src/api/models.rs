@@ -772,6 +772,8 @@ pub struct CheckProviderHealthResponse {
     pub provider_id: i32,
     /// Provider key identifier
     pub provider_key: String,
+    /// Provider type (e.g. openai, anthropic, response_api)
+    pub provider_type: String,
     /// Overall provider status: healthy, unhealthy, disabled, unknown
     pub status: String,
     /// Health status for each tested model
