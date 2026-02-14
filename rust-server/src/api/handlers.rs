@@ -595,6 +595,7 @@ async fn handle_streaming_response(
         Some(ctx.request_payload),
         Some(ctx.client),
         ctx.cancel_handle,
+        None,
     )
     .await
     {

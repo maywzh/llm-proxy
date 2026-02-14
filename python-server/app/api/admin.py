@@ -1,9 +1,12 @@
 """Admin API for dynamic configuration management"""
 
+import json
 import os
+from datetime import datetime
+from math import ceil
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
 from fastapi.security import HTTPBearer
 from loguru import logger
 from pydantic import BaseModel, Field, ConfigDict
@@ -954,3 +957,673 @@ async def api_reload_config(
         providers_count=len(versioned.providers),
         credentials_count=len(versioned.credentials),
     )
+
+
+# =============================================================================
+# Request Logs API
+# =============================================================================
+
+
+def _extract_client_from_headers(headers_json: Optional[str]) -> Optional[str]:
+    """Extract normalized client name from request_headers JSON."""
+    if not headers_json:
+        return None
+    try:
+        headers = json.loads(headers_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    ua = headers.get("user-agent", "") or headers.get("User-Agent", "")
+    if not ua:
+        return "unknown"
+    from app.utils.client import CLIENT_PATTERNS
+
+    for pattern, client_name in CLIENT_PATTERNS:
+        if pattern in ua:
+            return client_name
+    first_token = ua.split(" ")[0].split("/")[0]
+    cleaned = "".join(c for c in first_token if c.isalnum() or c in "-_.")[:30]
+    return cleaned if cleaned else "other"
+
+
+class RequestLogItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    timestamp: str
+    request_id: str
+    endpoint: Optional[str] = None
+    credential_name: Optional[str] = None
+    model_requested: Optional[str] = None
+    model_mapped: Optional[str] = None
+    provider_name: Optional[str] = None
+    provider_type: Optional[str] = None
+    client_protocol: Optional[str] = None
+    provider_protocol: Optional[str] = None
+    is_streaming: Optional[bool] = None
+    status_code: Optional[int] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    total_duration_ms: Optional[int] = None
+    ttft_ms: Optional[int] = None
+    error_category: Optional[str] = None
+    error_message: Optional[str] = None
+    client: Optional[str] = None
+
+
+class RequestLogDetail(RequestLogItem):
+    request_headers: Optional[str] = None
+    request_body: Optional[str] = None
+    response_body: Optional[str] = None
+
+
+class RequestLogListResponse(BaseModel):
+    items: list[RequestLogItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class RequestLogStatsResponse(BaseModel):
+    total_requests: int
+    total_errors: int
+    error_rate: float
+    total_input_tokens: int
+    total_output_tokens: int
+    avg_duration_ms: Optional[float] = None
+    avg_ttft_ms: Optional[float] = None
+    requests_by_provider: dict[str, int]
+    requests_by_model: dict[str, int]
+    requests_by_status: dict[str, int]
+
+
+def _parse_iso_time(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            from datetime import timezone
+
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+@router.get("/logs", response_model=RequestLogListResponse, tags=["logs"])
+async def api_list_logs(
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    request_id: Optional[str] = Query(None),
+    provider_name: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+    credential_name: Optional[str] = Query(None),
+    status_code: Optional[int] = Query(None),
+    is_streaming: Optional[bool] = Query(None),
+    error_only: bool = Query(False),
+    start_time: Optional[str] = Query(None),
+    end_time: Optional[str] = Query(None),
+    sort_by: str = Query("timestamp"),
+    sort_order: str = Query("desc"),
+) -> RequestLogListResponse:
+    """List request logs with pagination and filtering."""
+    from sqlalchemy import func, or_, select
+
+    from app.core.database import RequestLogModel
+
+    async with db.session() as session:
+        # Build base query
+        base = select(RequestLogModel)
+        count_q = select(func.count(RequestLogModel.id))
+
+        # Apply filters
+        conditions = []
+        if request_id:
+            conditions.append(RequestLogModel.request_id == request_id)
+        if provider_name:
+            conditions.append(RequestLogModel.provider_name == provider_name)
+        if model:
+            conditions.append(RequestLogModel.model_requested == model)
+        if credential_name:
+            conditions.append(RequestLogModel.credential_name == credential_name)
+        if status_code is not None:
+            conditions.append(RequestLogModel.status_code == status_code)
+        if is_streaming is not None:
+            conditions.append(RequestLogModel.is_streaming == is_streaming)
+        if error_only:
+            conditions.append(
+                or_(
+                    RequestLogModel.status_code >= 400,
+                    RequestLogModel.error_category.isnot(None),
+                )
+            )
+        st = _parse_iso_time(start_time)
+        if st:
+            conditions.append(RequestLogModel.timestamp >= st)
+        et = _parse_iso_time(end_time)
+        if et:
+            conditions.append(RequestLogModel.timestamp <= et)
+
+        for cond in conditions:
+            base = base.where(cond)
+            count_q = count_q.where(cond)
+
+        # Count total
+        total = (await session.execute(count_q)).scalar() or 0
+        total_pages = ceil(total / page_size) if total > 0 else 1
+
+        # Sort
+        allowed_sort = {
+            "timestamp": RequestLogModel.timestamp,
+            "status_code": RequestLogModel.status_code,
+            "total_duration_ms": RequestLogModel.total_duration_ms,
+            "total_tokens": RequestLogModel.total_tokens,
+            "input_tokens": RequestLogModel.input_tokens,
+            "output_tokens": RequestLogModel.output_tokens,
+        }
+        sort_col = allowed_sort.get(sort_by, RequestLogModel.timestamp)
+        if sort_order == "asc":
+            base = base.order_by(sort_col.asc())
+        else:
+            base = base.order_by(sort_col.desc())
+
+        # Paginate
+        base = base.offset((page - 1) * page_size).limit(page_size)
+        result = await session.execute(base)
+        rows = result.scalars().all()
+
+        items = [
+            RequestLogItem(
+                id=r.id,
+                timestamp=r.timestamp.isoformat(),
+                request_id=r.request_id,
+                endpoint=r.endpoint,
+                credential_name=r.credential_name,
+                model_requested=r.model_requested,
+                model_mapped=r.model_mapped,
+                provider_name=r.provider_name,
+                provider_type=r.provider_type,
+                client_protocol=r.client_protocol,
+                provider_protocol=r.provider_protocol,
+                is_streaming=r.is_streaming,
+                status_code=r.status_code,
+                input_tokens=r.input_tokens,
+                output_tokens=r.output_tokens,
+                total_tokens=r.total_tokens,
+                total_duration_ms=r.total_duration_ms,
+                ttft_ms=r.ttft_ms,
+                error_category=r.error_category,
+                error_message=r.error_message,
+                client=_extract_client_from_headers(r.request_headers),
+            )
+            for r in rows
+        ]
+
+    return RequestLogListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+@router.get("/logs/stats", response_model=RequestLogStatsResponse, tags=["logs"])
+async def api_log_stats(
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+    start_time: Optional[str] = Query(None),
+    end_time: Optional[str] = Query(None),
+    provider_name: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+) -> RequestLogStatsResponse:
+    """Get aggregated request log statistics."""
+    from sqlalchemy import case, func, or_, select
+
+    from app.core.database import RequestLogModel
+
+    async with db.session() as session:
+        conditions = []
+        st = _parse_iso_time(start_time)
+        if st:
+            conditions.append(RequestLogModel.timestamp >= st)
+        et = _parse_iso_time(end_time)
+        if et:
+            conditions.append(RequestLogModel.timestamp <= et)
+        if provider_name:
+            conditions.append(RequestLogModel.provider_name == provider_name)
+        if model:
+            conditions.append(RequestLogModel.model_requested == model)
+
+        # Aggregated stats
+        agg = select(
+            func.count(RequestLogModel.id).label("total"),
+            func.sum(
+                case(
+                    (
+                        or_(
+                            RequestLogModel.status_code >= 400,
+                            RequestLogModel.error_category.isnot(None),
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("errors"),
+            func.coalesce(func.sum(RequestLogModel.input_tokens), 0).label(
+                "input_tokens"
+            ),
+            func.coalesce(func.sum(RequestLogModel.output_tokens), 0).label(
+                "output_tokens"
+            ),
+            func.avg(RequestLogModel.total_duration_ms).label("avg_duration"),
+            func.avg(RequestLogModel.ttft_ms).label("avg_ttft"),
+        )
+        for cond in conditions:
+            agg = agg.where(cond)
+        row = (await session.execute(agg)).one()
+        total_requests = row.total or 0
+        total_errors = row.errors or 0
+        error_rate = (total_errors / total_requests) if total_requests > 0 else 0.0
+
+        # Group by provider
+        by_provider_q = (
+            select(
+                RequestLogModel.provider_name,
+                func.count(RequestLogModel.id),
+            )
+            .where(RequestLogModel.provider_name.isnot(None))
+            .group_by(RequestLogModel.provider_name)
+        )
+        for cond in conditions:
+            by_provider_q = by_provider_q.where(cond)
+        by_provider_rows = (await session.execute(by_provider_q)).all()
+        requests_by_provider = {r[0]: r[1] for r in by_provider_rows}
+
+        # Group by model
+        by_model_q = (
+            select(
+                RequestLogModel.model_requested,
+                func.count(RequestLogModel.id),
+            )
+            .where(RequestLogModel.model_requested.isnot(None))
+            .group_by(RequestLogModel.model_requested)
+        )
+        for cond in conditions:
+            by_model_q = by_model_q.where(cond)
+        by_model_rows = (await session.execute(by_model_q)).all()
+        requests_by_model = {r[0]: r[1] for r in by_model_rows}
+
+        # Group by status code
+        by_status_q = (
+            select(
+                RequestLogModel.status_code,
+                func.count(RequestLogModel.id),
+            )
+            .where(RequestLogModel.status_code.isnot(None))
+            .group_by(RequestLogModel.status_code)
+        )
+        for cond in conditions:
+            by_status_q = by_status_q.where(cond)
+        by_status_rows = (await session.execute(by_status_q)).all()
+        requests_by_status = {str(r[0]): r[1] for r in by_status_rows}
+
+    return RequestLogStatsResponse(
+        total_requests=total_requests,
+        total_errors=total_errors,
+        error_rate=round(error_rate, 4),
+        total_input_tokens=row.input_tokens,
+        total_output_tokens=row.output_tokens,
+        avg_duration_ms=(
+            round(float(row.avg_duration), 1) if row.avg_duration else None
+        ),
+        avg_ttft_ms=(round(float(row.avg_ttft), 1) if row.avg_ttft else None),
+        requests_by_provider=requests_by_provider,
+        requests_by_model=requests_by_model,
+        requests_by_status=requests_by_status,
+    )
+
+
+@router.get("/logs/{log_id}", response_model=RequestLogDetail, tags=["logs"])
+async def api_get_log(
+    log_id: int,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> RequestLogDetail:
+    """Get a single request log entry with full details."""
+    from sqlalchemy import select
+
+    from app.core.database import RequestLogModel
+
+    async with db.session() as session:
+        result = await session.execute(
+            select(RequestLogModel).where(RequestLogModel.id == log_id)
+        )
+        r = result.scalar_one_or_none()
+        if r is None:
+            raise HTTPException(status_code=404, detail="Log entry not found")
+
+    return RequestLogDetail(
+        id=r.id,
+        timestamp=r.timestamp.isoformat(),
+        request_id=r.request_id,
+        endpoint=r.endpoint,
+        credential_name=r.credential_name,
+        model_requested=r.model_requested,
+        model_mapped=r.model_mapped,
+        provider_name=r.provider_name,
+        provider_type=r.provider_type,
+        client_protocol=r.client_protocol,
+        provider_protocol=r.provider_protocol,
+        is_streaming=r.is_streaming,
+        status_code=r.status_code,
+        input_tokens=r.input_tokens,
+        output_tokens=r.output_tokens,
+        total_tokens=r.total_tokens,
+        total_duration_ms=r.total_duration_ms,
+        ttft_ms=r.ttft_ms,
+        error_category=r.error_category,
+        error_message=r.error_message,
+        client=_extract_client_from_headers(r.request_headers),
+        request_headers=r.request_headers,
+        request_body=r.request_body,
+        response_body=r.response_body,
+    )
+
+
+# =============================================================================
+# Error Logs API
+# =============================================================================
+
+
+class ErrorLogItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    timestamp: str
+    request_id: Optional[str] = None
+    error_category: str
+    error_code: Optional[int] = None
+    error_message: Optional[str] = None
+    provider_name: Optional[str] = None
+    credential_name: Optional[str] = None
+    model_requested: Optional[str] = None
+    model_mapped: Optional[str] = None
+    endpoint: Optional[str] = None
+    client_protocol: Optional[str] = None
+    provider_protocol: Optional[str] = None
+    is_streaming: Optional[bool] = None
+    total_duration_ms: Optional[int] = None
+
+
+class ErrorLogDetail(ErrorLogItem):
+    request_body: Optional[str] = None
+    response_body: Optional[str] = None
+    provider_request_body: Optional[str] = None
+    provider_request_headers: Optional[str] = None
+
+
+class ErrorLogListResponse(BaseModel):
+    items: list[ErrorLogItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+@router.get("/error-logs", response_model=ErrorLogListResponse, tags=["logs"])
+async def api_list_error_logs(
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    request_id: Optional[str] = Query(None),
+    provider_name: Optional[str] = Query(None),
+    error_category: Optional[str] = Query(None),
+    start_time: Optional[str] = Query(None),
+    end_time: Optional[str] = Query(None),
+    sort_by: str = Query("timestamp"),
+    sort_order: str = Query("desc"),
+) -> ErrorLogListResponse:
+    """List error logs with pagination and filtering."""
+    from sqlalchemy import func, select
+
+    from app.core.database import ErrorLogModel
+
+    async with db.session() as session:
+        base = select(ErrorLogModel)
+        count_q = select(func.count(ErrorLogModel.id))
+
+        conditions = []
+        if request_id:
+            conditions.append(ErrorLogModel.request_id == request_id)
+        if provider_name:
+            conditions.append(ErrorLogModel.provider_name == provider_name)
+        if error_category:
+            conditions.append(ErrorLogModel.error_category == error_category)
+        st = _parse_iso_time(start_time)
+        if st:
+            conditions.append(ErrorLogModel.timestamp >= st)
+        et = _parse_iso_time(end_time)
+        if et:
+            conditions.append(ErrorLogModel.timestamp <= et)
+
+        for cond in conditions:
+            base = base.where(cond)
+            count_q = count_q.where(cond)
+
+        total = (await session.execute(count_q)).scalar() or 0
+        total_pages = ceil(total / page_size) if total > 0 else 1
+
+        allowed_sort = {
+            "timestamp": ErrorLogModel.timestamp,
+            "error_category": ErrorLogModel.error_category,
+            "total_duration_ms": ErrorLogModel.total_duration_ms,
+        }
+        sort_col = allowed_sort.get(sort_by, ErrorLogModel.timestamp)
+        if sort_order == "asc":
+            base = base.order_by(sort_col.asc())
+        else:
+            base = base.order_by(sort_col.desc())
+
+        base = base.offset((page - 1) * page_size).limit(page_size)
+        result = await session.execute(base)
+        rows = result.scalars().all()
+
+        items = [
+            ErrorLogItem(
+                id=r.id,
+                timestamp=r.timestamp.isoformat(),
+                request_id=r.request_id,
+                error_category=r.error_category,
+                error_code=r.error_code,
+                error_message=r.error_message,
+                provider_name=r.provider_name,
+                credential_name=r.credential_name,
+                model_requested=None,
+                model_mapped=r.mapped_model,
+                endpoint=r.endpoint,
+                client_protocol=r.client_protocol,
+                provider_protocol=r.provider_protocol,
+                is_streaming=r.is_streaming,
+                total_duration_ms=r.total_duration_ms,
+            )
+            for r in rows
+        ]
+
+    return ErrorLogListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+@router.get("/error-logs/{log_id}", response_model=ErrorLogDetail, tags=["logs"])
+async def api_get_error_log(
+    log_id: int,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> ErrorLogDetail:
+    """Get a single error log entry with full details."""
+    from sqlalchemy import select
+
+    from app.core.database import ErrorLogModel
+
+    async with db.session() as session:
+        result = await session.execute(
+            select(ErrorLogModel).where(ErrorLogModel.id == log_id)
+        )
+        r = result.scalar_one_or_none()
+        if r is None:
+            raise HTTPException(status_code=404, detail="Error log entry not found")
+
+    return ErrorLogDetail(
+        id=r.id,
+        timestamp=r.timestamp.isoformat(),
+        request_id=r.request_id,
+        error_category=r.error_category,
+        error_code=r.error_code,
+        error_message=r.error_message,
+        provider_name=r.provider_name,
+        credential_name=r.credential_name,
+        model_requested=None,
+        model_mapped=r.mapped_model,
+        endpoint=r.endpoint,
+        client_protocol=r.client_protocol,
+        provider_protocol=r.provider_protocol,
+        is_streaming=r.is_streaming,
+        total_duration_ms=r.total_duration_ms,
+        request_body=r.request_body,
+        response_body=r.response_body,
+        provider_request_body=r.provider_request_body,
+        provider_request_headers=r.provider_request_headers,
+    )
+
+
+# =============================================================================
+# Log Deletion API
+# =============================================================================
+
+
+class BatchDeleteRequest(BaseModel):
+    ids: list[int]
+
+
+class BatchDeleteResponse(BaseModel):
+    deleted: int
+
+
+@router.delete(
+    "/logs/{log_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["logs"],
+)
+async def api_delete_log(
+    log_id: int,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> None:
+    """Delete a single request log entry."""
+    from sqlalchemy import delete
+
+    from app.core.database import RequestLogModel
+
+    async with db.session() as session:
+        result = await session.execute(
+            delete(RequestLogModel).where(RequestLogModel.id == log_id)
+        )
+        if result.rowcount == 0:  # type: ignore[union-attr]
+            raise HTTPException(status_code=404, detail="Log entry not found")
+    logger.info(f"Request log deleted: {log_id}")
+
+
+@router.post(
+    "/logs/batch-delete",
+    response_model=BatchDeleteResponse,
+    tags=["logs"],
+)
+async def api_batch_delete_logs(
+    body: BatchDeleteRequest,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> BatchDeleteResponse:
+    """Batch delete request log entries."""
+    if not body.ids:
+        return BatchDeleteResponse(deleted=0)
+    if len(body.ids) > 1000:
+        raise HTTPException(
+            status_code=400, detail="Cannot delete more than 1000 records at once"
+        )
+
+    from sqlalchemy import delete
+
+    from app.core.database import RequestLogModel
+
+    async with db.session() as session:
+        result = await session.execute(
+            delete(RequestLogModel).where(RequestLogModel.id.in_(body.ids))
+        )
+        deleted = result.rowcount or 0  # type: ignore[union-attr]
+    logger.info(f"Request logs batch deleted: {deleted} records")
+    return BatchDeleteResponse(deleted=deleted)
+
+
+@router.delete(
+    "/error-logs/{log_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["logs"],
+)
+async def api_delete_error_log(
+    log_id: int,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> None:
+    """Delete a single error log entry."""
+    from sqlalchemy import delete
+
+    from app.core.database import ErrorLogModel
+
+    async with db.session() as session:
+        result = await session.execute(
+            delete(ErrorLogModel).where(ErrorLogModel.id == log_id)
+        )
+        if result.rowcount == 0:  # type: ignore[union-attr]
+            raise HTTPException(status_code=404, detail="Error log entry not found")
+    logger.info(f"Error log deleted: {log_id}")
+
+
+@router.post(
+    "/error-logs/batch-delete",
+    response_model=BatchDeleteResponse,
+    tags=["logs"],
+)
+async def api_batch_delete_error_logs(
+    body: BatchDeleteRequest,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> BatchDeleteResponse:
+    """Batch delete error log entries."""
+    if not body.ids:
+        return BatchDeleteResponse(deleted=0)
+    if len(body.ids) > 1000:
+        raise HTTPException(
+            status_code=400, detail="Cannot delete more than 1000 records at once"
+        )
+
+    from sqlalchemy import delete
+
+    from app.core.database import ErrorLogModel
+
+    async with db.session() as session:
+        result = await session.execute(
+            delete(ErrorLogModel).where(ErrorLogModel.id.in_(body.ids))
+        )
+        deleted = result.rowcount or 0  # type: ignore[union-attr]
+    logger.info(f"Error logs batch deleted: {deleted} records")
+    return BatchDeleteResponse(deleted=deleted)

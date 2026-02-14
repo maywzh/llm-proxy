@@ -77,7 +77,7 @@ pub async fn request_id_middleware(mut request: Request, next: Next) -> Response
 /// Known client patterns for User-Agent mapping
 /// Each tuple: (pattern to match in UA, normalized client name)
 /// Order matters - more specific patterns should come first
-const CLIENT_PATTERNS: &[(&str, &str)] = &[
+pub const CLIENT_PATTERNS: &[(&str, &str)] = &[
     // Claude CLI / Claude Code (claude-cli/2.1.25, claude-vscode, etc.)
     ("claude-cli", "claude-code"),
     ("claude-code", "claude-code"),
@@ -152,14 +152,12 @@ pub fn extract_client(headers: &HeaderMap) -> String {
         return "unknown".to_string();
     }
 
-    // Try to match known client patterns
     for (pattern, client_name) in CLIENT_PATTERNS {
         if raw.contains(pattern) {
             return client_name.to_string();
         }
     }
 
-    // Fallback: extract first token (before space or slash) and truncate to 30 chars
     let first_token = raw.split([' ', '/']).next().unwrap_or(raw);
 
     let cleaned: String = first_token

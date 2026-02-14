@@ -37,7 +37,8 @@ from app.core.jsonl_logger import (
     log_provider_response,
     log_provider_streaming_response,
 )
-from app.core.error_logger import log_error, ErrorCategory
+from app.core.error_logger import log_error, mask_headers, ErrorCategory
+from app.core.request_logger import log_request_record
 from app.core.metrics import (
     BYPASS_REQUESTS,
     BYPASS_STREAMING_BYTES,
@@ -312,6 +313,51 @@ def _record_bypass_streaming_bytes(provider: str, byte_count: int) -> None:
         BYPASS_STREAMING_BYTES.labels(provider=provider).inc(byte_count)
 
 
+def _log_request_from_ctx(
+    ctx: TransformContext,
+    credential_name: str,
+    *,
+    is_streaming: bool,
+    status_code: int,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    total_tokens: int = 0,
+    ttft_ms: Optional[int] = None,
+    error_category: Optional[str] = None,
+    error_message: Optional[str] = None,
+    request_body: Optional[str] = None,
+    response_body: Optional[str] = None,
+) -> None:
+    """Build and emit a request log record from TransformContext."""
+    start_time = ctx.metadata.get("start_time")
+    duration_ms = int((time.monotonic() - start_time) * 1000) if start_time else None
+    log_request_record(
+        request_id=ctx.request_id,
+        endpoint=ctx.metadata.get("endpoint"),
+        credential_name=credential_name,
+        model_requested=ctx.original_model,
+        model_mapped=ctx.mapped_model,
+        provider_name=ctx.provider_name,
+        provider_type=ctx.metadata.get("provider_type"),
+        client_protocol=(ctx.client_protocol.value if ctx.client_protocol else None),
+        provider_protocol=(
+            ctx.provider_protocol.value if ctx.provider_protocol else None
+        ),
+        is_streaming=is_streaming,
+        status_code=status_code,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        total_duration_ms=duration_ms,
+        ttft_ms=ttft_ms,
+        error_category=error_category,
+        error_message=error_message,
+        request_headers=ctx.metadata.get("request_headers"),
+        request_body=request_body,
+        response_body=response_body,
+    )
+
+
 async def _cleanup_stream_context(
     stream_ctx,
     ctx: TransformContext,
@@ -360,6 +406,23 @@ async def _cleanup_stream_context(
             first_token_time=usage_tracker.first_token_time,
         )
         record_stream_metrics(stats)
+
+    # Log request record for streaming completion
+    _in = usage_tracker.input_tokens if usage_tracker else 0
+    _out = usage_tracker.output_tokens if usage_tracker else 0
+    _ttft = None
+    if usage_tracker and usage_tracker.first_token_time and usage_tracker.start_time:
+        _ttft = int((usage_tracker.first_token_time - usage_tracker.start_time) * 1000)
+    _log_request_from_ctx(
+        ctx,
+        generation_data.credential_name or "",
+        is_streaming=True,
+        status_code=200,
+        input_tokens=_in,
+        output_tokens=_out,
+        total_tokens=_in + _out,
+        ttft_ms=_ttft,
+    )
 
 
 # =============================================================================
@@ -909,6 +972,19 @@ async def _handle_streaming_request(
                     provider_request_headers=json.dumps(provider_debug_headers),
                 )
 
+            _log_request_from_ctx(
+                ctx,
+                generation_data.credential_name or "",
+                is_streaming=True,
+                status_code=response.status_code,
+                error_category=(
+                    ErrorCategory.PROVIDER_5XX
+                    if response.status_code >= 500
+                    else ErrorCategory.PROVIDER_4XX
+                ),
+                error_message=generation_data.error_message,
+            )
+
             return _build_protocol_error_response(
                 ctx.client_protocol,
                 response.status_code,
@@ -1128,6 +1204,19 @@ async def _handle_non_streaming_request(
                 provider_request_headers=json.dumps(provider_debug_headers),
             )
 
+        _log_request_from_ctx(
+            ctx,
+            generation_data.credential_name or "",
+            is_streaming=False,
+            status_code=response.status_code,
+            error_category=(
+                ErrorCategory.PROVIDER_5XX
+                if response.status_code >= 500
+                else ErrorCategory.PROVIDER_4XX
+            ),
+            error_message=generation_data.error_message,
+        )
+
         return _build_protocol_error_response(
             ctx.client_protocol,
             response.status_code,
@@ -1170,6 +1259,16 @@ async def _handle_non_streaming_request(
     generation_data.end_time = datetime.now(timezone.utc)
     if trace_id:
         langfuse_service.trace_generation(generation_data)
+
+    _log_request_from_ctx(
+        ctx,
+        generation_data.credential_name or "",
+        is_streaming=False,
+        status_code=response.status_code,
+        input_tokens=generation_data.prompt_tokens or 0,
+        output_tokens=generation_data.completion_tokens or 0,
+        total_tokens=generation_data.total_tokens or 0,
+    )
 
     success_response = JSONResponse(
         content=client_response, status_code=response.status_code
@@ -1255,6 +1354,8 @@ async def handle_proxy_request(
     3. Upstream request execution
     4. Response transformation (provider format → client format)
     """
+    start_time = time.monotonic()
+
     # Initialize Langfuse tracing
     langfuse_service = get_langfuse_service()
     request_id, credential_name, trace_id, generation_data = _init_langfuse_trace(
@@ -1326,7 +1427,13 @@ async def handle_proxy_request(
         mapped_model=provider.get_mapped_model(effective_model),
         provider_name=provider.name,
         stream=is_streaming,
-        metadata={"client": client},
+        metadata={
+            "client": client,
+            "start_time": start_time,
+            "provider_type": getattr(provider, "provider_type", "openai"),
+            "endpoint": path,
+            "request_headers": json.dumps(mask_headers(dict(request.headers))),
+        },
     )
 
     # Log client request to JSONL
@@ -1375,6 +1482,14 @@ async def handle_proxy_request(
         generation_data.end_time = datetime.now(timezone.utc)
         if trace_id:
             langfuse_service.trace_generation(generation_data)
+        _log_request_from_ctx(
+            ctx,
+            credential_name,
+            is_streaming=is_streaming,
+            status_code=504,
+            error_category=ErrorCategory.TIMEOUT,
+            error_message="Gateway timeout",
+        )
         raise HTTPException(status_code=504, detail="Gateway timeout")
     except httpx.RequestError as e:
         provider_svc.report_transport_error(provider.name)
@@ -1384,6 +1499,14 @@ async def handle_proxy_request(
         generation_data.end_time = datetime.now(timezone.utc)
         if trace_id:
             langfuse_service.trace_generation(generation_data)
+        _log_request_from_ctx(
+            ctx,
+            credential_name,
+            is_streaming=is_streaming,
+            status_code=502,
+            error_category=ErrorCategory.NETWORK_ERROR,
+            error_message=f"Provider {provider.name} network error",
+        )
         raise HTTPException(
             status_code=502, detail=f"Provider {provider.name} network error"
         )
@@ -1394,6 +1517,14 @@ async def handle_proxy_request(
         generation_data.end_time = datetime.now(timezone.utc)
         if trace_id:
             langfuse_service.trace_generation(generation_data)
+        _log_request_from_ctx(
+            ctx,
+            credential_name,
+            is_streaming=is_streaming,
+            status_code=500,
+            error_category=ErrorCategory.INTERNAL_ERROR,
+            error_message="Internal server error",
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         clear_provider_context()

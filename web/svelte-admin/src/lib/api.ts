@@ -26,6 +26,13 @@ import type {
   ProviderHealthStatus,
   CheckProviderHealthRequest,
   CheckProviderHealthResponse,
+  RequestLogListResponse,
+  RequestLogDetail,
+  RequestLogStats,
+  RequestLogFilters,
+  ErrorLogListResponse,
+  ErrorLogDetail,
+  ErrorLogFilters,
 } from './types';
 
 export class ApiClient {
@@ -363,6 +370,103 @@ export class ApiClient {
       onError(error instanceof Error ? error : new Error(String(error)));
       return () => {};
     }
+  }
+
+  // Request Logs API
+  async listLogs(
+    page: number = 1,
+    pageSize: number = 50,
+    filters?: RequestLogFilters
+  ): Promise<RequestLogListResponse> {
+    const params = new URLSearchParams();
+    params.append('page', page.toString());
+    params.append('page_size', pageSize.toString());
+    if (filters) {
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          params.append(key, String(value));
+        }
+      });
+    }
+    return this.request<RequestLogListResponse>(
+      `/admin/v1/logs?${params.toString()}`
+    );
+  }
+
+  async getLog(id: number): Promise<RequestLogDetail> {
+    return this.request<RequestLogDetail>(`/admin/v1/logs/${id}`);
+  }
+
+  async getLogStats(filters?: {
+    start_time?: string;
+    end_time?: string;
+    provider_name?: string;
+    model?: string;
+  }): Promise<RequestLogStats> {
+    const params = new URLSearchParams();
+    if (filters) {
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          params.append(key, String(value));
+        }
+      });
+    }
+    const qs = params.toString();
+    return this.request<RequestLogStats>(
+      `/admin/v1/logs/stats${qs ? `?${qs}` : ''}`
+    );
+  }
+
+  async deleteLog(id: number): Promise<void> {
+    await this.request<void>(`/admin/v1/logs/${id}`, { method: 'DELETE' });
+  }
+
+  async batchDeleteLogs(ids: number[]): Promise<{ deleted: number }> {
+    return this.request<{ deleted: number }>('/admin/v1/logs/batch-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    });
+  }
+
+  // Error Logs API
+  async listErrorLogs(
+    page: number = 1,
+    pageSize: number = 50,
+    filters?: ErrorLogFilters
+  ): Promise<ErrorLogListResponse> {
+    const params = new URLSearchParams();
+    params.append('page', page.toString());
+    params.append('page_size', pageSize.toString());
+    if (filters) {
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          params.append(key, String(value));
+        }
+      });
+    }
+    return this.request<ErrorLogListResponse>(
+      `/admin/v1/error-logs?${params.toString()}`
+    );
+  }
+
+  async getErrorLog(id: number): Promise<ErrorLogDetail> {
+    return this.request<ErrorLogDetail>(`/admin/v1/error-logs/${id}`);
+  }
+
+  async batchDeleteErrorLogs(ids: number[]): Promise<{ deleted: number }> {
+    return this.request<{ deleted: number }>(
+      '/admin/v1/error-logs/batch-delete',
+      {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+      }
+    );
+  }
+
+  async deleteErrorLog(id: number): Promise<void> {
+    await this.request<void>(`/admin/v1/error-logs/${id}`, {
+      method: 'DELETE',
+    });
   }
 }
 

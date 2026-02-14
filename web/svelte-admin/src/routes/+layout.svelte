@@ -22,6 +22,7 @@
     ChevronLeft,
     ChevronRight,
     Activity,
+    FileText,
   } from 'lucide-svelte';
 
   let { children }: { children: Snippet } = $props();
@@ -144,6 +145,7 @@
     { href: '/providers', label: 'Providers', icon: Plug },
     { href: '/credentials', label: 'Credentials', icon: Key },
     { href: '/health', label: 'Health Check', icon: Activity },
+    { href: '/logs', label: 'Logs', icon: FileText },
     { href: '/chat', label: 'Chat', icon: MessageSquare },
   ];
 </script>

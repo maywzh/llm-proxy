@@ -23,6 +23,7 @@ pub mod logging;
 pub mod metrics;
 pub mod middleware;
 pub mod rate_limiter;
+pub mod request_logger;
 pub mod stream_metrics;
 pub mod token_counter;
 pub mod tokenizer;
@@ -61,6 +62,9 @@ pub use middleware::{
     MetricsMiddleware, ModelName, ProviderName, RequestId,
 };
 pub use rate_limiter::RateLimiter;
+pub use request_logger::{
+    init_request_logger, log_request_record, shutdown_request_logger, RequestLogRecord,
+};
 pub use stream_metrics::{record_stream_metrics, StreamStats};
 pub use token_counter::OutboundTokenCounter;
 pub use tokenizer::{
