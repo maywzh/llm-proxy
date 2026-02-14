@@ -27,7 +27,9 @@ use crate::api::models::{
     ModelInfoQueryParams, ModelInfoQueryParamsV1, ModelList, PaginatedModelInfoList,
 };
 use crate::api::rectifier::sanitize_provider_payload;
-use crate::api::streaming::{calculate_message_tokens_with_tools, create_sse_stream};
+use crate::api::streaming::{
+    calculate_message_tokens_with_tools, create_sse_stream, StreamRequestLogContext,
+};
 use crate::api::upstream::{
     attach_response_extensions, build_json_response, build_protocol_error_response,
     build_protocol_upstream_request, build_provider_debug_headers,
@@ -44,6 +46,7 @@ use crate::core::langfuse::{fail_generation_if_sampled, init_langfuse_trace, Gen
 use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{extract_client, HasCredentials};
+use crate::core::request_logger::{log_request_record, RequestLogRecord};
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::utils::{get_key_name, strip_provider_suffix};
 use crate::core::StreamCancelHandle;
@@ -138,6 +141,7 @@ pub async fn handle_proxy_request(
     with_request_context!(request_id.clone(), api_key_name.clone(), async move {
         // Extract client from User-Agent header for metrics
         let client = extract_client(&headers);
+        let masked_headers_str = serde_json::to_string(&mask_headers(&headers)).ok();
 
         // Initialize Langfuse tracing
         let (trace_id, mut generation_data) =
@@ -197,6 +201,7 @@ pub async fn handle_proxy_request(
             original_model: original_model.clone(),
             mapped_model: provider.get_mapped_model(&effective_model),
             provider_name: provider.name.clone(),
+            provider_type: provider.provider_type.clone(),
             stream: generation_data.is_streaming,
             ..Default::default()
         };
@@ -386,10 +391,28 @@ pub async fn handle_proxy_request(
                     "HTTP request failed",
                 )
                 .await
-                .map_err(|(_, resp)| resp)
                 {
                     Ok(resp) => resp,
-                    Err(error_response) => {
+                    Err((error_message, error_response)) => {
+                        log_request_record(RequestLogRecord {
+                            request_id: request_id.clone(),
+                            endpoint: Some(path.to_string()),
+                            credential_name: Some(api_key_name.clone()),
+                            model_requested: Some(effective_model.clone()),
+                            model_mapped: Some(transform_ctx.mapped_model.clone()),
+                            provider_name: Some(provider.name.clone()),
+                            provider_type: Some(provider.provider_type.clone()),
+                            client_protocol: Some(client_protocol.to_string()),
+                            provider_protocol: Some(provider_protocol.to_string()),
+                            is_streaming: generation_data.is_streaming,
+                            total_duration_ms: Some(
+                                request_start.elapsed().as_millis().min(i32::MAX as u128) as i32,
+                            ),
+                            error_category: Some("transport".to_string()),
+                            error_message: Some(error_message),
+                            request_headers: masked_headers_str.clone(),
+                            ..Default::default()
+                        });
                         return Ok(error_response);
                     }
                 };
@@ -439,7 +462,9 @@ pub async fn handle_proxy_request(
                             credential_name: api_key_name.clone(),
                             client: client.clone(),
                             is_streaming: generation_data.is_streaming,
-                            total_duration_ms: Some(request_start.elapsed().as_millis() as i32),
+                            total_duration_ms: Some(
+                                request_start.elapsed().as_millis().min(i32::MAX as u128) as i32,
+                            ),
                             provider_request_body: Some(provider_payload.clone()),
                             provider_request_headers: Some(provider_headers),
                         });
@@ -472,11 +497,42 @@ pub async fn handle_proxy_request(
                             credential_name: api_key_name.clone(),
                             client: client.clone(),
                             is_streaming: generation_data.is_streaming,
-                            total_duration_ms: Some(request_start.elapsed().as_millis() as i32),
+                            total_duration_ms: Some(
+                                request_start.elapsed().as_millis().min(i32::MAX as u128) as i32,
+                            ),
                             provider_request_body: Some(provider_payload.clone()),
                             provider_request_headers: Some(provider_headers),
                         });
                     }
+
+                    // Log request record for error responses
+                    log_request_record(RequestLogRecord {
+                        request_id: request_id.clone(),
+                        endpoint: Some(path.to_string()),
+                        credential_name: Some(api_key_name.clone()),
+                        model_requested: Some(effective_model.clone()),
+                        model_mapped: Some(transform_ctx.mapped_model.clone()),
+                        provider_name: Some(provider.name.clone()),
+                        provider_type: Some(provider.provider_type.clone()),
+                        client_protocol: Some(client_protocol.to_string()),
+                        provider_protocol: Some(provider_protocol.to_string()),
+                        is_streaming: generation_data.is_streaming,
+                        status_code: Some(status.as_u16() as i32),
+                        total_duration_ms: Some(
+                            request_start.elapsed().as_millis().min(i32::MAX as u128) as i32,
+                        ),
+                        error_category: Some(
+                            if status.is_server_error() {
+                                "provider_5xx"
+                            } else {
+                                "provider_4xx"
+                            }
+                            .to_string(),
+                        ),
+                        error_message: Some(format!("HTTP {} from {}", status, provider.name)),
+                        request_headers: masked_headers_str.clone(),
+                        ..Default::default()
+                    });
 
                     return Ok(error_response);
                 }
@@ -541,6 +597,7 @@ pub async fn handle_proxy_request(
                         path,
                         input_tokens,
                         client.clone(),
+                        masked_headers_str.clone(),
                     )
                     .await
                 } else {
@@ -554,6 +611,7 @@ pub async fn handle_proxy_request(
                         payload.clone(),
                         request_start,
                         path,
+                        masked_headers_str.clone(),
                     )
                     .await
                 }
@@ -783,11 +841,13 @@ async fn handle_streaming_proxy_response(
     endpoint: &str,
     input_tokens: Option<usize>,
     client: String,
+    masked_headers: Option<String>,
 ) -> Result<Response> {
     let client_protocol = ctx.client_protocol;
     let provider_protocol = ctx.provider_protocol;
     let model_label = ctx.original_model.clone();
     let provider_name = ctx.provider_name.clone();
+    let provider_type_str = ctx.provider_type.clone();
     let request_id = ctx.request_id.clone();
 
     // For same-protocol streaming, we can use bypass optimization
@@ -816,6 +876,13 @@ async fn handle_streaming_proxy_response(
             Some(request_payload.clone()),
             Some(client.clone()),
             cancel_handle_clone,
+            Some(StreamRequestLogContext {
+                mapped_model: ctx.mapped_model.clone(),
+                provider_type: provider_type_str.clone(),
+                client_protocol: client_protocol.to_string(),
+                provider_protocol: provider_protocol.to_string(),
+                request_headers: masked_headers.clone(),
+            }),
         )
         .await
         {
@@ -899,8 +966,17 @@ async fn handle_streaming_proxy_response(
             cancel_rx: watch::Receiver<bool>,
             // Handle to mark completion when stream ends normally
             cancel_handle: StreamCancelHandle,
+            // Request logging context
+            request_id: String,
+            endpoint: String,
+            credential_name: String,
+            model_requested: String,
+            mapped_model: String,
+            provider_type: String,
+            request_headers: Option<String>,
         }
 
+        let masked = masked_headers;
         let streaming_state = CrossProtocolStreamingState {
             stream: Box::pin(response.bytes_stream()),
             stream_state: CrossProtocolStreamState::with_input_tokens(&model_label, input_tokens),
@@ -917,6 +993,13 @@ async fn handle_streaming_proxy_response(
             sse_line_buffer: String::new(),
             cancel_rx,
             cancel_handle: cancel_handle_for_completion,
+            request_id: request_id.clone(),
+            endpoint: endpoint.to_string(),
+            credential_name: api_key_name.to_string(),
+            model_requested: model_label.clone(),
+            mapped_model: ctx.mapped_model.clone(),
+            provider_type: provider_type_str.clone(),
+            request_headers: masked,
         };
 
         let transform_stream = futures::stream::unfold(streaming_state, |mut state| async move {
@@ -963,6 +1046,30 @@ async fn handle_streaming_proxy_response(
                             first_token_time: state.first_token_time,
                         };
                         record_stream_metrics(&stats);
+
+                        // Log request record for client disconnect
+                        let ttft = state.first_token_time.map(|ft| ft.duration_since(state.start_time).as_millis().min(i32::MAX as u128) as i32);
+                        log_request_record(RequestLogRecord {
+                            request_id: state.request_id.clone(),
+                            endpoint: Some(state.endpoint.clone()),
+                            credential_name: Some(state.credential_name.clone()),
+                            model_requested: Some(state.model_requested.clone()),
+                            model_mapped: Some(state.mapped_model.clone()),
+                            provider_name: Some(state.provider.clone()),
+                            provider_type: Some(state.provider_type.clone()),
+                            client_protocol: Some(state.client_protocol.to_string()),
+                            provider_protocol: Some(state.provider_protocol.to_string()),
+                            is_streaming: true,
+                            status_code: Some(499),
+                            input_tokens: stats.input_tokens as i32,
+                            output_tokens: stats.output_tokens as i32,
+                            total_tokens: (stats.input_tokens + stats.output_tokens) as i32,
+                            total_duration_ms: Some(state.start_time.elapsed().as_millis().min(i32::MAX as u128) as i32),
+                            ttft_ms: ttft,
+                            error_category: Some("client_disconnect".to_string()),
+                            request_headers: state.request_headers.clone(),
+                            ..Default::default()
+                        });
 
                         return None;
                     }
@@ -1144,6 +1251,35 @@ async fn handle_streaming_proxy_response(
                     };
                     record_stream_metrics(&stats);
 
+                    // Log request record for streaming success
+                    let ttft = state.first_token_time.map(|ft| {
+                        ft.duration_since(state.start_time)
+                            .as_millis()
+                            .min(i32::MAX as u128) as i32
+                    });
+                    log_request_record(RequestLogRecord {
+                        request_id: state.request_id.clone(),
+                        endpoint: Some(state.endpoint.clone()),
+                        credential_name: Some(state.credential_name.clone()),
+                        model_requested: Some(state.model_requested.clone()),
+                        model_mapped: Some(state.mapped_model.clone()),
+                        provider_name: Some(state.provider.clone()),
+                        provider_type: Some(state.provider_type.clone()),
+                        client_protocol: Some(state.client_protocol.to_string()),
+                        provider_protocol: Some(state.provider_protocol.to_string()),
+                        is_streaming: true,
+                        status_code: Some(200),
+                        input_tokens: stats.input_tokens as i32,
+                        output_tokens: stats.output_tokens as i32,
+                        total_tokens: (stats.input_tokens + stats.output_tokens) as i32,
+                        total_duration_ms: Some(
+                            state.start_time.elapsed().as_millis().min(i32::MAX as u128) as i32,
+                        ),
+                        ttft_ms: ttft,
+                        request_headers: state.request_headers.clone(),
+                        ..Default::default()
+                    });
+
                     // Mark as finalized so next iteration returns None
                     state.finalized = true;
 
@@ -1190,8 +1326,9 @@ async fn handle_non_streaming_proxy_response(
     trace_id: Option<String>,
     api_key_name: &str,
     _request_payload: Value,
-    _request_start: Instant,
-    _endpoint: &str,
+    request_start: Instant,
+    endpoint: &str,
+    masked_headers: Option<String>,
 ) -> Result<Response> {
     let client_protocol = ctx.client_protocol;
     let model_label = ctx.original_model.clone();
@@ -1294,6 +1431,39 @@ async fn handle_non_streaming_proxy_response(
             "Transformed client response payload"
         );
     }
+
+    // Log request record for non-streaming success
+    let usage = client_response.get("usage");
+    let input_tokens = usage
+        .and_then(|u| u.get("prompt_tokens").or_else(|| u.get("input_tokens")))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    let output_tokens = usage
+        .and_then(|u| {
+            u.get("completion_tokens")
+                .or_else(|| u.get("output_tokens"))
+        })
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    log_request_record(RequestLogRecord {
+        request_id: request_id.clone(),
+        endpoint: Some(endpoint.to_string()),
+        credential_name: Some(api_key_name.to_string()),
+        model_requested: Some(ctx.original_model.clone()),
+        model_mapped: Some(ctx.mapped_model.clone()),
+        provider_name: Some(ctx.provider_name.clone()),
+        provider_type: Some(ctx.provider_type.clone()),
+        client_protocol: Some(ctx.client_protocol.to_string()),
+        provider_protocol: Some(ctx.provider_protocol.to_string()),
+        is_streaming: false,
+        status_code: Some(status.as_u16() as i32),
+        input_tokens,
+        output_tokens,
+        total_tokens: input_tokens + output_tokens,
+        total_duration_ms: Some(request_start.elapsed().as_millis().min(i32::MAX as u128) as i32),
+        request_headers: masked_headers,
+        ..Default::default()
+    });
 
     Ok(finalize_non_streaming_response(
         trace_id.as_deref(),

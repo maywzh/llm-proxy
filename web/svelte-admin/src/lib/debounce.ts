@@ -5,10 +5,13 @@
 export function debounce<T extends (...args: Parameters<T>) => ReturnType<T>>(
   fn: T,
   delay: number
-): (...args: Parameters<T>) => void {
+): ((...args: Parameters<T>) => void) & { cancel: () => void } {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-  return function (this: ThisParameterType<T>, ...args: Parameters<T>) {
+  const debounced = function (
+    this: ThisParameterType<T>,
+    ...args: Parameters<T>
+  ) {
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
@@ -18,4 +21,13 @@ export function debounce<T extends (...args: Parameters<T>) => ReturnType<T>>(
       timeoutId = null;
     }, delay);
   };
+
+  debounced.cancel = () => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+  };
+
+  return debounced;
 }

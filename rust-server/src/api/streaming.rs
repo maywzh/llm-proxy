@@ -22,6 +22,7 @@ use crate::core::jsonl_logger::{log_provider_streaming_response, log_streaming_r
 use crate::core::langfuse::{finish_generation_if_sampled, GenerationData};
 use crate::core::logging::get_api_key_name;
 use crate::core::metrics::get_metrics;
+use crate::core::request_logger::{log_request_record, RequestLogRecord};
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::tokenizer::{count_tokens_hf, get_hf_tokenizer, select_tokenizer, TokenizerType};
 use crate::core::OutboundTokenCounter;
@@ -140,6 +141,18 @@ struct StreamState {
     sse_line_buffer: String,
     /// Cancellation receiver
     cancel_rx: Option<watch::Receiver<bool>>,
+    /// Endpoint path for request logging
+    endpoint: Option<String>,
+    /// Mapped model for request logging
+    mapped_model: Option<String>,
+    /// Provider type for request logging
+    provider_type: Option<String>,
+    /// Client protocol for request logging
+    client_protocol: Option<String>,
+    /// Provider protocol for request logging
+    provider_protocol: Option<String>,
+    /// Masked request headers for request logging
+    request_headers: Option<String>,
 }
 
 impl StreamState {
@@ -182,6 +195,12 @@ impl StreamState {
             request_id: String::new(),
             sse_line_buffer: String::new(),
             cancel_rx,
+            endpoint: None,
+            mapped_model: None,
+            provider_type: None,
+            client_protocol: None,
+            provider_protocol: None,
+            request_headers: None,
         }
     }
 }
@@ -911,6 +930,16 @@ fn format_type(props: &Value, indent: usize) -> String {
 /// * `endpoint` - Optional endpoint for JSONL logging
 /// * `request_payload` - Optional request payload for JSONL logging
 /// * `client` - Optional client name from User-Agent header
+///
+/// Extra context for request logging in streaming path
+pub struct StreamRequestLogContext {
+    pub mapped_model: String,
+    pub provider_type: String,
+    pub client_protocol: String,
+    pub provider_protocol: String,
+    pub request_headers: Option<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn create_sse_stream(
     response: Response,
@@ -925,6 +954,7 @@ pub async fn create_sse_stream(
     request_payload: Option<Value>,
     client: Option<String>,
     cancel_handle: Option<StreamCancelHandle>,
+    log_ctx: Option<StreamRequestLogContext>,
 ) -> Result<AxumResponse, AppError> {
     let stream = response.bytes_stream();
 
@@ -952,9 +982,18 @@ pub async fn create_sse_stream(
 
     // Set JSONL logging parameters (endpoint and request_payload are no longer needed - request is logged separately)
     initial_state.request_id = request_id.unwrap_or_default();
-    // Note: endpoint and request_payload parameters are kept for API compatibility but not used
-    let _ = endpoint;
+    initial_state.endpoint = endpoint;
+    // Note: request_payload parameter is kept for API compatibility but not used
     let _ = request_payload;
+
+    // Set request logging context
+    if let Some(ctx) = log_ctx {
+        initial_state.mapped_model = Some(ctx.mapped_model);
+        initial_state.provider_type = Some(ctx.provider_type);
+        initial_state.client_protocol = Some(ctx.client_protocol);
+        initial_state.provider_protocol = Some(ctx.provider_protocol);
+        initial_state.request_headers = ctx.request_headers;
+    }
 
     // Create the byte stream using unfold - TTFT timeout handled inside
     let byte_stream = futures::stream::unfold(initial_state, |mut state| async move {
@@ -1530,6 +1569,37 @@ fn finalize_stream(state: &mut StreamState) {
         first_token_time: state.provider_first_token_time,
     };
     record_stream_metrics(&stats);
+
+    // Log request record for same-protocol streaming
+    if !state.request_id.is_empty() {
+        let ttft = state.provider_first_token_time.map(|ft| {
+            ft.duration_since(state.start_time)
+                .as_millis()
+                .min(i32::MAX as u128) as i32
+        });
+        log_request_record(RequestLogRecord {
+            request_id: state.request_id.clone(),
+            endpoint: state.endpoint.clone(),
+            credential_name: Some(state.api_key_name.clone()),
+            model_requested: Some(state.original_model.clone()),
+            model_mapped: state.mapped_model.clone(),
+            provider_name: Some(state.provider_name.clone()),
+            provider_type: state.provider_type.clone(),
+            client_protocol: state.client_protocol.clone(),
+            provider_protocol: state.provider_protocol.clone(),
+            is_streaming: true,
+            status_code: Some(200),
+            input_tokens: final_input_tokens as i32,
+            output_tokens: final_output_tokens as i32,
+            total_tokens: (final_input_tokens + final_output_tokens) as i32,
+            total_duration_ms: Some(
+                state.start_time.elapsed().as_millis().min(i32::MAX as u128) as i32
+            ),
+            ttft_ms: ttft,
+            request_headers: state.request_headers.clone(),
+            ..Default::default()
+        });
+    }
 
     // Record Langfuse generation
     if let Some(ref gen_data) = state.generation_data {

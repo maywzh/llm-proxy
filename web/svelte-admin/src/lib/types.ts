@@ -335,3 +335,113 @@ export interface ModalState {
   data?: unknown;
   isOpen: boolean;
 }
+
+// Request Log Types
+export interface RequestLog {
+  id: number;
+  timestamp: string;
+  request_id: string;
+  endpoint: string | null;
+  credential_name: string | null;
+  model_requested: string | null;
+  model_mapped: string | null;
+  provider_name: string | null;
+  provider_type: string | null;
+  client_protocol: string | null;
+  provider_protocol: string | null;
+  is_streaming: boolean | null;
+  status_code: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  total_duration_ms: number | null;
+  ttft_ms: number | null;
+  error_category: string | null;
+  error_message: string | null;
+  client: string | null;
+}
+
+export interface RequestLogDetail extends RequestLog {
+  request_headers: string | null;
+  request_body: string | null;
+  response_body: string | null;
+}
+
+export interface RequestLogListResponse {
+  items: RequestLog[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface RequestLogFilters {
+  request_id?: string;
+  provider_name?: string;
+  model?: string;
+  credential_name?: string;
+  status_code?: number;
+  is_streaming?: boolean;
+  error_only?: boolean;
+  start_time?: string;
+  end_time?: string;
+  sort_by?: string;
+  sort_order?: 'asc' | 'desc';
+}
+
+export interface RequestLogStats {
+  total_requests: number;
+  total_errors: number;
+  error_rate: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  avg_duration_ms: number | null;
+  avg_ttft_ms: number | null;
+  requests_by_provider: Record<string, number>;
+  requests_by_model: Record<string, number>;
+  requests_by_status: Record<string, number>;
+}
+
+// Error Log Types
+export interface ErrorLog {
+  id: number;
+  timestamp: string;
+  request_id: string | null;
+  error_category: string;
+  error_code: number | null;
+  error_message: string | null;
+  provider_name: string | null;
+  credential_name: string | null;
+  model_requested: string | null;
+  model_mapped: string | null;
+  endpoint: string | null;
+  client_protocol: string | null;
+  provider_protocol: string | null;
+  is_streaming: boolean | null;
+  total_duration_ms: number | null;
+}
+
+export interface ErrorLogDetail extends ErrorLog {
+  request_body: string | null;
+  response_body: string | null;
+  provider_request_body: string | null;
+  provider_request_headers: string | null;
+}
+
+export interface ErrorLogListResponse {
+  items: ErrorLog[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface ErrorLogFilters {
+  request_id?: string;
+  provider_name?: string;
+  error_category?: string;
+  start_time?: string;
+  end_time?: string;
+  sort_by?: string;
+  sort_order?: 'asc' | 'desc';
+}

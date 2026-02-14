@@ -13,6 +13,7 @@ import Providers from './pages/Providers.tsx';
 import Credentials from './pages/Credentials.tsx';
 import Dashboard from './pages/Dashboard.tsx';
 import Health from './pages/Health.tsx';
+import Logs from './pages/Logs.tsx';
 import Chat from './pages/Chat.tsx';
 
 function App() {
@@ -70,6 +71,18 @@ function App() {
               isAuthenticated ? (
                 <Layout>
                   <Health />
+                </Layout>
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/logs"
+            element={
+              isAuthenticated ? (
+                <Layout>
+                  <Logs />
                 </Layout>
               ) : (
                 <Navigate to="/" replace />

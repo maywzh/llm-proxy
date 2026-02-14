@@ -216,6 +216,8 @@ pub struct TransformContext {
     pub mapped_model: String,
     /// Provider name
     pub provider_name: String,
+    /// Provider type (e.g. "openai", "anthropic", "gcp_vertex")
+    pub provider_type: String,
     /// Whether streaming is enabled
     pub stream: bool,
     /// Extra metadata
