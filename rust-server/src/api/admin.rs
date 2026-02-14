@@ -4,7 +4,7 @@
 //! All endpoints require ADMIN_KEY authentication.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -20,6 +20,7 @@ use crate::core::database::{
     create_key_preview, CreateCredential, CreateProvider, CredentialEntity, DynamicConfig,
     ProviderEntity, UpdateCredential, UpdateProvider,
 };
+use crate::core::middleware::CLIENT_PATTERNS;
 
 /// OpenAPI documentation for Admin API (admin endpoints only)
 #[derive(OpenApi)]
@@ -1115,6 +1116,1116 @@ pub async fn reload_config(
 }
 
 // ============================================================================
+// Request Logs API
+// ============================================================================
+
+fn extract_client_from_headers(headers_json: Option<&str>) -> Option<String> {
+    let json_str = headers_json?;
+    let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let ua = parsed
+        .get("user-agent")
+        .or_else(|| parsed.get("User-Agent"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if ua.is_empty() {
+        return Some("unknown".to_string());
+    }
+    for (pattern, name) in CLIENT_PATTERNS {
+        if ua.contains(pattern) {
+            return Some(name.to_string());
+        }
+    }
+    let first_token: &str = ua.split(' ').next().unwrap_or("");
+    let first_token = first_token.split('/').next().unwrap_or("");
+    let cleaned: String = first_token
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .take(30)
+        .collect();
+    Some(if cleaned.is_empty() {
+        "other".to_string()
+    } else {
+        cleaned
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct RequestLogItem {
+    pub id: i64,
+    pub timestamp: String,
+    pub request_id: String,
+    pub endpoint: Option<String>,
+    pub credential_name: Option<String>,
+    pub model_requested: Option<String>,
+    pub model_mapped: Option<String>,
+    pub provider_name: Option<String>,
+    pub provider_type: Option<String>,
+    pub client_protocol: Option<String>,
+    pub provider_protocol: Option<String>,
+    pub is_streaming: Option<bool>,
+    pub status_code: Option<i32>,
+    pub input_tokens: i32,
+    pub output_tokens: i32,
+    pub total_tokens: i32,
+    pub total_duration_ms: Option<i32>,
+    pub ttft_ms: Option<i32>,
+    pub error_category: Option<String>,
+    pub error_message: Option<String>,
+    pub client: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RequestLogDetail {
+    #[serde(flatten)]
+    pub item: RequestLogItem,
+    pub request_headers: Option<String>,
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RequestLogListResponse {
+    pub items: Vec<RequestLogItem>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub total_pages: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RequestLogStatsResponse {
+    pub total_requests: i64,
+    pub total_errors: i64,
+    pub error_rate: f64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub avg_duration_ms: Option<f64>,
+    pub avg_ttft_ms: Option<f64>,
+    pub requests_by_provider: HashMap<String, i64>,
+    pub requests_by_model: HashMap<String, i64>,
+    pub requests_by_status: HashMap<String, i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogQueryParams {
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
+    pub request_id: Option<String>,
+    pub provider_name: Option<String>,
+    pub model: Option<String>,
+    pub credential_name: Option<String>,
+    pub status_code: Option<i32>,
+    pub is_streaming: Option<bool>,
+    pub error_only: Option<bool>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub sort_by: Option<String>,
+    pub sort_order: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogStatsParams {
+    pub provider_name: Option<String>,
+    pub model: Option<String>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+}
+
+fn parse_iso_time(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
+pub async fn list_logs(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(params): Query<LogQueryParams>,
+) -> Result<Json<RequestLogListResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let page = params.page.unwrap_or(1).max(1);
+    let page_size = params.page_size.unwrap_or(50).clamp(1, 200);
+    let offset = (page - 1) * page_size;
+
+    let pool = state.dynamic_config.database().pool();
+
+    // Build WHERE clauses dynamically
+    let mut conditions: Vec<String> = Vec::new();
+    let mut param_idx = 0usize;
+
+    struct BindValues {
+        strings: Vec<String>,
+        ints: Vec<i32>,
+        bools: Vec<bool>,
+        timestamps: Vec<chrono::DateTime<chrono::Utc>>,
+    }
+    let mut binds = BindValues {
+        strings: Vec::new(),
+        ints: Vec::new(),
+        bools: Vec::new(),
+        timestamps: Vec::new(),
+    };
+
+    if let Some(ref req_id) = params.request_id {
+        param_idx += 1;
+        conditions.push(format!("request_id = ${}", param_idx));
+        binds.strings.push(req_id.clone());
+    }
+    if let Some(ref prov) = params.provider_name {
+        param_idx += 1;
+        conditions.push(format!("provider_name = ${}", param_idx));
+        binds.strings.push(prov.clone());
+    }
+    if let Some(ref model) = params.model {
+        param_idx += 1;
+        conditions.push(format!("model_requested = ${}", param_idx));
+        binds.strings.push(model.clone());
+    }
+    if let Some(ref cred) = params.credential_name {
+        param_idx += 1;
+        conditions.push(format!("credential_name = ${}", param_idx));
+        binds.strings.push(cred.clone());
+    }
+    if let Some(sc) = params.status_code {
+        param_idx += 1;
+        conditions.push(format!("status_code = ${}", param_idx));
+        binds.ints.push(sc);
+    }
+    if let Some(is_str) = params.is_streaming {
+        param_idx += 1;
+        conditions.push(format!("is_streaming = ${}", param_idx));
+        binds.bools.push(is_str);
+    }
+    if params.error_only.unwrap_or(false) {
+        conditions.push("(status_code >= 400 OR error_category IS NOT NULL)".to_string());
+    }
+    if let Some(ref st) = params.start_time {
+        if let Some(ts) = parse_iso_time(st) {
+            param_idx += 1;
+            conditions.push(format!("timestamp >= ${}", param_idx));
+            binds.timestamps.push(ts);
+        }
+    }
+    if let Some(ref et) = params.end_time {
+        if let Some(ts) = parse_iso_time(et) {
+            param_idx += 1;
+            conditions.push(format!("timestamp <= ${}", param_idx));
+            binds.timestamps.push(ts);
+        }
+    }
+
+    debug_assert_eq!(
+        param_idx,
+        binds.strings.len() + binds.ints.len() + binds.bools.len() + binds.timestamps.len(),
+        "bind_params: parameter count mismatch"
+    );
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let sort_col = match params.sort_by.as_deref() {
+        Some("status_code") => "status_code",
+        Some("total_duration_ms") => "total_duration_ms",
+        Some("input_tokens") => "input_tokens",
+        Some("output_tokens") => "output_tokens",
+        Some("total_tokens") => "total_tokens",
+        _ => "timestamp",
+    };
+    let sort_dir = match params.sort_order.as_deref() {
+        Some("asc") => "ASC",
+        _ => "DESC",
+    };
+
+    let count_sql = format!("SELECT COUNT(*) FROM request_logs {}", where_clause);
+    let data_sql = format!(
+        "SELECT id, timestamp, request_id, endpoint, credential_name, \
+         model_requested, model_mapped, provider_name, provider_type, \
+         client_protocol, provider_protocol, is_streaming, status_code, \
+         input_tokens, output_tokens, total_tokens, \
+         total_duration_ms, ttft_ms, error_category, error_message, \
+         request_headers \
+         FROM request_logs {} ORDER BY {} {} LIMIT {} OFFSET {}",
+        where_clause, sort_col, sort_dir, page_size, offset
+    );
+
+    // Bind all parameters in order
+    macro_rules! bind_params {
+        ($query:expr) => {{
+            let mut q = $query;
+            let mut str_idx = 0usize;
+            let mut int_idx = 0usize;
+            let mut bool_idx = 0usize;
+            let mut ts_idx = 0usize;
+
+            if params.request_id.is_some() {
+                q = q.bind(&binds.strings[str_idx]);
+                str_idx += 1;
+            }
+            if params.provider_name.is_some() {
+                q = q.bind(&binds.strings[str_idx]);
+                str_idx += 1;
+            }
+            if params.model.is_some() {
+                q = q.bind(&binds.strings[str_idx]);
+                str_idx += 1;
+            }
+            if params.credential_name.is_some() {
+                q = q.bind(&binds.strings[str_idx]);
+                #[allow(unused_assignments)]
+                {
+                    str_idx += 1;
+                }
+            }
+            if params.status_code.is_some() {
+                q = q.bind(binds.ints[int_idx]);
+                #[allow(unused_assignments)]
+                {
+                    int_idx += 1;
+                }
+            }
+            if params.is_streaming.is_some() {
+                q = q.bind(binds.bools[bool_idx]);
+                #[allow(unused_assignments)]
+                {
+                    bool_idx += 1;
+                }
+            }
+            if params
+                .start_time
+                .as_ref()
+                .and_then(|s| parse_iso_time(s))
+                .is_some()
+            {
+                q = q.bind(binds.timestamps[ts_idx]);
+                ts_idx += 1;
+            }
+            if params
+                .end_time
+                .as_ref()
+                .and_then(|s| parse_iso_time(s))
+                .is_some()
+            {
+                q = q.bind(binds.timestamps[ts_idx]);
+                #[allow(unused_assignments)]
+                {
+                    ts_idx += 1;
+                }
+            }
+            q
+        }};
+    }
+
+    let total: i64 = bind_params!(sqlx::query_scalar::<_, i64>(&count_sql))
+        .fetch_one(pool)
+        .await?;
+
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + page_size - 1) / page_size
+    };
+
+    #[derive(sqlx::FromRow)]
+    struct LogRow {
+        id: i64,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        request_id: String,
+        endpoint: Option<String>,
+        credential_name: Option<String>,
+        model_requested: Option<String>,
+        model_mapped: Option<String>,
+        provider_name: Option<String>,
+        provider_type: Option<String>,
+        client_protocol: Option<String>,
+        provider_protocol: Option<String>,
+        is_streaming: Option<bool>,
+        status_code: Option<i32>,
+        input_tokens: i32,
+        output_tokens: i32,
+        total_tokens: i32,
+        total_duration_ms: Option<i32>,
+        ttft_ms: Option<i32>,
+        error_category: Option<String>,
+        error_message: Option<String>,
+        request_headers: Option<String>,
+    }
+
+    let rows: Vec<LogRow> = bind_params!(sqlx::query_as::<_, LogRow>(&data_sql))
+        .fetch_all(pool)
+        .await?;
+
+    let items: Vec<RequestLogItem> = rows
+        .into_iter()
+        .map(|r| RequestLogItem {
+            id: r.id,
+            timestamp: r.timestamp.to_rfc3339(),
+            request_id: r.request_id,
+            endpoint: r.endpoint,
+            credential_name: r.credential_name,
+            model_requested: r.model_requested,
+            model_mapped: r.model_mapped,
+            provider_name: r.provider_name,
+            provider_type: r.provider_type,
+            client_protocol: r.client_protocol,
+            provider_protocol: r.provider_protocol,
+            is_streaming: r.is_streaming,
+            status_code: r.status_code,
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            total_tokens: r.total_tokens,
+            total_duration_ms: r.total_duration_ms,
+            ttft_ms: r.ttft_ms,
+            error_category: r.error_category,
+            error_message: r.error_message,
+            client: extract_client_from_headers(r.request_headers.as_deref()),
+        })
+        .collect();
+
+    Ok(Json(RequestLogListResponse {
+        items,
+        total,
+        page,
+        page_size,
+        total_pages,
+    }))
+}
+
+pub async fn get_log_stats(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(params): Query<LogStatsParams>,
+) -> Result<Json<RequestLogStatsResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let pool = state.dynamic_config.database().pool();
+
+    let mut conditions: Vec<String> = Vec::new();
+    let mut str_binds: Vec<String> = Vec::new();
+    let mut ts_binds: Vec<chrono::DateTime<chrono::Utc>> = Vec::new();
+    let mut param_idx = 0;
+
+    if let Some(ref prov) = params.provider_name {
+        param_idx += 1;
+        conditions.push(format!("provider_name = ${}", param_idx));
+        str_binds.push(prov.clone());
+    }
+    if let Some(ref model) = params.model {
+        param_idx += 1;
+        conditions.push(format!("model_requested = ${}", param_idx));
+        str_binds.push(model.clone());
+    }
+    if let Some(ref st) = params.start_time {
+        if let Some(ts) = parse_iso_time(st) {
+            param_idx += 1;
+            conditions.push(format!("timestamp >= ${}", param_idx));
+            ts_binds.push(ts);
+        }
+    }
+    if let Some(ref et) = params.end_time {
+        if let Some(ts) = parse_iso_time(et) {
+            param_idx += 1;
+            conditions.push(format!("timestamp <= ${}", param_idx));
+            ts_binds.push(ts);
+        }
+    }
+    debug_assert_eq!(
+        param_idx as usize,
+        str_binds.len() + ts_binds.len(),
+        "bind_params: parameter count mismatch"
+    );
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let stats_sql = format!(
+        "SELECT \
+         COUNT(*) as total_requests, \
+         COUNT(*) FILTER (WHERE status_code >= 400 OR error_category IS NOT NULL) as total_errors, \
+         COALESCE(SUM(input_tokens), 0) as total_input_tokens, \
+         COALESCE(SUM(output_tokens), 0) as total_output_tokens, \
+         AVG(total_duration_ms)::float8 as avg_duration_ms, \
+         AVG(ttft_ms)::float8 as avg_ttft_ms \
+         FROM request_logs {}",
+        where_clause
+    );
+
+    #[derive(sqlx::FromRow)]
+    struct StatsRow {
+        total_requests: Option<i64>,
+        total_errors: Option<i64>,
+        total_input_tokens: Option<i64>,
+        total_output_tokens: Option<i64>,
+        avg_duration_ms: Option<f64>,
+        avg_ttft_ms: Option<f64>,
+    }
+
+    let mut query = sqlx::query_as::<_, StatsRow>(&stats_sql);
+    let mut si = 0usize;
+    let mut ti = 0usize;
+    if params.provider_name.is_some() {
+        query = query.bind(&str_binds[si]);
+        si += 1;
+    }
+    if params.model.is_some() {
+        query = query.bind(&str_binds[si]);
+        #[allow(unused_assignments)]
+        {
+            si += 1;
+        }
+    }
+    if params
+        .start_time
+        .as_ref()
+        .and_then(|s| parse_iso_time(s))
+        .is_some()
+    {
+        query = query.bind(ts_binds[ti]);
+        ti += 1;
+    }
+    if params
+        .end_time
+        .as_ref()
+        .and_then(|s| parse_iso_time(s))
+        .is_some()
+    {
+        query = query.bind(ts_binds[ti]);
+        #[allow(unused_assignments)]
+        {
+            ti += 1;
+        }
+    }
+
+    let row = query.fetch_one(pool).await?;
+    let total_requests = row.total_requests.unwrap_or(0);
+    let total_errors = row.total_errors.unwrap_or(0);
+    let error_rate = if total_requests > 0 {
+        total_errors as f64 / total_requests as f64
+    } else {
+        0.0
+    };
+
+    // Helper closure to bind params to a group-by query
+    macro_rules! bind_stats_params {
+        ($q:expr) => {{
+            let mut q = $q;
+            let mut si = 0usize;
+            let mut ti = 0usize;
+            if params.provider_name.is_some() {
+                q = q.bind(&str_binds[si]);
+                si += 1;
+            }
+            if params.model.is_some() {
+                q = q.bind(&str_binds[si]);
+                #[allow(unused_assignments)]
+                {
+                    si += 1;
+                }
+            }
+            if params
+                .start_time
+                .as_ref()
+                .and_then(|s| parse_iso_time(s))
+                .is_some()
+            {
+                q = q.bind(ts_binds[ti]);
+                ti += 1;
+            }
+            if params
+                .end_time
+                .as_ref()
+                .and_then(|s| parse_iso_time(s))
+                .is_some()
+            {
+                q = q.bind(ts_binds[ti]);
+                #[allow(unused_assignments)]
+                {
+                    ti += 1;
+                }
+            }
+            q
+        }};
+    }
+
+    let by_provider_sql = format!(
+        "SELECT COALESCE(provider_name, 'unknown'), COUNT(*) FROM request_logs {} GROUP BY provider_name ORDER BY COUNT(*) DESC LIMIT 50",
+        where_clause
+    );
+    let by_provider: Vec<(String, i64)> = bind_stats_params!(sqlx::query_as(&by_provider_sql))
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+    let by_model_sql = format!(
+        "SELECT COALESCE(model_requested, 'unknown'), COUNT(*) FROM request_logs {} GROUP BY model_requested ORDER BY COUNT(*) DESC LIMIT 50",
+        where_clause
+    );
+    let by_model: Vec<(String, i64)> = bind_stats_params!(sqlx::query_as(&by_model_sql))
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+    let by_status_sql = format!(
+        "SELECT COALESCE(status_code::text, 'unknown'), COUNT(*) FROM request_logs {} GROUP BY status_code ORDER BY COUNT(*) DESC",
+        where_clause
+    );
+    let by_status: Vec<(String, i64)> = bind_stats_params!(sqlx::query_as(&by_status_sql))
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+    Ok(Json(RequestLogStatsResponse {
+        total_requests,
+        total_errors,
+        error_rate,
+        total_input_tokens: row.total_input_tokens.unwrap_or(0),
+        total_output_tokens: row.total_output_tokens.unwrap_or(0),
+        avg_duration_ms: row.avg_duration_ms,
+        avg_ttft_ms: row.avg_ttft_ms,
+        requests_by_provider: by_provider.into_iter().collect(),
+        requests_by_model: by_model.into_iter().collect(),
+        requests_by_status: by_status.into_iter().collect(),
+    }))
+}
+
+pub async fn get_log_detail(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(log_id): Path<i64>,
+) -> Result<Json<RequestLogDetail>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let pool = state.dynamic_config.database().pool();
+
+    #[derive(sqlx::FromRow)]
+    struct DetailRow {
+        id: i64,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        request_id: String,
+        endpoint: Option<String>,
+        credential_name: Option<String>,
+        model_requested: Option<String>,
+        model_mapped: Option<String>,
+        provider_name: Option<String>,
+        provider_type: Option<String>,
+        client_protocol: Option<String>,
+        provider_protocol: Option<String>,
+        is_streaming: Option<bool>,
+        status_code: Option<i32>,
+        input_tokens: i32,
+        output_tokens: i32,
+        total_tokens: i32,
+        total_duration_ms: Option<i32>,
+        ttft_ms: Option<i32>,
+        error_category: Option<String>,
+        error_message: Option<String>,
+        request_headers: Option<String>,
+        request_body: Option<String>,
+        response_body: Option<String>,
+    }
+
+    let row: DetailRow = sqlx::query_as(
+        "SELECT id, timestamp, request_id, endpoint, credential_name, \
+         model_requested, model_mapped, provider_name, provider_type, \
+         client_protocol, provider_protocol, is_streaming, status_code, \
+         input_tokens, output_tokens, total_tokens, \
+         total_duration_ms, ttft_ms, error_category, error_message, \
+         request_headers, request_body, response_body \
+         FROM request_logs WHERE id = $1",
+    )
+    .bind(log_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AdminError::NotFound(format!("Log {} not found", log_id)))?;
+
+    Ok(Json(RequestLogDetail {
+        item: RequestLogItem {
+            id: row.id,
+            timestamp: row.timestamp.to_rfc3339(),
+            request_id: row.request_id,
+            endpoint: row.endpoint,
+            credential_name: row.credential_name,
+            model_requested: row.model_requested,
+            model_mapped: row.model_mapped,
+            provider_name: row.provider_name,
+            provider_type: row.provider_type,
+            client_protocol: row.client_protocol,
+            provider_protocol: row.provider_protocol,
+            is_streaming: row.is_streaming,
+            status_code: row.status_code,
+            input_tokens: row.input_tokens,
+            output_tokens: row.output_tokens,
+            total_tokens: row.total_tokens,
+            total_duration_ms: row.total_duration_ms,
+            ttft_ms: row.ttft_ms,
+            error_category: row.error_category,
+            error_message: row.error_message,
+            client: extract_client_from_headers(row.request_headers.as_deref()),
+        },
+        request_headers: row.request_headers,
+        request_body: row.request_body,
+        response_body: row.response_body,
+    }))
+}
+
+// ============================================================================
+// Error Logs API
+// ============================================================================
+
+#[derive(Debug, Serialize)]
+pub struct ErrorLogItem {
+    pub id: i64,
+    pub timestamp: String,
+    pub request_id: Option<String>,
+    pub error_category: String,
+    pub error_code: Option<i32>,
+    pub error_message: Option<String>,
+    pub provider_name: Option<String>,
+    pub credential_name: Option<String>,
+    pub model_requested: Option<String>,
+    pub model_mapped: Option<String>,
+    pub endpoint: Option<String>,
+    pub client_protocol: Option<String>,
+    pub provider_protocol: Option<String>,
+    pub is_streaming: Option<bool>,
+    pub total_duration_ms: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorLogDetail {
+    #[serde(flatten)]
+    pub item: ErrorLogItem,
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
+    pub provider_request_body: Option<String>,
+    pub provider_request_headers: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ErrorLogListResponse {
+    pub items: Vec<ErrorLogItem>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub total_pages: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ErrorLogQueryParams {
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
+    pub request_id: Option<String>,
+    pub provider_name: Option<String>,
+    pub error_category: Option<String>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub sort_by: Option<String>,
+    pub sort_order: Option<String>,
+}
+
+pub async fn list_error_logs(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(params): Query<ErrorLogQueryParams>,
+) -> Result<Json<ErrorLogListResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let page = params.page.unwrap_or(1).max(1);
+    let page_size = params.page_size.unwrap_or(50).clamp(1, 200);
+    let offset = (page - 1) * page_size;
+    let pool = state.dynamic_config.database().pool();
+
+    let mut conditions: Vec<String> = Vec::new();
+    let mut str_binds: Vec<String> = Vec::new();
+    let mut ts_binds: Vec<chrono::DateTime<chrono::Utc>> = Vec::new();
+    let mut param_idx = 0;
+
+    if let Some(ref req_id) = params.request_id {
+        param_idx += 1;
+        conditions.push(format!("request_id = ${}", param_idx));
+        str_binds.push(req_id.clone());
+    }
+    if let Some(ref prov) = params.provider_name {
+        param_idx += 1;
+        conditions.push(format!("provider_name = ${}", param_idx));
+        str_binds.push(prov.clone());
+    }
+    if let Some(ref cat) = params.error_category {
+        param_idx += 1;
+        conditions.push(format!("error_category = ${}", param_idx));
+        str_binds.push(cat.clone());
+    }
+    if let Some(ref st) = params.start_time {
+        if let Some(ts) = parse_iso_time(st) {
+            param_idx += 1;
+            conditions.push(format!("timestamp >= ${}", param_idx));
+            ts_binds.push(ts);
+        }
+    }
+    if let Some(ref et) = params.end_time {
+        if let Some(ts) = parse_iso_time(et) {
+            param_idx += 1;
+            conditions.push(format!("timestamp <= ${}", param_idx));
+            ts_binds.push(ts);
+        }
+    }
+    debug_assert_eq!(
+        param_idx as usize,
+        str_binds.len() + ts_binds.len(),
+        "bind_error_params: parameter count mismatch"
+    );
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let sort_col = match params.sort_by.as_deref() {
+        Some("error_category") => "error_category",
+        Some("total_duration_ms") => "total_duration_ms",
+        _ => "timestamp",
+    };
+    let sort_dir = match params.sort_order.as_deref() {
+        Some("asc") => "ASC",
+        _ => "DESC",
+    };
+
+    let count_sql = format!("SELECT COUNT(*) FROM error_logs {}", where_clause);
+    let data_sql = format!(
+        "SELECT id, timestamp, request_id, error_category, error_code, error_message, \
+         provider_name, credential_name, \
+         NULL as model_requested, mapped_model as model_mapped, \
+         endpoint, client_protocol, provider_protocol, is_streaming, total_duration_ms \
+         FROM error_logs {} ORDER BY {} {} LIMIT {} OFFSET {}",
+        where_clause, sort_col, sort_dir, page_size, offset
+    );
+
+    macro_rules! bind_error_params {
+        ($query:expr) => {{
+            let mut q = $query;
+            let mut si = 0usize;
+            let mut ti = 0usize;
+            if params.request_id.is_some() {
+                q = q.bind(&str_binds[si]);
+                si += 1;
+            }
+            if params.provider_name.is_some() {
+                q = q.bind(&str_binds[si]);
+                si += 1;
+            }
+            if params.error_category.is_some() {
+                q = q.bind(&str_binds[si]);
+                #[allow(unused_assignments)]
+                {
+                    si += 1;
+                }
+            }
+            if params
+                .start_time
+                .as_ref()
+                .and_then(|s| parse_iso_time(s))
+                .is_some()
+            {
+                q = q.bind(ts_binds[ti]);
+                ti += 1;
+            }
+            if params
+                .end_time
+                .as_ref()
+                .and_then(|s| parse_iso_time(s))
+                .is_some()
+            {
+                q = q.bind(ts_binds[ti]);
+                #[allow(unused_assignments)]
+                {
+                    ti += 1;
+                }
+            }
+            q
+        }};
+    }
+
+    let total: i64 = bind_error_params!(sqlx::query_scalar::<_, i64>(&count_sql))
+        .fetch_one(pool)
+        .await?;
+
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total + page_size - 1) / page_size
+    };
+
+    #[derive(sqlx::FromRow)]
+    struct ErrRow {
+        id: i64,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        request_id: Option<String>,
+        error_category: String,
+        error_code: Option<i32>,
+        error_message: Option<String>,
+        provider_name: Option<String>,
+        credential_name: Option<String>,
+        model_requested: Option<String>,
+        model_mapped: Option<String>,
+        endpoint: Option<String>,
+        client_protocol: Option<String>,
+        provider_protocol: Option<String>,
+        is_streaming: Option<bool>,
+        total_duration_ms: Option<i32>,
+    }
+
+    let rows: Vec<ErrRow> = bind_error_params!(sqlx::query_as::<_, ErrRow>(&data_sql))
+        .fetch_all(pool)
+        .await?;
+
+    let items: Vec<ErrorLogItem> = rows
+        .into_iter()
+        .map(|r| ErrorLogItem {
+            id: r.id,
+            timestamp: r.timestamp.to_rfc3339(),
+            request_id: r.request_id,
+            error_category: r.error_category,
+            error_code: r.error_code,
+            error_message: r.error_message,
+            provider_name: r.provider_name,
+            credential_name: r.credential_name,
+            model_requested: r.model_requested,
+            model_mapped: r.model_mapped,
+            endpoint: r.endpoint,
+            client_protocol: r.client_protocol,
+            provider_protocol: r.provider_protocol,
+            is_streaming: r.is_streaming,
+            total_duration_ms: r.total_duration_ms,
+        })
+        .collect();
+
+    Ok(Json(ErrorLogListResponse {
+        items,
+        total,
+        page,
+        page_size,
+        total_pages,
+    }))
+}
+
+pub async fn get_error_log_detail(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(log_id): Path<i64>,
+) -> Result<Json<ErrorLogDetail>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let pool = state.dynamic_config.database().pool();
+
+    #[derive(sqlx::FromRow)]
+    struct ErrDetailRow {
+        id: i64,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        request_id: Option<String>,
+        error_category: String,
+        error_code: Option<i32>,
+        error_message: Option<String>,
+        provider_name: Option<String>,
+        credential_name: Option<String>,
+        model_requested: Option<String>,
+        model_mapped: Option<String>,
+        endpoint: Option<String>,
+        client_protocol: Option<String>,
+        provider_protocol: Option<String>,
+        is_streaming: Option<bool>,
+        total_duration_ms: Option<i32>,
+        request_body: Option<String>,
+        response_body: Option<String>,
+        provider_request_body: Option<String>,
+        provider_request_headers: Option<String>,
+    }
+
+    let row: ErrDetailRow = sqlx::query_as(
+        "SELECT id, timestamp, request_id, error_category, error_code, error_message, \
+         provider_name, credential_name, \
+         NULL as model_requested, mapped_model as model_mapped, \
+         endpoint, client_protocol, provider_protocol, is_streaming, total_duration_ms, \
+         request_body::text, response_body::text, \
+         provider_request_body::text, provider_request_headers::text \
+         FROM error_logs WHERE id = $1",
+    )
+    .bind(log_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AdminError::NotFound(format!("Error log {} not found", log_id)))?;
+
+    Ok(Json(ErrorLogDetail {
+        item: ErrorLogItem {
+            id: row.id,
+            timestamp: row.timestamp.to_rfc3339(),
+            request_id: row.request_id,
+            error_category: row.error_category,
+            error_code: row.error_code,
+            error_message: row.error_message,
+            provider_name: row.provider_name,
+            credential_name: row.credential_name,
+            model_requested: row.model_requested,
+            model_mapped: row.model_mapped,
+            endpoint: row.endpoint,
+            client_protocol: row.client_protocol,
+            provider_protocol: row.provider_protocol,
+            is_streaming: row.is_streaming,
+            total_duration_ms: row.total_duration_ms,
+        },
+        request_body: row.request_body,
+        response_body: row.response_body,
+        provider_request_body: row.provider_request_body,
+        provider_request_headers: row.provider_request_headers,
+    }))
+}
+
+// ============================================================================
+// Log Deletion API
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct BatchDeleteRequest {
+    pub ids: Vec<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchDeleteResponse {
+    pub deleted: i64,
+}
+
+pub async fn delete_log(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(log_id): Path<i64>,
+) -> Result<StatusCode, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+    let pool = state.dynamic_config.database().pool();
+
+    let result = sqlx::query("DELETE FROM request_logs WHERE id = $1")
+        .bind(log_id)
+        .execute(pool)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AdminError::NotFound(format!("Log {} not found", log_id)));
+    }
+
+    tracing::info!(log_id = %log_id, "Request log deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn batch_delete_logs(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(body): Json<BatchDeleteRequest>,
+) -> Result<Json<BatchDeleteResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    if body.ids.is_empty() {
+        return Ok(Json(BatchDeleteResponse { deleted: 0 }));
+    }
+    if body.ids.len() > 1000 {
+        return Err(AdminError::BadRequest(
+            "Cannot delete more than 1000 records at once".to_string(),
+        ));
+    }
+
+    let pool = state.dynamic_config.database().pool();
+
+    let mut sql = String::from("DELETE FROM request_logs WHERE id IN (");
+    for (i, _) in body.ids.iter().enumerate() {
+        if i > 0 {
+            sql.push_str(", ");
+        }
+        sql.push('$');
+        sql.push_str(&(i + 1).to_string());
+    }
+    sql.push(')');
+
+    let mut query = sqlx::query(&sql);
+    for id in &body.ids {
+        query = query.bind(*id);
+    }
+
+    let result = query.execute(pool).await?;
+    let deleted = result.rows_affected() as i64;
+
+    tracing::info!(deleted = %deleted, "Request logs batch deleted");
+    Ok(Json(BatchDeleteResponse { deleted }))
+}
+
+pub async fn delete_error_log(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(log_id): Path<i64>,
+) -> Result<StatusCode, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+    let pool = state.dynamic_config.database().pool();
+
+    let result = sqlx::query("DELETE FROM error_logs WHERE id = $1")
+        .bind(log_id)
+        .execute(pool)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AdminError::NotFound(format!(
+            "Error log {} not found",
+            log_id
+        )));
+    }
+
+    tracing::info!(log_id = %log_id, "Error log deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn batch_delete_error_logs(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(body): Json<BatchDeleteRequest>,
+) -> Result<Json<BatchDeleteResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    if body.ids.is_empty() {
+        return Ok(Json(BatchDeleteResponse { deleted: 0 }));
+    }
+    if body.ids.len() > 1000 {
+        return Err(AdminError::BadRequest(
+            "Cannot delete more than 1000 records at once".to_string(),
+        ));
+    }
+
+    let pool = state.dynamic_config.database().pool();
+
+    let mut sql = String::from("DELETE FROM error_logs WHERE id IN (");
+    for (i, _) in body.ids.iter().enumerate() {
+        if i > 0 {
+            sql.push_str(", ");
+        }
+        sql.push('$');
+        sql.push_str(&(i + 1).to_string());
+    }
+    sql.push(')');
+
+    let mut query = sqlx::query(&sql);
+    for id in &body.ids {
+        query = query.bind(*id);
+    }
+
+    let result = query.execute(pool).await?;
+    let deleted = result.rows_affected() as i64;
+
+    tracing::info!(deleted = %deleted, "Error logs batch deleted");
+    Ok(Json(BatchDeleteResponse { deleted }))
+}
+
+// ============================================================================
 // Router
 // ============================================================================
 
@@ -1151,5 +2262,17 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
         .route("/config/reload", post(reload_config))
         // Health check routes
         .nest("/health", health_router())
+        // Request logs routes (stats and batch-delete before :id to avoid path conflict)
+        .route("/logs", get(list_logs))
+        .route("/logs/stats", get(get_log_stats))
+        .route("/logs/batch-delete", post(batch_delete_logs))
+        .route("/logs/:id", get(get_log_detail).delete(delete_log))
+        // Error logs routes
+        .route("/error-logs", get(list_error_logs))
+        .route("/error-logs/batch-delete", post(batch_delete_error_logs))
+        .route(
+            "/error-logs/:id",
+            get(get_error_log_detail).delete(delete_error_log),
+        )
         .with_state(state)
 }

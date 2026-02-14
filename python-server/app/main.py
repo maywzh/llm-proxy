@@ -30,6 +30,7 @@ from app.core.config import get_config, get_env_config
 from app.core.http_client import get_http_client, close_http_client
 from app.core.jsonl_logger import init_jsonl_logger, shutdown_jsonl_logger
 from app.core.error_logger import init_error_logger, shutdown_error_logger
+from app.core.request_logger import init_request_logger, shutdown_request_logger
 from app.core.middleware import (
     MetricsMiddleware,
     ModelPermissionMiddleware,
@@ -95,12 +96,18 @@ async def lifespan(app: FastAPI):
     # Initialize error logger (writes to database)
     await init_error_logger()
 
+    # Initialize request logger (writes all requests to database)
+    await init_request_logger()
+
     yield
 
     logger.info("Shutting down LLM API Proxy")
 
     # Shutdown JSONL logger (flushes pending records)
     await shutdown_jsonl_logger()
+
+    # Shutdown request logger (flushes pending request records)
+    await shutdown_request_logger()
 
     # Shutdown error logger (flushes pending error records)
     await shutdown_error_logger()
@@ -225,7 +232,12 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:5176",
+            "http://127.0.0.1:5176",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
