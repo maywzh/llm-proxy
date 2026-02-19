@@ -16,10 +16,13 @@
     Check,
     Shuffle,
     Inbox,
+    Eye,
+    EyeOff,
   } from 'lucide-svelte';
 
   let searchTerm = $state('');
   let debouncedSearch = $state('');
+  let showDisabled = $state(false);
   let showCreateForm = $state(false);
   let isModalClosing = $state(false);
   let editingProvider: Provider | null = $state(null);
@@ -34,6 +37,8 @@
     gcp_project: '',
     gcp_location: '',
     gcp_publisher: '',
+    gcp_blocking_action: '',
+    gcp_streaming_action: '',
   });
   let modelMappingError = $state<string | null>(null);
 
@@ -57,6 +62,7 @@
       provider =>
         provider &&
         provider.provider_key &&
+        (showDisabled || provider.is_enabled) &&
         (provider.provider_key
           .toLowerCase()
           .includes(debouncedSearch.toLowerCase()) ||
@@ -80,6 +86,8 @@
       gcp_project: '',
       gcp_location: '',
       gcp_publisher: '',
+      gcp_blocking_action: '',
+      gcp_streaming_action: '',
     };
     modelMappingError = null;
     editingProvider = null;
@@ -111,6 +119,8 @@
       gcp_project: (provider.provider_params?.gcp_project as string) || '',
       gcp_location: (provider.provider_params?.gcp_location as string) || '',
       gcp_publisher: (provider.provider_params?.gcp_publisher as string) || '',
+      gcp_blocking_action: ((provider.provider_params?.gcp_vertex_actions as Record<string, string>)?.blocking) || '',
+      gcp_streaming_action: ((provider.provider_params?.gcp_vertex_actions as Record<string, string>)?.streaming) || '',
     };
     modelMappingError = null;
     showCreateForm = true;
@@ -147,11 +157,18 @@
 
       // Include provider_params for GCP Vertex
       if (formData.provider_type === 'gcp-vertex') {
-        updateData.provider_params = {
+        const params: Record<string, unknown> = {
           gcp_project: formData.gcp_project,
           gcp_location: formData.gcp_location.trim() || 'us-central1',
           gcp_publisher: formData.gcp_publisher.trim() || 'anthropic',
         };
+        if (formData.gcp_blocking_action.trim() || formData.gcp_streaming_action.trim()) {
+          params.gcp_vertex_actions = {
+            blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
+            streaming: formData.gcp_streaming_action.trim() || 'streamRawPredict',
+          };
+        }
+        updateData.provider_params = params;
       } else {
         updateData.provider_params = {};
       }
@@ -224,14 +241,39 @@
     </button>
   </div>
 
-  <!-- Search -->
-  <div class="max-w-md">
-    <input
-      type="text"
-      placeholder="Search providers..."
-      bind:value={searchTerm}
-      class="input"
-    />
+  <!-- Search & Filter -->
+  <div class="flex items-center gap-4">
+    <div class="max-w-md flex-1">
+      <input
+        type="text"
+        placeholder="Search providers..."
+        bind:value={searchTerm}
+        class="input"
+      />
+    </div>
+    <div
+      class="flex items-center gap-2 cursor-pointer text-sm text-gray-600 dark:text-gray-400 select-none"
+    >
+      <button
+        onclick={() => (showDisabled = !showDisabled)}
+        aria-label="Toggle show disabled providers"
+        class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {showDisabled
+          ? 'bg-primary-600'
+          : 'bg-gray-300 dark:bg-gray-600'}"
+      >
+        <span
+          class="inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform {showDisabled
+            ? 'translate-x-4.5'
+            : 'translate-x-0.75'}"
+        ></span>
+      </button>
+      {#if showDisabled}
+        <Eye class="w-3.5 h-3.5" />
+      {:else}
+        <EyeOff class="w-3.5 h-3.5" />
+      {/if}
+      <span>Show Disabled</span>
+    </div>
   </div>
 
   <!-- Error Display -->
@@ -344,8 +386,9 @@
           <!-- GCP Vertex AI specific fields -->
           {#if formData.provider_type === 'gcp-vertex'}
             <div
-              class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
+              class="space-y-3 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
             >
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label for="gcp_project" class="label">
                   GCP Project ID <span class="text-red-500">*</span>
@@ -389,6 +432,37 @@
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   Default: anthropic
                 </p>
+              </div>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label for="gcp_blocking_action" class="label"> Blocking Action </label>
+                <input
+                  id="gcp_blocking_action"
+                  type="text"
+                  bind:value={formData.gcp_blocking_action}
+                  class="input"
+                  placeholder="rawPredict"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Default: rawPredict (Gemini: generateContent)
+                </p>
+              </div>
+
+              <div>
+                <label for="gcp_streaming_action" class="label"> Streaming Action </label>
+                <input
+                  id="gcp_streaming_action"
+                  type="text"
+                  bind:value={formData.gcp_streaming_action}
+                  class="input"
+                  placeholder="streamRawPredict"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Default: streamRawPredict (Gemini: streamGenerateContent)
+                </p>
+              </div>
               </div>
             </div>
           {/if}

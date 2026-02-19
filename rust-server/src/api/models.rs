@@ -235,21 +235,27 @@ pub struct GcpVertexConfig {
     pub project: String,
     pub location: String,
     pub publisher: String,
+    pub blocking_action: String,
+    pub streaming_action: String,
 }
 
 impl GcpVertexConfig {
     /// Extract GCP Vertex configuration from a provider.
     /// Returns None if any required field is missing.
     pub fn from_provider(provider: &Provider) -> Option<Self> {
+        let (blocking, streaming) = Self::extract_actions(provider);
         Some(Self {
             project: provider.get_param("gcp_project")?.to_string(),
             location: provider.get_param("gcp_location")?.to_string(),
             publisher: provider.get_param("gcp_publisher")?.to_string(),
+            blocking_action: blocking,
+            streaming_action: streaming,
         })
     }
 
     /// Extract GCP Vertex configuration with defaults for missing fields.
     pub fn from_provider_with_defaults(provider: &Provider) -> Self {
+        let (blocking, streaming) = Self::extract_actions(provider);
         Self {
             project: provider
                 .get_param("gcp_project")
@@ -263,7 +269,36 @@ impl GcpVertexConfig {
                 .get_param("gcp_publisher")
                 .unwrap_or("anthropic")
                 .to_string(),
+            blocking_action: blocking,
+            streaming_action: streaming,
         }
+    }
+
+    /// Get the action verb for the given streaming mode.
+    pub fn action(&self, is_streaming: bool) -> &str {
+        if is_streaming {
+            &self.streaming_action
+        } else {
+            &self.blocking_action
+        }
+    }
+
+    /// Extract blocking/streaming action verbs from provider_params.
+    /// Reads `gcp_vertex_actions` object with `blocking` and `streaming` keys.
+    /// Defaults to `rawPredict` / `streamRawPredict`.
+    fn extract_actions(provider: &Provider) -> (String, String) {
+        let actions = provider.provider_params.get("gcp_vertex_actions");
+        let blocking = actions
+            .and_then(|v| v.get("blocking"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("rawPredict")
+            .to_string();
+        let streaming = actions
+            .and_then(|v| v.get("streaming"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("streamRawPredict")
+            .to_string();
+        (blocking, streaming)
     }
 }
 

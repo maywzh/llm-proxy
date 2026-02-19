@@ -28,7 +28,7 @@ use crate::api::disconnect::DisconnectStream;
 use crate::api::proxy::ProxyState;
 use crate::api::rectifier::sanitize_provider_payload;
 use crate::api::upstream::{
-    attach_response_extensions, build_gcp_vertex_url, build_protocol_error_response,
+    attach_response_extensions, build_gcp_vertex_url_with_actions, build_protocol_error_response,
     build_upstream_request, execute_upstream_request_or_transport_error,
     finalize_non_streaming_response, parse_upstream_json_or_error_with_log, record_token_metrics,
     split_upstream_status_error_with_log, StatusErrorResponseMode, UpstreamAuth, UpstreamContext,
@@ -56,8 +56,14 @@ use crate::with_request_context;
 // Path Parsing
 // ============================================================================
 
+/// Known streaming action verbs for GCP Vertex endpoints.
+const STREAMING_ACTIONS: &[&str] = &["streamRawPredict", "streamGenerateContent"];
+
+/// Known blocking action verbs for GCP Vertex endpoints.
+const BLOCKING_ACTIONS: &[&str] = &["rawPredict", "generateContent"];
+
 /// Parse the model and action from the path parameter.
-/// The format is `{model}:{action}` where action is rawPredict or streamRawPredict.
+/// The format is `{model}:{action}` where action is a known GCP Vertex verb.
 fn parse_model_and_action(model_and_action: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = model_and_action.rsplitn(2, ':').collect();
     if parts.len() != 2 {
@@ -68,11 +74,17 @@ fn parse_model_and_action(model_and_action: &str) -> Option<(String, String)> {
     let model = parts[1].to_string();
 
     // Validate action
-    if action != "rawPredict" && action != "streamRawPredict" {
+    if !STREAMING_ACTIONS.contains(&action.as_str()) && !BLOCKING_ACTIONS.contains(&action.as_str())
+    {
         return None;
     }
 
     Some((model, action))
+}
+
+/// Check if an action verb represents a streaming request.
+fn is_streaming_action(action: &str) -> bool {
+    STREAMING_ACTIONS.contains(&action)
 }
 
 // ============================================================================
@@ -110,8 +122,8 @@ pub async fn gcp_vertex_proxy(
                 StatusCode::BAD_REQUEST,
                 ERROR_TYPE_INVALID_REQUEST,
                 &format!(
-                    "Invalid model:action format. Expected 'model:rawPredict' or 'model:streamRawPredict', got '{}'",
-                    model_and_action
+                    "Invalid model:action format. Expected 'model:<action>' where action is one of {:?} or {:?}, got '{}'",
+                    BLOCKING_ACTIONS, STREAMING_ACTIONS, model_and_action
                 ),
                 None,
                 None,
@@ -120,7 +132,7 @@ pub async fn gcp_vertex_proxy(
         }
     };
 
-    let is_streaming = action == "streamRawPredict";
+    let is_streaming = is_streaming_action(&action);
 
     // Set stream flag in payload based on action
     if let Some(obj) = payload.as_object_mut() {
@@ -176,14 +188,16 @@ pub async fn gcp_vertex_proxy(
         let mapped_model = provider.get_mapped_model(&model);
         generation_data.mapped_model = mapped_model.clone();
 
-        // Build the upstream URL using the shared helper function
-        let upstream_url = match build_gcp_vertex_url(
+        // Build the upstream URL using the action from the client URL directly
+        let upstream_url = match build_gcp_vertex_url_with_actions(
             &provider.api_base,
             &project,
             &location,
             &publisher,
             &mapped_model,
             is_streaming,
+            &action,
+            &action,
         ) {
             Ok(url) => url,
             Err(err) => {
@@ -734,5 +748,31 @@ mod tests {
         let (model, action) = result.unwrap();
         assert_eq!(model, "claude-3-5-sonnet@20240620");
         assert_eq!(action, "rawPredict");
+    }
+
+    #[test]
+    fn test_parse_model_and_action_generate_content() {
+        let result = parse_model_and_action("gemini-3-pro-preview:generateContent");
+        assert!(result.is_some());
+        let (model, action) = result.unwrap();
+        assert_eq!(model, "gemini-3-pro-preview");
+        assert_eq!(action, "generateContent");
+    }
+
+    #[test]
+    fn test_parse_model_and_action_stream_generate_content() {
+        let result = parse_model_and_action("gemini-3-pro-preview:streamGenerateContent");
+        assert!(result.is_some());
+        let (model, action) = result.unwrap();
+        assert_eq!(model, "gemini-3-pro-preview");
+        assert_eq!(action, "streamGenerateContent");
+    }
+
+    #[test]
+    fn test_is_streaming_action() {
+        assert!(is_streaming_action("streamRawPredict"));
+        assert!(is_streaming_action("streamGenerateContent"));
+        assert!(!is_streaming_action("rawPredict"));
+        assert!(!is_streaming_action("generateContent"));
     }
 }

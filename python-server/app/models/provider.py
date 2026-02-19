@@ -211,6 +211,12 @@ class GcpVertexConfig:
     project: str
     location: str
     publisher: str
+    blocking_action: str = "rawPredict"
+    streaming_action: str = "streamRawPredict"
+
+    def action(self, is_streaming: bool) -> str:
+        """Get the action verb for the given streaming mode."""
+        return self.streaming_action if is_streaming else self.blocking_action
 
     @classmethod
     def from_provider(cls, provider: Provider) -> Optional["GcpVertexConfig"]:
@@ -226,10 +232,13 @@ class GcpVertexConfig:
         if project is None:
             return None
 
+        blocking, streaming = cls._extract_actions(provider)
         return cls(
             project=project,
             location=provider.get_param("gcp_location") or "us-central1",
             publisher=provider.get_param("gcp_publisher") or "anthropic",
+            blocking_action=blocking,
+            streaming_action=streaming,
         )
 
     @classmethod
@@ -242,8 +251,24 @@ class GcpVertexConfig:
         Returns:
             GcpVertexConfig with defaults for missing values
         """
+        blocking, streaming = cls._extract_actions(provider)
         return cls(
             project=provider.get_param("gcp_project") or "",
             location=provider.get_param("gcp_location") or "us-central1",
             publisher=provider.get_param("gcp_publisher") or "anthropic",
+            blocking_action=blocking,
+            streaming_action=streaming,
         )
+
+    @staticmethod
+    def _extract_actions(provider: Provider) -> tuple[str, str]:
+        """Extract blocking/streaming action verbs from provider_params.
+
+        Reads `gcp_vertex_actions` object with `blocking` and `streaming` keys.
+        Defaults to `rawPredict` / `streamRawPredict`.
+        """
+        params = provider.provider_params or {}
+        actions = params.get("gcp_vertex_actions", {})
+        blocking = actions.get("blocking", "rawPredict") if isinstance(actions, dict) else "rawPredict"
+        streaming = actions.get("streaming", "streamRawPredict") if isinstance(actions, dict) else "streamRawPredict"
+        return blocking, streaming

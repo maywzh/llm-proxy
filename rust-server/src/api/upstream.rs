@@ -71,7 +71,7 @@ pub fn build_upstream_request(
     request.json(payload)
 }
 
-/// Build full GCP Vertex rawPredict/streamRawPredict URL.
+/// Build full GCP Vertex endpoint URL with configurable action verb.
 ///
 /// All path-segment parameters are validated to reject `/` characters,
 /// preventing path-traversal attacks. Returns `Err` if any parameter
@@ -83,6 +83,32 @@ pub fn build_gcp_vertex_url(
     gcp_publisher: &str,
     model: &str,
     is_streaming: bool,
+) -> Result<String, String> {
+    build_gcp_vertex_url_with_actions(
+        api_base,
+        gcp_project,
+        gcp_location,
+        gcp_publisher,
+        model,
+        is_streaming,
+        "rawPredict",
+        "streamRawPredict",
+    )
+}
+
+/// Build full GCP Vertex endpoint URL with custom action verbs.
+///
+/// Allows specifying custom blocking/streaming action verbs (e.g.,
+/// `generateContent`/`streamGenerateContent` for Gemini models).
+pub fn build_gcp_vertex_url_with_actions(
+    api_base: &str,
+    gcp_project: &str,
+    gcp_location: &str,
+    gcp_publisher: &str,
+    model: &str,
+    is_streaming: bool,
+    blocking_action: &str,
+    streaming_action: &str,
 ) -> Result<String, String> {
     fn is_safe_path_segment(s: &str) -> bool {
         !s.is_empty() && !s.contains('/') && !s.contains('\\') && s != ".." && s != "."
@@ -98,9 +124,9 @@ pub fn build_gcp_vertex_url(
         );
     }
     let action = if is_streaming {
-        "streamRawPredict"
+        streaming_action
     } else {
-        "rawPredict"
+        blocking_action
     };
     Ok(format!(
         "{}/v1/projects/{}/locations/{}/publishers/{}/models/{}:{}",
@@ -1370,6 +1396,41 @@ mod tests {
         assert!(build_gcp_vertex_url("https://b", "proj", "", "pub", "m", true).is_err());
         assert!(build_gcp_vertex_url("https://b", "proj", "loc", "", "m", true).is_err());
         assert!(build_gcp_vertex_url("https://b", "proj", "loc", "pub", "", true).is_err());
+    }
+
+    #[test]
+    fn test_build_gcp_vertex_url_with_custom_actions_blocking() {
+        let url = build_gcp_vertex_url_with_actions(
+            "https://base",
+            "proj",
+            "global",
+            "google",
+            "gemini-3-pro-preview",
+            false,
+            "generateContent",
+            "streamGenerateContent",
+        )
+        .unwrap();
+        assert_eq!(
+            url,
+            "https://base/v1/projects/proj/locations/global/publishers/google/models/gemini-3-pro-preview:generateContent"
+        );
+    }
+
+    #[test]
+    fn test_build_gcp_vertex_url_with_custom_actions_streaming() {
+        let url = build_gcp_vertex_url_with_actions(
+            "https://base",
+            "proj",
+            "global",
+            "google",
+            "gemini-3-pro-preview",
+            true,
+            "generateContent",
+            "streamGenerateContent",
+        )
+        .unwrap();
+        assert!(url.ends_with(":streamGenerateContent"));
     }
 
     #[test]
