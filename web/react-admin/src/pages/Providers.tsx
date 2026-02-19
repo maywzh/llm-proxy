@@ -14,6 +14,8 @@ import {
   Check,
   Shuffle,
   Inbox,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import type {
   Provider,
@@ -28,6 +30,7 @@ const Providers: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [showDisabled, setShowDisabled] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Provider | null>(null);
@@ -45,6 +48,8 @@ const Providers: React.FC = () => {
     gcp_project: '',
     gcp_location: '',
     gcp_publisher: '',
+    gcp_blocking_action: '',
+    gcp_streaming_action: '',
   });
 
   const debouncedSearch = useDebounce(searchTerm, 300);
@@ -83,6 +88,8 @@ const Providers: React.FC = () => {
       gcp_project: '',
       gcp_location: '',
       gcp_publisher: '',
+      gcp_blocking_action: '',
+      gcp_streaming_action: '',
     });
     setModelMappingError(null);
     setEditingProvider(null);
@@ -115,6 +122,8 @@ const Providers: React.FC = () => {
       gcp_project: (provider.provider_params?.gcp_project as string) || '',
       gcp_location: (provider.provider_params?.gcp_location as string) || '',
       gcp_publisher: (provider.provider_params?.gcp_publisher as string) || '',
+      gcp_blocking_action: ((provider.provider_params?.gcp_vertex_actions as Record<string, string>)?.blocking) || '',
+      gcp_streaming_action: ((provider.provider_params?.gcp_vertex_actions as Record<string, string>)?.streaming) || '',
     });
     setShowCreateForm(true);
   };
@@ -153,11 +162,18 @@ const Providers: React.FC = () => {
 
         // Include provider_params for GCP Vertex
         if (formData.provider_type === 'gcp-vertex') {
-          updateData.provider_params = {
+          const params: Record<string, unknown> = {
             gcp_project: formData.gcp_project,
             gcp_location: formData.gcp_location.trim() || 'us-central1',
             gcp_publisher: formData.gcp_publisher.trim() || 'anthropic',
           };
+          if (formData.gcp_blocking_action.trim() || formData.gcp_streaming_action.trim()) {
+            params.gcp_vertex_actions = {
+              blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
+              streaming: formData.gcp_streaming_action.trim() || 'streamRawPredict',
+            };
+          }
+          updateData.provider_params = params;
         } else {
           updateData.provider_params = {};
         }
@@ -175,11 +191,18 @@ const Providers: React.FC = () => {
 
         // Include provider_params for GCP Vertex
         if (formData.provider_type === 'gcp-vertex') {
-          createData.provider_params = {
+          const params: Record<string, unknown> = {
             gcp_project: formData.gcp_project,
             gcp_location: formData.gcp_location.trim() || 'us-central1',
             gcp_publisher: formData.gcp_publisher.trim() || 'anthropic',
           };
+          if (formData.gcp_blocking_action.trim() || formData.gcp_streaming_action.trim()) {
+            params.gcp_vertex_actions = {
+              blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
+              streaming: formData.gcp_streaming_action.trim() || 'streamRawPredict',
+            };
+          }
+          createData.provider_params = params;
         } else {
           createData.provider_params = {};
         }
@@ -235,13 +258,14 @@ const Providers: React.FC = () => {
   // Filtered providers based on search
   const filteredProviders = providers.filter(
     provider =>
-      provider.provider_key
+      (showDisabled || provider.is_enabled) &&
+      (provider.provider_key
         .toLowerCase()
         .includes(debouncedSearch.toLowerCase()) ||
-      provider.provider_type
-        .toLowerCase()
-        .includes(debouncedSearch.toLowerCase()) ||
-      provider.api_base.toLowerCase().includes(debouncedSearch.toLowerCase())
+        provider.provider_type
+          .toLowerCase()
+          .includes(debouncedSearch.toLowerCase()) ||
+        provider.api_base.toLowerCase().includes(debouncedSearch.toLowerCase()))
   );
 
   return (
@@ -265,15 +289,34 @@ const Providers: React.FC = () => {
         </button>
       </div>
 
-      {/* Search */}
-      <div className="max-w-md">
-        <input
-          type="text"
-          placeholder="Search providers..."
-          value={searchTerm}
-          onChange={e => setSearchTerm(e.target.value)}
-          className="input"
-        />
+      {/* Search & Filter */}
+      <div className="flex items-center gap-4">
+        <div className="max-w-md flex-1">
+          <input
+            type="text"
+            placeholder="Search providers..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            className="input"
+          />
+        </div>
+        <div className="flex items-center gap-2 cursor-pointer text-sm text-gray-600 dark:text-gray-400 select-none">
+          <button
+            onClick={() => setShowDisabled(prev => !prev)}
+            aria-label="Toggle show disabled providers"
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${showDisabled ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${showDisabled ? 'translate-x-4.5' : 'translate-x-0.75'}`}
+            />
+          </button>
+          {showDisabled ? (
+            <Eye className="w-3.5 h-3.5" />
+          ) : (
+            <EyeOff className="w-3.5 h-3.5" />
+          )}
+          <span>Show Disabled</span>
+        </div>
       </div>
 
       {/* Error Display */}
@@ -387,7 +430,8 @@ const Providers: React.FC = () => {
 
               {/* GCP Vertex AI specific fields */}
               {formData.provider_type === 'gcp-vertex' && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+                <div className="space-y-3 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
                     <label htmlFor="gcp_project" className="label">
                       GCP Project ID <span className="text-red-500">*</span>
@@ -453,6 +497,53 @@ const Providers: React.FC = () => {
                     <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                       Default: anthropic
                     </p>
+                  </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label htmlFor="gcp_blocking_action" className="label">
+                      Blocking Action
+                    </label>
+                    <input
+                      id="gcp_blocking_action"
+                      type="text"
+                      value={formData.gcp_blocking_action}
+                      onChange={e =>
+                        setFormData(prev => ({
+                          ...prev,
+                          gcp_blocking_action: e.target.value,
+                        }))
+                      }
+                      className="input"
+                      placeholder="rawPredict"
+                    />
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Default: rawPredict (Gemini: generateContent)
+                    </p>
+                  </div>
+
+                  <div>
+                    <label htmlFor="gcp_streaming_action" className="label">
+                      Streaming Action
+                    </label>
+                    <input
+                      id="gcp_streaming_action"
+                      type="text"
+                      value={formData.gcp_streaming_action}
+                      onChange={e =>
+                        setFormData(prev => ({
+                          ...prev,
+                          gcp_streaming_action: e.target.value,
+                        }))
+                      }
+                      className="input"
+                      placeholder="streamRawPredict"
+                    />
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Default: streamRawPredict (Gemini: streamGenerateContent)
+                    </p>
+                  </div>
                   </div>
                 </div>
               )}

@@ -261,13 +261,15 @@ pub async fn handle_proxy_request(
                 );
                 GcpVertexConfig::from_provider_with_defaults(&provider)
             });
-            match crate::api::upstream::build_gcp_vertex_url(
+            match crate::api::upstream::build_gcp_vertex_url_with_actions(
                 &provider.api_base,
                 &gcp_config.project,
                 &gcp_config.location,
                 &gcp_config.publisher,
                 &transform_ctx.mapped_model,
                 generation_data.is_streaming,
+                &gcp_config.blocking_action,
+                &gcp_config.streaming_action,
             ) {
                 Ok(url) => url,
                 Err(err) => {

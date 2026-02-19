@@ -171,6 +171,8 @@ export interface ProviderFormData {
   gcp_project: string;
   gcp_location: string;
   gcp_publisher: string;
+  gcp_blocking_action: string;
+  gcp_streaming_action: string;
 }
 
 export interface CredentialFormData {

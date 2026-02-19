@@ -138,6 +138,11 @@ def _build_gcp_vertex_url(provider: "Provider", model: str, is_streaming: bool) 
     The api_base should include any custom prefix (e.g., https://xxx.com/models/gcp-vertex).
     This function only appends the dynamic GCP Vertex path.
 
+    Supports custom action verbs via provider_params.gcp_vertex_actions:
+      {"blocking": "rawPredict", "streaming": "streamRawPredict"}
+    For Gemini models, use:
+      {"blocking": "generateContent", "streaming": "streamGenerateContent"}
+
     Args:
         provider: Provider instance with GCP configuration
         model: Model name (e.g., claude-sonnet-4-20250514)
@@ -146,7 +151,14 @@ def _build_gcp_vertex_url(provider: "Provider", model: str, is_streaming: bool) 
     Returns:
         Full URL for the GCP Vertex AI endpoint
     """
-    action = "streamRawPredict" if is_streaming else "rawPredict"
+    actions = (provider.provider_params or {}).get("gcp_vertex_actions", {})
+    if isinstance(actions, dict):
+        blocking_action = actions.get("blocking", "rawPredict")
+        streaming_action = actions.get("streaming", "streamRawPredict")
+    else:
+        blocking_action = "rawPredict"
+        streaming_action = "streamRawPredict"
+    action = streaming_action if is_streaming else blocking_action
     return (
         f"{provider.api_base}/v1/projects/{provider.gcp_project}"
         f"/locations/{provider.gcp_location}"

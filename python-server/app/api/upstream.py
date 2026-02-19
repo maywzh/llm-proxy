@@ -60,6 +60,8 @@ def build_gcp_vertex_url(
     gcp_publisher: str,
     model: str,
     is_streaming: bool,
+    blocking_action: str = "rawPredict",
+    streaming_action: str = "streamRawPredict",
 ) -> str:
     """Build GCP Vertex AI endpoint URL with path traversal validation."""
     for segment in (gcp_project, gcp_location, gcp_publisher, model):
@@ -68,7 +70,7 @@ def build_gcp_vertex_url(
                 "GCP Vertex URL parameters must not contain path separators "
                 "or traversal sequences"
             )
-    action = "streamRawPredict" if is_streaming else "rawPredict"
+    action = streaming_action if is_streaming else blocking_action
     return (
         f"{api_base}/v1/projects/{gcp_project}"
         f"/locations/{gcp_location}/publishers/{gcp_publisher}"

@@ -152,11 +152,18 @@ export const actions = {
 
       // Include provider_params for GCP Vertex
       if (data.provider_type === 'gcp-vertex') {
-        createData.provider_params = {
+        const params: Record<string, unknown> = {
           gcp_project: data.gcp_project,
           gcp_location: data.gcp_location?.trim() || 'us-central1',
           gcp_publisher: data.gcp_publisher?.trim() || 'anthropic',
         };
+        if (data.gcp_blocking_action?.trim() || data.gcp_streaming_action?.trim()) {
+          params.gcp_vertex_actions = {
+            blocking: data.gcp_blocking_action?.trim() || 'rawPredict',
+            streaming: data.gcp_streaming_action?.trim() || 'streamRawPredict',
+          };
+        }
+        createData.provider_params = params;
       } else {
         createData.provider_params = {};
       }
