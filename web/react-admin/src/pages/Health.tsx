@@ -18,6 +18,8 @@ import {
   ShieldCheck,
   ShieldAlert,
   HeartPulse,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import ProviderIcon from '../components/ProviderIcon';
 import type {
@@ -51,6 +53,7 @@ const Health: React.FC = () => {
   const [expandedProviders, setExpandedProviders] = useState<Set<number>>(
     new Set()
   );
+  const [showDisabled, setShowDisabled] = useState(false);
 
   useEffect(() => {
     const cached = localStorage.getItem(HEALTH_CACHE_KEY);
@@ -81,8 +84,11 @@ const Health: React.FC = () => {
 
     try {
       const providersResponse = await apiClient.listProviders();
-      const updatedProviders: ProviderHealthStatus[] =
-        providersResponse.providers.map(p => {
+      const filteredProviders = showDisabled
+        ? providersResponse.providers
+        : providersResponse.providers.filter(p => p.is_enabled);
+      const updatedProviders: ProviderHealthStatus[] = filteredProviders.map(
+        p => {
           const existing = healthData?.providers.find(
             ep => ep.provider_id === p.id
           );
@@ -91,13 +97,14 @@ const Health: React.FC = () => {
               provider_id: p.id,
               provider_key: p.provider_key,
               provider_type: p.provider_type,
-              status: 'unknown' as HealthStatus,
+              status: (p.is_enabled ? 'unknown' : 'disabled') as HealthStatus,
               models: [],
               avg_response_time_ms: null,
               checked_at: new Date().toISOString(),
             }
           );
-        });
+        }
+      );
 
       const updatedHealthData: HealthCheckResponse = {
         providers: updatedProviders,
@@ -123,7 +130,7 @@ const Health: React.FC = () => {
     } finally {
       setReloading(false);
     }
-  }, [apiClient, healthData, lastCheckTime]);
+  }, [apiClient, healthData, lastCheckTime, showDisabled]);
 
   const handleCheckHealth = useCallback(async () => {
     if (!apiClient) return;
@@ -133,9 +140,13 @@ const Health: React.FC = () => {
 
     try {
       const providersResponse = await apiClient.listProviders();
-      const providerIds = providersResponse.providers.map(p => p.id);
-      const initialProviders: ProviderHealthStatus[] =
-        providersResponse.providers.map(p => {
+      const allProviders = providersResponse.providers;
+      const displayProviders = showDisabled
+        ? allProviders
+        : allProviders.filter(p => p.is_enabled);
+      const providerIds = allProviders.filter(p => p.is_enabled).map(p => p.id);
+      const initialProviders: ProviderHealthStatus[] = displayProviders.map(
+        p => {
           const existing = healthData?.providers.find(
             ep => ep.provider_id === p.id
           );
@@ -144,13 +155,14 @@ const Health: React.FC = () => {
               provider_id: p.id,
               provider_key: p.provider_key,
               provider_type: p.provider_type,
-              status: 'unknown' as HealthStatus,
+              status: (p.is_enabled ? 'unknown' : 'disabled') as HealthStatus,
               models: [],
               avg_response_time_ms: null,
               checked_at: new Date().toISOString(),
             }
           );
-        });
+        }
+      );
       setHealthData({
         providers: initialProviders,
         total_providers: initialProviders.length,
@@ -236,7 +248,7 @@ const Health: React.FC = () => {
     } finally {
       setChecking(false);
     }
-  }, [apiClient]);
+  }, [apiClient, showDisabled]);
 
   const handleCheckProviderHealth = useCallback(
     async (providerId: number) => {
@@ -507,7 +519,24 @@ const Health: React.FC = () => {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 cursor-pointer text-sm text-gray-600 dark:text-gray-400 select-none">
+            <button
+              onClick={() => setShowDisabled(prev => !prev)}
+              aria-label="Toggle show disabled providers"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${showDisabled ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${showDisabled ? 'translate-x-4.5' : 'translate-x-0.75'}`}
+              />
+            </button>
+            {showDisabled ? (
+              <Eye className="w-3.5 h-3.5" />
+            ) : (
+              <EyeOff className="w-3.5 h-3.5" />
+            )}
+            <span>Show Disabled</span>
+          </div>
           <button
             onClick={handleReloadProviders}
             disabled={reloading || checking}

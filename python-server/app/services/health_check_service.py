@@ -224,16 +224,22 @@ class HealthCheckService:
         }
 
         if "vertex" in provider_type:
-            # GCP Vertex AI: Anthropic Messages API via rawPredict endpoint
+            # GCP Vertex AI: endpoint with configurable action verb
             params = provider.provider_params or {}
             gcp_project = params.get("gcp_project", "")
             gcp_location = params.get("gcp_location", "us-central1")
             gcp_publisher = params.get("gcp_publisher", "anthropic")
 
+            actions = params.get("gcp_vertex_actions", {})
+            if isinstance(actions, dict):
+                blocking_action = actions.get("blocking", "rawPredict")
+            else:
+                blocking_action = "rawPredict"
+
             url = (
                 f"{provider.api_base}/v1/projects/{gcp_project}"
                 f"/locations/{gcp_location}/publishers/{gcp_publisher}"
-                f"/models/{actual_model}:rawPredict"
+                f"/models/{actual_model}:{blocking_action}"
             )
             headers = {
                 "Authorization": f"Bearer {provider.api_key}",
@@ -432,7 +438,7 @@ async def check_providers_health(
         # Get all enabled providers
         from app.core.database import list_providers
 
-        providers = await list_providers(db, enabled_only=False)
+        providers = await list_providers(db, enabled_only=True)
 
     # Use semaphore to limit concurrent provider checks
     semaphore = asyncio.Semaphore(max_concurrent)

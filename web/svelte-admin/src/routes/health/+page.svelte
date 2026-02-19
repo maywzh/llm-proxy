@@ -21,6 +21,8 @@
     ShieldCheck,
     ShieldAlert,
     HeartPulse,
+    Eye,
+    EyeOff,
   } from 'lucide-svelte';
   import ProviderIcon from '$lib/components/ProviderIcon.svelte';
 
@@ -39,6 +41,7 @@
   let checkingModels: Set<string> = new SvelteSet();
   let error = $state<string | null>(null);
   let expandedProviders: Set<number> = new SvelteSet();
+  let showDisabled = $state(false);
 
   onMount(() => {
     const cached = localStorage.getItem(HEALTH_CACHE_KEY);
@@ -69,8 +72,11 @@
 
     try {
       const providersResponse = await client.listProviders();
+      const filteredProviders = showDisabled
+        ? providersResponse.providers
+        : providersResponse.providers.filter(p => p.is_enabled);
       const updatedProviders: import('$lib/types').ProviderHealthStatus[] =
-        providersResponse.providers.map(p => {
+        filteredProviders.map(p => {
           const existing = healthData?.providers.find(
             ep => ep.provider_id === p.id
           );
@@ -79,7 +85,9 @@
               provider_id: p.id,
               provider_key: p.provider_key,
               provider_type: p.provider_type,
-              status: 'unknown' as import('$lib/types').HealthStatus,
+              status: (p.is_enabled
+                ? 'unknown'
+                : 'disabled') as import('$lib/types').HealthStatus,
               models: [],
               avg_response_time_ms: null,
               checked_at: new Date().toISOString(),
@@ -120,9 +128,13 @@
 
     try {
       const providersResponse = await client.listProviders();
-      const providerIds = providersResponse.providers.map(p => p.id);
+      const allProviders = providersResponse.providers;
+      const displayProviders = showDisabled
+        ? allProviders
+        : allProviders.filter(p => p.is_enabled);
+      const providerIds = allProviders.filter(p => p.is_enabled).map(p => p.id);
       const initialProviders: import('$lib/types').ProviderHealthStatus[] =
-        providersResponse.providers.map(p => {
+        displayProviders.map(p => {
           const existing = healthData?.providers.find(
             ep => ep.provider_id === p.id
           );
@@ -131,7 +143,9 @@
               provider_id: p.id,
               provider_key: p.provider_key,
               provider_type: p.provider_type,
-              status: 'unknown' as import('$lib/types').HealthStatus,
+              status: (p.is_enabled
+                ? 'unknown'
+                : 'disabled') as import('$lib/types').HealthStatus,
               models: [],
               avg_response_time_ms: null,
               checked_at: new Date().toISOString(),
@@ -423,7 +437,30 @@
         </p>
       </div>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-3">
+      <div
+        class="flex items-center gap-2 cursor-pointer text-sm text-gray-600 dark:text-gray-400 select-none"
+      >
+        <button
+          onclick={() => (showDisabled = !showDisabled)}
+          aria-label="Toggle show disabled providers"
+          class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {showDisabled
+            ? 'bg-primary-600'
+            : 'bg-gray-300 dark:bg-gray-600'}"
+        >
+          <span
+            class="inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform {showDisabled
+              ? 'translate-x-4.5'
+              : 'translate-x-0.75'}"
+          ></span>
+        </button>
+        {#if showDisabled}
+          <Eye class="w-3.5 h-3.5" />
+        {:else}
+          <EyeOff class="w-3.5 h-3.5" />
+        {/if}
+        <span>Show Disabled</span>
+      </div>
       <button
         onclick={handleReloadProviders}
         disabled={reloading || checking}
