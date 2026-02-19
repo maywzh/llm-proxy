@@ -6,7 +6,7 @@
 use crate::api::health::{HealthStatus, ModelHealthStatus, ProviderHealthStatus};
 use crate::api::models::{CheckProviderHealthResponse, ModelHealthResult, ProviderHealthSummary};
 use crate::api::upstream::{
-    build_gcp_vertex_url, build_upstream_request, extract_error_message, UpstreamAuth,
+    build_gcp_vertex_url_with_actions, build_upstream_request, extract_error_message, UpstreamAuth,
 };
 use crate::core::database::{Database, ProviderEntity};
 use chrono::Utc;
@@ -294,13 +294,25 @@ impl HealthCheckService {
                 .and_then(|v| v.as_str())
                 .unwrap_or("anthropic");
 
-            let url = match build_gcp_vertex_url(
+            let actions = provider.provider_params.get("gcp_vertex_actions");
+            let blocking_action = actions
+                .and_then(|v| v.get("blocking"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("rawPredict");
+            let streaming_action = actions
+                .and_then(|v| v.get("streaming"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("streamRawPredict");
+
+            let url = match build_gcp_vertex_url_with_actions(
                 &provider.api_base,
                 gcp_project,
                 gcp_location,
                 gcp_publisher,
                 actual_model,
                 false,
+                blocking_action,
+                streaming_action,
             ) {
                 Ok(url) => url,
                 Err(err) => {
@@ -545,8 +557,8 @@ pub async fn check_providers_health(
         }
         result
     } else {
-        // Get all providers (including disabled for status reporting)
-        db.load_all_providers().await.unwrap_or_default()
+        // Get only enabled providers
+        db.load_providers().await.unwrap_or_default()
     };
 
     // Use semaphore to limit concurrent provider checks
