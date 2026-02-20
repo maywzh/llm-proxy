@@ -29,6 +29,7 @@ from ..unified import (
     UnifiedToolCall,
     UnifiedUsage,
     create_image_base64,
+    create_image_url,
     create_text_content,
     create_thinking_content,
     create_tool_result_content,
@@ -538,6 +539,15 @@ class GeminiTransformer(Transformer):
                 result.append(create_thinking_content("", sig))
             return result
 
+        if "fileData" in part:
+            fd = part["fileData"]
+            uri = fd.get("fileUri", "")
+            result.append(create_image_url(uri))
+            sig = part.get("thoughtSignature")
+            if sig:
+                result.append(create_thinking_content("", sig))
+            return result
+
         return result
 
     def _unified_to_part(self, content: UnifiedContent) -> Optional[dict[str, Any]]:
@@ -558,6 +568,16 @@ class GeminiTransformer(Transformer):
                 }
             }
         if isinstance(content, ImageContent):
+            if content.source_type == "url":
+                mime = (
+                    self._mime_type_from_url(content.data) or "application/octet-stream"
+                )
+                return {
+                    "fileData": {
+                        "mimeType": mime,
+                        "fileUri": content.data,
+                    }
+                }
             return {
                 "inlineData": {
                     "mimeType": content.media_type,
@@ -784,6 +804,36 @@ class GeminiTransformer(Transformer):
         if tool.description:
             decl["description"] = tool.description
         return decl
+
+    @staticmethod
+    def _mime_type_from_url(url: str) -> Optional[str]:
+        """Infer MIME type from a URL's file extension."""
+        from urllib.parse import urlparse
+
+        path = urlparse(url).path.lower()
+        mime_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+            ".pdf": "application/pdf",
+            ".mp4": "video/mp4",
+            ".mov": "video/mov",
+            ".mpeg": "video/mpeg",
+            ".mpg": "video/mpeg",
+            ".avi": "video/avi",
+            ".wmv": "video/wmv",
+            ".flv": "video/flv",
+            ".mp3": "audio/mp3",
+            ".wav": "audio/wav",
+            ".ogg": "audio/ogg",
+            ".txt": "text/plain",
+        }
+        for ext, mime in mime_map.items():
+            if path.endswith(ext):
+                return mime
+        return None
 
     @staticmethod
     def _gemini_tool_to_unified(decl: dict[str, Any]) -> UnifiedTool:
