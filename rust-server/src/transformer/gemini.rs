@@ -314,10 +314,97 @@ impl GeminiTransformer {
 
     // -- Helpers: Tool definitions --
 
+    /// Recursively clean JSON Schema to be Gemini-compatible.
+    /// Gemini functionDeclarations.parameters uses OpenAPI schema,
+    /// which does not support: $schema, type-as-array, additionalProperties (bool).
+    fn sanitize_schema_for_gemini(schema: &Value) -> Value {
+        let obj = match schema.as_object() {
+            Some(o) => o,
+            None => return schema.clone(),
+        };
+
+        let mut result = serde_json::Map::new();
+
+        for (key, value) in obj {
+            match key.as_str() {
+                // Remove unsupported keys
+                "$schema" | "additionalProperties" => continue,
+
+                "type" => {
+                    if let Some(arr) = value.as_array() {
+                        // ["string", "null"] → type: "string", nullable: true
+                        let non_null: Vec<&Value> =
+                            arr.iter().filter(|v| v.as_str() != Some("null")).collect();
+                        if let Some(first) = non_null.first() {
+                            result.insert("type".into(), (*first).clone());
+                        } else {
+                            result.insert("type".into(), json!("string"));
+                        }
+                        if arr.iter().any(|v| v.as_str() == Some("null")) {
+                            result.insert("nullable".into(), json!(true));
+                        }
+                    } else {
+                        result.insert("type".into(), value.clone());
+                    }
+                }
+
+                "properties" => {
+                    if let Some(props) = value.as_object() {
+                        let sanitized: serde_json::Map<String, Value> = props
+                            .iter()
+                            .map(|(k, v)| (k.clone(), Self::sanitize_schema_for_gemini(v)))
+                            .collect();
+                        result.insert("properties".into(), Value::Object(sanitized));
+                    } else {
+                        result.insert("properties".into(), value.clone());
+                    }
+                }
+
+                "items" => {
+                    if value.is_object() {
+                        result.insert("items".into(), Self::sanitize_schema_for_gemini(value));
+                    } else {
+                        result.insert("items".into(), value.clone());
+                    }
+                }
+
+                "anyOf" => {
+                    if let Some(arr) = value.as_array() {
+                        let non_null: Vec<&Value> = arr
+                            .iter()
+                            .filter(|v| {
+                                v.get("type").and_then(|t| t.as_str()) != Some("null")
+                                    && *v != &json!({"type": "null"})
+                            })
+                            .collect();
+                        if non_null.len() == 1 && arr.len() > non_null.len() {
+                            let mut sanitized = Self::sanitize_schema_for_gemini(non_null[0]);
+                            if let Some(obj) = sanitized.as_object_mut() {
+                                obj.insert("nullable".into(), json!(true));
+                            }
+                            return sanitized;
+                        }
+                        let sanitized: Vec<Value> =
+                            arr.iter().map(Self::sanitize_schema_for_gemini).collect();
+                        result.insert("anyOf".into(), json!(sanitized));
+                    } else {
+                        result.insert("anyOf".into(), value.clone());
+                    }
+                }
+
+                _ => {
+                    result.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        Value::Object(result)
+    }
+
     fn unified_tool_to_gemini(tool: &UnifiedTool) -> Value {
         let mut decl = json!({
             "name": tool.name,
-            "parameters": tool.input_schema,
+            "parameters": Self::sanitize_schema_for_gemini(&tool.input_schema),
         });
         if let Some(ref desc) = tool.description {
             decl["description"] = json!(desc);

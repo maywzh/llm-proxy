@@ -164,7 +164,7 @@ class TestModelMappingProperties:
                     max_size=20,
                     alphabet=st.characters(
                         blacklist_categories=("Cs",),
-                        blacklist_characters="*[]{}()^$\\|",  # Exclude regex metacharacters
+                        blacklist_characters="*[]{}()^$\\|.+?",  # Exclude regex metacharacters
                     ),
                 ),
                 st.text(
