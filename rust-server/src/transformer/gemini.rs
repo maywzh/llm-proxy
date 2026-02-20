@@ -89,6 +89,17 @@ impl GeminiTransformer {
             }
             return result;
         }
+        if let Some(file_data) = part.get("fileData") {
+            let uri = file_data
+                .get("fileUri")
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            result.push(UnifiedContent::image_url(uri));
+            if let Some(sig) = part.get("thoughtSignature").and_then(|s| s.as_str()) {
+                result.push(UnifiedContent::thinking("", Some(sig.to_string())));
+            }
+            return result;
+        }
         result
     }
 
@@ -137,8 +148,17 @@ impl GeminiTransformer {
                 ..
             } => Some(json!({"functionResponse": {"name": tool_use_id, "response": content}})),
             UnifiedContent::Image {
-                media_type, data, ..
-            } => Some(json!({"inlineData": {"mimeType": media_type, "data": data}})),
+                source_type,
+                media_type,
+                data,
+            } => {
+                if source_type == "url" {
+                    let mime = Self::mime_type_from_url(data).unwrap_or("application/octet-stream");
+                    Some(json!({"fileData": {"mimeType": mime, "fileUri": data}}))
+                } else {
+                    Some(json!({"inlineData": {"mimeType": media_type, "data": data}}))
+                }
+            }
             _ => None,
         }
     }
@@ -410,6 +430,30 @@ impl GeminiTransformer {
             decl["description"] = json!(desc);
         }
         decl
+    }
+
+    /// Infer MIME type from a URL's file extension.
+    fn mime_type_from_url(url: &str) -> Option<&'static str> {
+        let path = url.split('?').next().unwrap_or(url);
+        let ext = path.rsplit('.').next()?.to_lowercase();
+        match ext.as_str() {
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "png" => Some("image/png"),
+            "webp" => Some("image/webp"),
+            "gif" => Some("image/gif"),
+            "pdf" => Some("application/pdf"),
+            "mp4" => Some("video/mp4"),
+            "mov" => Some("video/mov"),
+            "mpeg" | "mpg" => Some("video/mpeg"),
+            "avi" => Some("video/avi"),
+            "wmv" => Some("video/wmv"),
+            "flv" => Some("video/flv"),
+            "mp3" => Some("audio/mp3"),
+            "wav" => Some("audio/wav"),
+            "ogg" => Some("audio/ogg"),
+            "txt" => Some("text/plain"),
+            _ => None,
+        }
     }
 
     fn gemini_tool_to_unified(decl: &Value) -> UnifiedTool {
