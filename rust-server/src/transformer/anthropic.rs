@@ -1031,10 +1031,19 @@ impl Transformer for AnthropicTransformer {
                             "type": "text_delta",
                             "text": text
                         }),
-                        UnifiedContent::Thinking { text, .. } => json!({
-                            "type": "thinking_delta",
-                            "thinking": text
-                        }),
+                        UnifiedContent::Thinking { text, signature } => {
+                            if text.is_empty() && signature.is_some() {
+                                json!({
+                                    "type": "signature_delta",
+                                    "signature": signature.as_ref().unwrap()
+                                })
+                            } else {
+                                json!({
+                                    "type": "thinking_delta",
+                                    "thinking": text
+                                })
+                            }
+                        }
                         UnifiedContent::ToolInputDelta { partial_json, .. } => json!({
                             "type": "input_json_delta",
                             "partial_json": partial_json

@@ -53,6 +53,7 @@ from .detector import ProtocolDetector
 from .protocols import (
     AnthropicTransformer,
     GcpVertexTransformer,
+    GeminiTransformer,
     OpenAITransformer,
     ResponseApiTransformer,
 )
@@ -135,6 +136,7 @@ __all__ = [
     # Protocol Transformers
     "AnthropicTransformer",
     "GcpVertexTransformer",
+    "GeminiTransformer",
     "OpenAITransformer",
     "ResponseApiTransformer",
     # Pipeline

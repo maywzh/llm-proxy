@@ -333,6 +333,58 @@ impl HealthCheckService {
                 Some("vertex-2023-10-16"),
                 None,
             )
+        } else if provider_type == "gemini" || provider_type == "gcp-gemini" {
+            // Gemini: uses Gemini format (contents instead of messages)
+            let gcp_project = provider
+                .provider_params
+                .get("gcp_project")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let gcp_location = provider
+                .provider_params
+                .get("gcp_location")
+                .and_then(|v| v.as_str())
+                .unwrap_or("us-central1");
+            let gcp_publisher = provider
+                .provider_params
+                .get("gcp_publisher")
+                .and_then(|v| v.as_str())
+                .unwrap_or("google");
+
+            let url = match build_gcp_vertex_url_with_actions(
+                &provider.api_base,
+                gcp_project,
+                gcp_location,
+                gcp_publisher,
+                actual_model,
+                false,
+                "generateContent",
+                "streamGenerateContent",
+            ) {
+                Ok(url) => url,
+                Err(err) => {
+                    return ModelHealthStatus {
+                        model: model.to_string(),
+                        status: HealthStatus::Unhealthy,
+                        response_time_ms: None,
+                        error: Some(err),
+                    };
+                }
+            };
+
+            let gemini_payload = json!({
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "generationConfig": {"maxOutputTokens": 1}
+            });
+
+            build_upstream_request(
+                client,
+                &url,
+                &gemini_payload,
+                UpstreamAuth::Bearer(&provider.api_key),
+                None,
+                None,
+            )
         } else if provider_type == "anthropic" || provider_type == "claude" {
             let url = format!("{}/v1/messages", provider.api_base);
             build_upstream_request(
@@ -461,6 +513,8 @@ impl HealthCheckService {
             vec!["claude-3-haiku-20240307".to_string()]
         } else if provider_type.contains("azure") {
             vec!["gpt-35-turbo".to_string()]
+        } else if provider_type == "gemini" || provider_type == "gcp-gemini" {
+            vec!["gemini-2.0-flash".to_string()]
         } else {
             // Generic fallback
             vec!["gpt-3.5-turbo".to_string()]

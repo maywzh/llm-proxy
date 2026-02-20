@@ -20,6 +20,7 @@ pub enum Protocol {
     Anthropic,
     ResponseApi,
     GcpVertex,
+    Gemini,
 }
 
 impl std::fmt::Display for Protocol {
@@ -29,6 +30,7 @@ impl std::fmt::Display for Protocol {
             Protocol::Anthropic => write!(f, "anthropic"),
             Protocol::ResponseApi => write!(f, "response_api"),
             Protocol::GcpVertex => write!(f, "gcp_vertex"),
+            Protocol::Gemini => write!(f, "gemini"),
         }
     }
 }
@@ -42,6 +44,7 @@ impl std::str::FromStr for Protocol {
             "anthropic" | "claude" => Ok(Protocol::Anthropic),
             "response_api" | "response-api" | "responses" => Ok(Protocol::ResponseApi),
             "gcp_vertex" | "gcp-vertex" | "vertex" => Ok(Protocol::GcpVertex),
+            "gemini" | "gcp-gemini" => Ok(Protocol::Gemini),
             _ => Err(format!("Unknown protocol: {}", s)),
         }
     }
@@ -53,7 +56,7 @@ impl std::str::FromStr for Protocol {
 /// to the appropriate Protocol for request/response transformation.
 ///
 /// # Arguments
-/// * `provider_type` - The provider type string (e.g., "openai", "anthropic", "azure", "gcp-vertex")
+/// * `provider_type` - The provider type string (e.g., "openai", "anthropic", "azure", "gcp-vertex", "gemini")
 ///
 /// # Returns
 /// The corresponding Protocol enum value. Unknown types default to OpenAI.
@@ -74,6 +77,7 @@ pub fn provider_type_to_protocol(provider_type: &str) -> Protocol {
     match provider_type.to_lowercase().as_str() {
         "anthropic" | "claude" => Protocol::Anthropic,
         "gcp-vertex" | "gcp_vertex" | "vertex" => Protocol::GcpVertex,
+        "gemini" | "gcp-gemini" => Protocol::Gemini,
         "response_api" | "response-api" | "responses" => Protocol::ResponseApi,
         _ => Protocol::OpenAI,
     }

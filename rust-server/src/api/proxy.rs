@@ -251,52 +251,72 @@ pub async fn handle_proxy_request(
         normalize_gemini3_provider_payload(&mut provider_payload, provider_protocol);
 
         // Build URL based on provider protocol
-        let url = if provider_protocol == Protocol::GcpVertex {
-            // GCP Vertex AI requires special URL construction
-            let gcp_config = GcpVertexConfig::from_provider(&provider).unwrap_or_else(|| {
-                tracing::error!(
-                    request_id = %request_id,
-                    provider = %provider.name,
-                    "gcp_project is required for gcp-vertex provider, using defaults"
-                );
-                GcpVertexConfig::from_provider_with_defaults(&provider)
-            });
-            match crate::api::upstream::build_gcp_vertex_url_with_actions(
-                &provider.api_base,
-                &gcp_config.project,
-                &gcp_config.location,
-                &gcp_config.publisher,
-                &transform_ctx.mapped_model,
-                generation_data.is_streaming,
-                &gcp_config.blocking_action,
-                &gcp_config.streaming_action,
-            ) {
-                Ok(url) => url,
-                Err(err) => {
+        let url =
+            if provider_protocol == Protocol::GcpVertex || provider_protocol == Protocol::Gemini {
+                // GCP Vertex AI requires special URL construction
+                let gcp_config = GcpVertexConfig::from_provider(&provider).unwrap_or_else(|| {
                     tracing::error!(
                         request_id = %request_id,
                         provider = %provider.name,
-                        error = %err,
-                        "GCP Vertex URL validation failed"
+                        "gcp_project is required for gcp-vertex/gemini provider, using defaults"
                     );
-                    return Ok(build_protocol_error_response(
-                        client_protocol,
-                        StatusCode::BAD_REQUEST,
-                        ERROR_TYPE_INVALID_REQUEST,
-                        &err,
-                        Some(&effective_model),
-                        Some(&provider.name),
-                        Some(&api_key_name),
-                    ));
+                    GcpVertexConfig::from_provider_with_defaults(&provider)
+                });
+
+                // For Gemini protocol, override action verbs and append ?alt=sse
+                let (blocking_act, streaming_act) = if provider_protocol == Protocol::Gemini {
+                    (
+                        "generateContent".to_string(),
+                        "streamGenerateContent".to_string(),
+                    )
+                } else {
+                    (
+                        gcp_config.blocking_action.clone(),
+                        gcp_config.streaming_action.clone(),
+                    )
+                };
+
+                match crate::api::upstream::build_gcp_vertex_url_with_actions(
+                    &provider.api_base,
+                    &gcp_config.project,
+                    &gcp_config.location,
+                    &gcp_config.publisher,
+                    &transform_ctx.mapped_model,
+                    generation_data.is_streaming,
+                    &blocking_act,
+                    &streaming_act,
+                ) {
+                    Ok(mut url) => {
+                        if provider_protocol == Protocol::Gemini && generation_data.is_streaming {
+                            url.push_str("?alt=sse");
+                        }
+                        url
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            request_id = %request_id,
+                            provider = %provider.name,
+                            error = %err,
+                            "GCP Vertex URL validation failed"
+                        );
+                        return Ok(build_protocol_error_response(
+                            client_protocol,
+                            StatusCode::BAD_REQUEST,
+                            ERROR_TYPE_INVALID_REQUEST,
+                            &err,
+                            Some(&effective_model),
+                            Some(&provider.name),
+                            Some(&api_key_name),
+                        ));
+                    }
                 }
-            }
-        } else {
-            format!(
-                "{}{}",
-                provider.api_base,
-                get_provider_endpoint(provider_protocol)
-            )
-        };
+            } else {
+                format!(
+                    "{}{}",
+                    provider.api_base,
+                    get_provider_endpoint(provider_protocol)
+                )
+            };
 
         tracing::debug!(
             request_id = %request_id,
@@ -750,7 +770,7 @@ pub(crate) fn ensure_tool_use_result_pairing(payload: &mut Value) {
 /// Extract model from request based on protocol
 fn extract_model_from_request(payload: &Value, protocol: Protocol) -> String {
     match protocol {
-        Protocol::OpenAI | Protocol::Anthropic | Protocol::GcpVertex => payload
+        Protocol::OpenAI | Protocol::Anthropic | Protocol::GcpVertex | Protocol::Gemini => payload
             .get("model")
             .and_then(|m| m.as_str())
             .unwrap_or("unknown")
@@ -789,7 +809,7 @@ fn get_provider_endpoint(protocol: Protocol) -> &'static str {
         Protocol::OpenAI => "/chat/completions",
         Protocol::Anthropic => "/v1/messages",
         Protocol::ResponseApi => "/responses",
-        Protocol::GcpVertex => "", // GCP Vertex uses dynamic endpoints constructed elsewhere
+        Protocol::GcpVertex | Protocol::Gemini => "", // GCP Vertex/Gemini uses dynamic endpoints constructed elsewhere
     }
 }
 

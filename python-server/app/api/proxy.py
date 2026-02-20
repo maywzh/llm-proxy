@@ -71,6 +71,7 @@ from app.transformer import (
     OpenAITransformer,
     AnthropicTransformer,
     GcpVertexTransformer,
+    GeminiTransformer,
     ResponseApiTransformer,
 )
 
@@ -93,6 +94,7 @@ def get_transform_pipeline() -> TransformPipeline:
         registry.register(OpenAITransformer())
         registry.register(AnthropicTransformer())
         registry.register(GcpVertexTransformer())
+        registry.register(GeminiTransformer())
         registry.register(ResponseApiTransformer())
         _transform_pipeline = TransformPipeline(registry)
     return _transform_pipeline
@@ -113,6 +115,9 @@ def _get_provider_endpoint(protocol: Protocol) -> str:
         return "/responses"
     elif protocol == Protocol.GCP_VERTEX:
         # GCP Vertex endpoint is built dynamically in _build_gcp_vertex_url
+        return ""
+    elif protocol == Protocol.GEMINI:
+        # Gemini endpoint is built dynamically (same URL structure as GCP Vertex)
         return ""
     return "/chat/completions"
 
@@ -167,6 +172,32 @@ def _build_gcp_vertex_url(provider: "Provider", model: str, is_streaming: bool) 
     )
 
 
+def _build_gemini_url(provider: "Provider", model: str, is_streaming: bool) -> str:
+    """Build the Gemini endpoint URL.
+
+    Uses generateContent/streamGenerateContent action verbs.
+    For streaming, appends ?alt=sse query parameter.
+
+    Args:
+        provider: Provider instance with GCP configuration
+        model: Model name (e.g., gemini-2.0-flash)
+        is_streaming: Whether this is a streaming request
+
+    Returns:
+        Full URL for the Gemini endpoint
+    """
+    action = "streamGenerateContent" if is_streaming else "generateContent"
+    url = (
+        f"{provider.api_base}/v1/projects/{provider.gcp_project}"
+        f"/locations/{provider.gcp_location}"
+        f"/publishers/{provider.gcp_publisher}"
+        f"/models/{model}:{action}"
+    )
+    if is_streaming:
+        url += "?alt=sse"
+    return url
+
+
 def _build_provider_url(
     provider: "Provider", ctx: "TransformContext", model: str
 ) -> str:
@@ -182,6 +213,8 @@ def _build_provider_url(
     """
     if ctx.provider_protocol == Protocol.GCP_VERTEX:
         return _build_gcp_vertex_url(provider, model, ctx.stream)
+    if ctx.provider_protocol == Protocol.GEMINI:
+        return _build_gemini_url(provider, model, ctx.stream)
     return f"{provider.api_base}{_get_provider_endpoint(ctx.provider_protocol)}"
 
 
