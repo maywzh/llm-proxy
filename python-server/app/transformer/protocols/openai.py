@@ -7,6 +7,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from app.utils.gemini3 import THOUGHT_SIGNATURE_SEPARATOR
+
 from ..base import Transformer
 from ..unified import (
     ChunkType,
@@ -80,13 +82,18 @@ class OpenAITransformer(Transformer):
             content = self._parse_content(msg.get("content"))
             tool_calls = self._parse_tool_calls(msg.get("tool_calls"))
 
+            # Strip __thought__ from tool_call_id if present
+            tool_call_id = msg.get("tool_call_id")
+            if tool_call_id and THOUGHT_SIGNATURE_SEPARATOR in tool_call_id:
+                tool_call_id = tool_call_id.split(THOUGHT_SIGNATURE_SEPARATOR, 1)[0]
+
             messages.append(
                 UnifiedMessage(
                     role=role,
                     content=content,
                     name=msg.get("name"),
                     tool_calls=tool_calls,
-                    tool_call_id=msg.get("tool_call_id"),
+                    tool_call_id=tool_call_id,
                 )
             )
 
@@ -276,6 +283,63 @@ class OpenAITransformer(Transformer):
         content = self._parse_content(message.get("content"))
         tool_calls = self._parse_tool_calls(message.get("tool_calls"))
 
+        # Parse reasoning_content (thinking) from OpenAI-compatible response
+        reasoning = message.get("reasoning_content")
+        if reasoning and isinstance(reasoning, str) and reasoning:
+            content.insert(0, ThinkingContent(text=reasoning))
+
+        # Parse thinking_blocks for structured thinking content with signatures
+        thinking_blocks = message.get("thinking_blocks")
+        if thinking_blocks and isinstance(thinking_blocks, list):
+            for block in thinking_blocks:
+                if isinstance(block, dict) and block.get("type") == "thinking":
+                    block_text = block.get("thinking", "")
+                    block_sig = block.get("signature")
+                    if block_sig and block_text:
+                        # thinking_blocks with both text+sig: add thinking then signature
+                        content.insert(0, ThinkingContent(text=block_text))
+                        content.append(ThinkingContent(text="", signature=block_sig))
+                    elif block_sig:
+                        # Signature-only block
+                        content.append(ThinkingContent(text="", signature=block_sig))
+
+        # Parse provider_specific_fields.thought_signatures as fallback
+        has_signature = any(
+            isinstance(c, ThinkingContent) and not c.text and c.signature
+            for c in content
+        )
+        if not has_signature:
+            psf = message.get("provider_specific_fields")
+            if psf and isinstance(psf, dict):
+                sigs = psf.get("thought_signatures")
+                if sigs and isinstance(sigs, list):
+                    for sig in sigs:
+                        if isinstance(sig, str):
+                            content.append(ThinkingContent(text="", signature=sig))
+
+        # Extract signatures from tool_call provider_specific_fields.thought_signature
+        # and tool_call_ids (__thought__ encoding) as final fallback
+        has_signature_now = any(
+            isinstance(c, ThinkingContent) and not c.text and c.signature
+            for c in content
+        )
+        if not has_signature_now:
+            raw_tool_calls = message.get("tool_calls") or []
+            for tc in raw_tool_calls:
+                # Check provider_specific_fields.thought_signature on tool call
+                tc_psf = tc.get("provider_specific_fields")
+                if tc_psf and isinstance(tc_psf, dict):
+                    tc_sig = tc_psf.get("thought_signature")
+                    if isinstance(tc_sig, str) and tc_sig:
+                        content.append(ThinkingContent(text="", signature=tc_sig))
+                        continue
+                # Fallback: extract from tool_call_id encoding
+                tc_id = tc.get("id", "")
+                if THOUGHT_SIGNATURE_SEPARATOR in tc_id:
+                    sig = tc_id.split(THOUGHT_SIGNATURE_SEPARATOR, 1)[1]
+                    if sig:
+                        content.append(ThinkingContent(text="", signature=sig))
+
         stop_reason = self._parse_finish_reason(choice.get("finish_reason"))
 
         usage_data = raw.get("usage", {})
@@ -312,7 +376,18 @@ class OpenAITransformer(Transformer):
         """
         content = self._unified_content_to_openai(unified.content)
         reasoning_content = self._unified_reasoning_to_openai(unified.content)
+        thinking_blocks = self._unified_thinking_blocks(unified.content)
+        thought_signatures = self._unified_thought_signatures(unified.content)
         tool_calls = self._unified_tool_calls_to_openai(unified.tool_calls)
+
+        # Encode last thought_signature into tool_call_ids and
+        # set provider_specific_fields.thought_signature on each tool call (litellm compat)
+        if tool_calls and thought_signatures:
+            last_sig = thought_signatures[-1]
+            for tc in tool_calls:
+                if THOUGHT_SIGNATURE_SEPARATOR not in tc["id"]:
+                    tc["id"] = f"{tc['id']}{THOUGHT_SIGNATURE_SEPARATOR}{last_sig}"
+                tc["provider_specific_fields"] = {"thought_signature": last_sig}
 
         finish_reason = self._stop_reason_to_finish_reason(unified.stop_reason)
 
@@ -322,6 +397,12 @@ class OpenAITransformer(Transformer):
         }
         if reasoning_content:
             message["reasoning_content"] = reasoning_content
+        if thinking_blocks:
+            message["thinking_blocks"] = thinking_blocks
+        if thought_signatures:
+            message["provider_specific_fields"] = {
+                "thought_signatures": thought_signatures
+            }
         if tool_calls:
             message["tool_calls"] = tool_calls
 
@@ -451,7 +532,29 @@ class OpenAITransformer(Transformer):
                     return f"data: {json.dumps(openai_chunk)}\n\n"
 
                 elif isinstance(chunk.delta, ThinkingContent):
-                    # Output thinking content as reasoning_content for OpenAI-compatible APIs
+                    if not chunk.delta.text and chunk.delta.signature:
+                        # Signature-only: output as provider_specific_fields.thought_signatures
+                        openai_chunk = {
+                            "id": "chatcmpl-stream",
+                            "object": "chat.completion.chunk",
+                            "created": int(datetime.now(timezone.utc).timestamp()),
+                            "model": "model",
+                            "choices": [
+                                {
+                                    "index": chunk.index,
+                                    "delta": {
+                                        "provider_specific_fields": {
+                                            "thought_signatures": [
+                                                chunk.delta.signature
+                                            ]
+                                        }
+                                    },
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                        return f"data: {json.dumps(openai_chunk)}\n\n"
+                    # Regular thinking content as reasoning_content
                     openai_chunk = {
                         "id": "chatcmpl-stream",
                         "object": "chat.completion.chunk",
@@ -602,7 +705,9 @@ class OpenAITransformer(Transformer):
         return []
 
     def _parse_tool_calls(self, tool_calls: Any) -> list[UnifiedToolCall]:
-        """Parse OpenAI tool calls to unified format."""
+        """Parse OpenAI tool calls to unified format.
+        Strips __thought__ signature encoding from tool_call_id if present.
+        """
         if not tool_calls:
             return []
         result: list[UnifiedToolCall] = []
@@ -611,9 +716,13 @@ class OpenAITransformer(Transformer):
                 arguments = json.loads(tc.get("function", {}).get("arguments", "{}"))
             except json.JSONDecodeError:
                 arguments = {}
+            tc_id = tc.get("id", "")
+            # Strip __thought__ signature from tool_call_id
+            if THOUGHT_SIGNATURE_SEPARATOR in tc_id:
+                tc_id = tc_id.split(THOUGHT_SIGNATURE_SEPARATOR, 1)[0]
             result.append(
                 UnifiedToolCall(
-                    id=tc.get("id", ""),
+                    id=tc_id,
                     name=tc.get("function", {}).get("name", ""),
                     arguments=arguments,
                 )
@@ -726,9 +835,44 @@ class OpenAITransformer(Transformer):
     def _unified_reasoning_to_openai(
         self, content: list[UnifiedContent]
     ) -> Optional[str]:
-        """Extract thinking content as reasoning_content for OpenAI-compatible APIs."""
-        thinking_texts = [c.text for c in content if isinstance(c, ThinkingContent)]
+        """Extract thinking content as reasoning_content for OpenAI-compatible APIs.
+        Excludes signature-only blocks (text="" with signature set).
+        """
+        thinking_texts = [
+            c.text
+            for c in content
+            if isinstance(c, ThinkingContent) and (c.text or not c.signature)
+        ]
         return "".join(thinking_texts) if thinking_texts else None
+
+    def _unified_thinking_blocks(
+        self, content: list[UnifiedContent]
+    ) -> Optional[list[dict[str, Any]]]:
+        """Build thinking_blocks list from UIF content (litellm-compatible)."""
+        blocks: list[dict[str, Any]] = []
+        for c in content:
+            if isinstance(c, ThinkingContent):
+                if c.text and not (not c.text and c.signature):
+                    block: dict[str, Any] = {"type": "thinking", "thinking": c.text}
+                    blocks.append(block)
+                # Signature-only blocks will be attached below
+        # Attach signatures to the last thinking block
+        for c in content:
+            if isinstance(c, ThinkingContent) and not c.text and c.signature:
+                if blocks and "signature" not in blocks[-1]:
+                    blocks[-1]["signature"] = c.signature
+        return blocks if blocks else None
+
+    def _unified_thought_signatures(
+        self, content: list[UnifiedContent]
+    ) -> Optional[list[str]]:
+        """Extract thought_signatures list from signature-only Thinking blocks."""
+        sigs = [
+            c.signature
+            for c in content
+            if isinstance(c, ThinkingContent) and not c.text and c.signature
+        ]
+        return sigs if sigs else None
 
     def _unified_tool_calls_to_openai(
         self, tool_calls: list[UnifiedToolCall]
@@ -862,6 +1006,50 @@ class OpenAITransformer(Transformer):
                         0, create_text_content(delta["content"])
                     )
                 )
+
+            # Handle reasoning_content delta (thinking content)
+            if "reasoning_content" in delta and delta["reasoning_content"]:
+                chunks.append(
+                    UnifiedStreamChunk.content_block_delta(
+                        0,
+                        ThinkingContent(text=delta["reasoning_content"]),
+                    )
+                )
+
+            # Handle thinking_blocks delta (structured thinking with signatures)
+            if "thinking_blocks" in delta and delta["thinking_blocks"]:
+                for block in delta["thinking_blocks"]:
+                    if isinstance(block, dict) and block.get("type") == "thinking":
+                        block_text = block.get("thinking", "")
+                        block_sig = block.get("signature")
+                        if block_text:
+                            chunks.append(
+                                UnifiedStreamChunk.content_block_delta(
+                                    0,
+                                    ThinkingContent(text=block_text),
+                                )
+                            )
+                        if block_sig:
+                            chunks.append(
+                                UnifiedStreamChunk.content_block_delta(
+                                    0,
+                                    ThinkingContent(text="", signature=block_sig),
+                                )
+                            )
+
+            # Handle provider_specific_fields.thought_signatures delta
+            psf = delta.get("provider_specific_fields")
+            if psf and isinstance(psf, dict):
+                sigs = psf.get("thought_signatures")
+                if sigs and isinstance(sigs, list):
+                    for sig in sigs:
+                        if isinstance(sig, str):
+                            chunks.append(
+                                UnifiedStreamChunk.content_block_delta(
+                                    0,
+                                    ThinkingContent(text="", signature=sig),
+                                )
+                            )
 
             # Handle tool_calls delta (streaming tool use)
             # Tool calls start at index 1 (after text content at index 0)

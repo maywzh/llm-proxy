@@ -269,6 +269,14 @@ class GcpVertexConfig:
         """
         params = provider.provider_params or {}
         actions = params.get("gcp_vertex_actions", {})
-        blocking = actions.get("blocking", "rawPredict") if isinstance(actions, dict) else "rawPredict"
-        streaming = actions.get("streaming", "streamRawPredict") if isinstance(actions, dict) else "streamRawPredict"
+        blocking = (
+            actions.get("blocking", "rawPredict")
+            if isinstance(actions, dict)
+            else "rawPredict"
+        )
+        streaming = (
+            actions.get("streaming", "streamRawPredict")
+            if isinstance(actions, dict)
+            else "streamRawPredict"
+        )
         return blocking, streaming

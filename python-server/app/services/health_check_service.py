@@ -246,6 +246,26 @@ class HealthCheckService:
                 "Content-Type": "application/json",
                 "anthropic-version": "vertex-2023-10-16",
             }
+        elif provider_type in ("gemini", "gcp-gemini"):
+            # Gemini: uses Gemini format (contents instead of messages)
+            params = provider.provider_params or {}
+            gcp_project = params.get("gcp_project", "")
+            gcp_location = params.get("gcp_location", "us-central1")
+            gcp_publisher = params.get("gcp_publisher", "google")
+
+            url = (
+                f"{provider.api_base}/v1/projects/{gcp_project}"
+                f"/locations/{gcp_location}/publishers/{gcp_publisher}"
+                f"/models/{actual_model}:generateContent"
+            )
+            headers = {
+                "Authorization": f"Bearer {provider.api_key}",
+                "Content-Type": "application/json",
+            }
+            test_payload = {
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "generationConfig": {"maxOutputTokens": 1},
+            }
         elif provider_type in ("anthropic", "claude"):
             # Anthropic: x-api-key auth + /v1/messages endpoint
             url = f"{provider.api_base}/v1/messages"
@@ -356,6 +376,8 @@ class HealthCheckService:
             return ["claude-3-haiku-20240307"]
         elif "azure" in provider_type:
             return ["gpt-35-turbo"]
+        elif provider_type in ("gemini", "gcp-gemini"):
+            return ["gemini-2.0-flash"]
         else:
             # Generic fallback
             return ["gpt-3.5-turbo"]

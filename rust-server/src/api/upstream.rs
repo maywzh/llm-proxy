@@ -100,6 +100,7 @@ pub fn build_gcp_vertex_url(
 ///
 /// Allows specifying custom blocking/streaming action verbs (e.g.,
 /// `generateContent`/`streamGenerateContent` for Gemini models).
+#[allow(clippy::too_many_arguments)]
 pub fn build_gcp_vertex_url_with_actions(
     api_base: &str,
     gcp_project: &str,
@@ -234,7 +235,7 @@ fn build_protocol_error_body(
                 "message": message
             }
         }),
-        Protocol::OpenAI | Protocol::ResponseApi => json!({
+        Protocol::OpenAI | Protocol::ResponseApi | Protocol::Gemini => json!({
             "error": {
                 "message": message,
                 "type": error_type,

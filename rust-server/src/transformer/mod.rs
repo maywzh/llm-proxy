@@ -36,6 +36,7 @@ pub mod anthropic;
 pub mod detector;
 pub mod features;
 pub mod gcp_vertex;
+pub mod gemini;
 pub mod openai;
 pub mod passthrough;
 pub mod response_api;
@@ -149,6 +150,7 @@ impl TransformerRegistry {
         registry.register(Arc::new(anthropic::AnthropicTransformer::new()));
         registry.register(Arc::new(response_api::ResponseApiTransformer::new()));
         registry.register(Arc::new(gcp_vertex::GcpVertexTransformer::new()));
+        registry.register(Arc::new(gemini::GeminiTransformer::new()));
 
         registry
     }
@@ -524,13 +526,14 @@ mod tests {
         assert!(registry.get(Protocol::Anthropic).is_some());
         assert!(registry.get(Protocol::ResponseApi).is_some());
         assert!(registry.get(Protocol::GcpVertex).is_some());
+        assert!(registry.get(Protocol::Gemini).is_some());
     }
 
     #[test]
     fn test_registry_protocols() {
         let registry = TransformerRegistry::new();
         let protocols = registry.protocols();
-        assert_eq!(protocols.len(), 4);
+        assert_eq!(protocols.len(), 5);
     }
 
     #[test]

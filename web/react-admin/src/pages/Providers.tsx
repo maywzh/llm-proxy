@@ -122,8 +122,12 @@ const Providers: React.FC = () => {
       gcp_project: (provider.provider_params?.gcp_project as string) || '',
       gcp_location: (provider.provider_params?.gcp_location as string) || '',
       gcp_publisher: (provider.provider_params?.gcp_publisher as string) || '',
-      gcp_blocking_action: ((provider.provider_params?.gcp_vertex_actions as Record<string, string>)?.blocking) || '',
-      gcp_streaming_action: ((provider.provider_params?.gcp_vertex_actions as Record<string, string>)?.streaming) || '',
+      gcp_blocking_action:
+        (provider.provider_params?.gcp_vertex_actions as Record<string, string>)
+          ?.blocking || '',
+      gcp_streaming_action:
+        (provider.provider_params?.gcp_vertex_actions as Record<string, string>)
+          ?.streaming || '',
     });
     setShowCreateForm(true);
   };
@@ -133,12 +137,13 @@ const Providers: React.FC = () => {
     if (!apiClient) return;
     if (modelMappingError) return;
 
-    // Validate gcp_project is required when provider_type is gcp-vertex
+    // Validate gcp_project is required when provider_type is gcp-vertex or gemini
     if (
-      formData.provider_type === 'gcp-vertex' &&
+      (formData.provider_type === 'gcp-vertex' ||
+        formData.provider_type === 'gemini') &&
       !formData.gcp_project.trim()
     ) {
-      setError('GCP Project ID is required for GCP Vertex provider');
+      setError('GCP Project ID is required for GCP Vertex / Gemini provider');
       return;
     }
 
@@ -160,17 +165,27 @@ const Providers: React.FC = () => {
           updateData.api_key = formData.api_key;
         }
 
-        // Include provider_params for GCP Vertex
-        if (formData.provider_type === 'gcp-vertex') {
+        // Include provider_params for GCP Vertex / Gemini
+        if (
+          formData.provider_type === 'gcp-vertex' ||
+          formData.provider_type === 'gemini'
+        ) {
           const params: Record<string, unknown> = {
             gcp_project: formData.gcp_project,
             gcp_location: formData.gcp_location.trim() || 'us-central1',
-            gcp_publisher: formData.gcp_publisher.trim() || 'anthropic',
+            gcp_publisher:
+              formData.gcp_publisher.trim() ||
+              (formData.provider_type === 'gemini' ? 'google' : 'anthropic'),
           };
-          if (formData.gcp_blocking_action.trim() || formData.gcp_streaming_action.trim()) {
+          if (
+            formData.provider_type === 'gcp-vertex' &&
+            (formData.gcp_blocking_action.trim() ||
+              formData.gcp_streaming_action.trim())
+          ) {
             params.gcp_vertex_actions = {
               blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
-              streaming: formData.gcp_streaming_action.trim() || 'streamRawPredict',
+              streaming:
+                formData.gcp_streaming_action.trim() || 'streamRawPredict',
             };
           }
           updateData.provider_params = params;
@@ -189,17 +204,27 @@ const Providers: React.FC = () => {
           model_mapping: formData.model_mapping,
         };
 
-        // Include provider_params for GCP Vertex
-        if (formData.provider_type === 'gcp-vertex') {
+        // Include provider_params for GCP Vertex / Gemini
+        if (
+          formData.provider_type === 'gcp-vertex' ||
+          formData.provider_type === 'gemini'
+        ) {
           const params: Record<string, unknown> = {
             gcp_project: formData.gcp_project,
             gcp_location: formData.gcp_location.trim() || 'us-central1',
-            gcp_publisher: formData.gcp_publisher.trim() || 'anthropic',
+            gcp_publisher:
+              formData.gcp_publisher.trim() ||
+              (formData.provider_type === 'gemini' ? 'google' : 'anthropic'),
           };
-          if (formData.gcp_blocking_action.trim() || formData.gcp_streaming_action.trim()) {
+          if (
+            formData.provider_type === 'gcp-vertex' &&
+            (formData.gcp_blocking_action.trim() ||
+              formData.gcp_streaming_action.trim())
+          ) {
             params.gcp_vertex_actions = {
               blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
-              streaming: formData.gcp_streaming_action.trim() || 'streamRawPredict',
+              streaming:
+                formData.gcp_streaming_action.trim() || 'streamRawPredict',
             };
           }
           createData.provider_params = params;
@@ -400,6 +425,7 @@ const Providers: React.FC = () => {
                     <option value="azure">Azure OpenAI</option>
                     <option value="anthropic">Anthropic</option>
                     <option value="google">Google</option>
+                    <option value="gemini">Gemini</option>
                     <option value="gcp-vertex">GCP Vertex AI</option>
                     <option value="response_api">Response API</option>
                     <option value="custom">Custom</option>
@@ -420,7 +446,8 @@ const Providers: React.FC = () => {
                   }
                   className="input"
                   placeholder={
-                    formData.provider_type === 'gcp-vertex'
+                    formData.provider_type === 'gcp-vertex' ||
+                    formData.provider_type === 'gemini'
                       ? 'https://us-central1-aiplatform.googleapis.com'
                       : 'https://api.openai.com/v1'
                   }
@@ -428,123 +455,134 @@ const Providers: React.FC = () => {
                 />
               </div>
 
-              {/* GCP Vertex AI specific fields */}
-              {formData.provider_type === 'gcp-vertex' && (
+              {/* GCP Vertex AI / Gemini specific fields */}
+              {(formData.provider_type === 'gcp-vertex' ||
+                formData.provider_type === 'gemini') && (
                 <div className="space-y-3 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label htmlFor="gcp_project" className="label">
-                      GCP Project ID <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      id="gcp_project"
-                      type="text"
-                      value={formData.gcp_project}
-                      onChange={e =>
-                        setFormData(prev => ({
-                          ...prev,
-                          gcp_project: e.target.value,
-                        }))
-                      }
-                      className="input"
-                      placeholder="my-project-id"
-                      required
-                    />
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      Your GCP project identifier
-                    </p>
+                    <div>
+                      <label htmlFor="gcp_project" className="label">
+                        GCP Project ID <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        id="gcp_project"
+                        type="text"
+                        value={formData.gcp_project}
+                        onChange={e =>
+                          setFormData(prev => ({
+                            ...prev,
+                            gcp_project: e.target.value,
+                          }))
+                        }
+                        className="input"
+                        placeholder="my-project-id"
+                        required
+                      />
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        Your GCP project identifier
+                      </p>
+                    </div>
+
+                    <div>
+                      <label htmlFor="gcp_location" className="label">
+                        GCP Location
+                      </label>
+                      <input
+                        id="gcp_location"
+                        type="text"
+                        value={formData.gcp_location}
+                        onChange={e =>
+                          setFormData(prev => ({
+                            ...prev,
+                            gcp_location: e.target.value,
+                          }))
+                        }
+                        className="input"
+                        placeholder="us-central1"
+                      />
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        Default: us-central1
+                      </p>
+                    </div>
+
+                    <div>
+                      <label htmlFor="gcp_publisher" className="label">
+                        GCP Publisher
+                      </label>
+                      <input
+                        id="gcp_publisher"
+                        type="text"
+                        value={formData.gcp_publisher}
+                        onChange={e =>
+                          setFormData(prev => ({
+                            ...prev,
+                            gcp_publisher: e.target.value,
+                          }))
+                        }
+                        className="input"
+                        placeholder={
+                          formData.provider_type === 'gemini'
+                            ? 'google'
+                            : 'anthropic'
+                        }
+                      />
+                      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        Default:{' '}
+                        {formData.provider_type === 'gemini'
+                          ? 'google'
+                          : 'anthropic'}
+                      </p>
+                    </div>
                   </div>
 
-                  <div>
-                    <label htmlFor="gcp_location" className="label">
-                      GCP Location
-                    </label>
-                    <input
-                      id="gcp_location"
-                      type="text"
-                      value={formData.gcp_location}
-                      onChange={e =>
-                        setFormData(prev => ({
-                          ...prev,
-                          gcp_location: e.target.value,
-                        }))
-                      }
-                      className="input"
-                      placeholder="us-central1"
-                    />
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      Default: us-central1
-                    </p>
-                  </div>
+                  {formData.provider_type === 'gcp-vertex' && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label htmlFor="gcp_blocking_action" className="label">
+                          Blocking Action
+                        </label>
+                        <input
+                          id="gcp_blocking_action"
+                          type="text"
+                          value={formData.gcp_blocking_action}
+                          onChange={e =>
+                            setFormData(prev => ({
+                              ...prev,
+                              gcp_blocking_action: e.target.value,
+                            }))
+                          }
+                          className="input"
+                          placeholder="rawPredict"
+                        />
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          Default: rawPredict (Gemini: generateContent)
+                        </p>
+                      </div>
 
-                  <div>
-                    <label htmlFor="gcp_publisher" className="label">
-                      GCP Publisher
-                    </label>
-                    <input
-                      id="gcp_publisher"
-                      type="text"
-                      value={formData.gcp_publisher}
-                      onChange={e =>
-                        setFormData(prev => ({
-                          ...prev,
-                          gcp_publisher: e.target.value,
-                        }))
-                      }
-                      className="input"
-                      placeholder="anthropic"
-                    />
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      Default: anthropic
-                    </p>
-                  </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="gcp_blocking_action" className="label">
-                      Blocking Action
-                    </label>
-                    <input
-                      id="gcp_blocking_action"
-                      type="text"
-                      value={formData.gcp_blocking_action}
-                      onChange={e =>
-                        setFormData(prev => ({
-                          ...prev,
-                          gcp_blocking_action: e.target.value,
-                        }))
-                      }
-                      className="input"
-                      placeholder="rawPredict"
-                    />
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      Default: rawPredict (Gemini: generateContent)
-                    </p>
-                  </div>
-
-                  <div>
-                    <label htmlFor="gcp_streaming_action" className="label">
-                      Streaming Action
-                    </label>
-                    <input
-                      id="gcp_streaming_action"
-                      type="text"
-                      value={formData.gcp_streaming_action}
-                      onChange={e =>
-                        setFormData(prev => ({
-                          ...prev,
-                          gcp_streaming_action: e.target.value,
-                        }))
-                      }
-                      className="input"
-                      placeholder="streamRawPredict"
-                    />
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      Default: streamRawPredict (Gemini: streamGenerateContent)
-                    </p>
-                  </div>
-                  </div>
+                      <div>
+                        <label htmlFor="gcp_streaming_action" className="label">
+                          Streaming Action
+                        </label>
+                        <input
+                          id="gcp_streaming_action"
+                          type="text"
+                          value={formData.gcp_streaming_action}
+                          onChange={e =>
+                            setFormData(prev => ({
+                              ...prev,
+                              gcp_streaming_action: e.target.value,
+                            }))
+                          }
+                          className="input"
+                          placeholder="streamRawPredict"
+                        />
+                        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                          Default: streamRawPredict (Gemini:
+                          streamGenerateContent)
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

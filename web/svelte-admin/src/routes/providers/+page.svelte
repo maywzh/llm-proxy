@@ -119,8 +119,12 @@
       gcp_project: (provider.provider_params?.gcp_project as string) || '',
       gcp_location: (provider.provider_params?.gcp_location as string) || '',
       gcp_publisher: (provider.provider_params?.gcp_publisher as string) || '',
-      gcp_blocking_action: ((provider.provider_params?.gcp_vertex_actions as Record<string, string>)?.blocking) || '',
-      gcp_streaming_action: ((provider.provider_params?.gcp_vertex_actions as Record<string, string>)?.streaming) || '',
+      gcp_blocking_action:
+        (provider.provider_params?.gcp_vertex_actions as Record<string, string>)
+          ?.blocking || '',
+      gcp_streaming_action:
+        (provider.provider_params?.gcp_vertex_actions as Record<string, string>)
+          ?.streaming || '',
     };
     modelMappingError = null;
     showCreateForm = true;
@@ -129,14 +133,16 @@
   async function handleSubmit() {
     if (modelMappingError) return;
 
-    // Validate gcp_project is required when provider_type is gcp-vertex
+    // Validate gcp_project is required when provider_type is gcp-vertex or gemini
     if (
-      formData.provider_type === 'gcp-vertex' &&
+      (formData.provider_type === 'gcp-vertex' ||
+        formData.provider_type === 'gemini') &&
       !formData.gcp_project.trim()
     ) {
       errors.update(state => ({
         ...state,
-        providers: 'GCP Project ID is required for GCP Vertex provider',
+        providers:
+          'GCP Project ID is required for GCP Vertex / Gemini provider',
       }));
       return;
     }
@@ -155,17 +161,27 @@
         updateData.api_key = formData.api_key;
       }
 
-      // Include provider_params for GCP Vertex
-      if (formData.provider_type === 'gcp-vertex') {
+      // Include provider_params for GCP Vertex / Gemini
+      if (
+        formData.provider_type === 'gcp-vertex' ||
+        formData.provider_type === 'gemini'
+      ) {
         const params: Record<string, unknown> = {
           gcp_project: formData.gcp_project,
           gcp_location: formData.gcp_location.trim() || 'us-central1',
-          gcp_publisher: formData.gcp_publisher.trim() || 'anthropic',
+          gcp_publisher:
+            formData.gcp_publisher.trim() ||
+            (formData.provider_type === 'gemini' ? 'google' : 'anthropic'),
         };
-        if (formData.gcp_blocking_action.trim() || formData.gcp_streaming_action.trim()) {
+        if (
+          formData.provider_type === 'gcp-vertex' &&
+          (formData.gcp_blocking_action.trim() ||
+            formData.gcp_streaming_action.trim())
+        ) {
           params.gcp_vertex_actions = {
             blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
-            streaming: formData.gcp_streaming_action.trim() || 'streamRawPredict',
+            streaming:
+              formData.gcp_streaming_action.trim() || 'streamRawPredict',
           };
         }
         updateData.provider_params = params;
@@ -362,6 +378,7 @@
                 <option value="azure">Azure OpenAI</option>
                 <option value="anthropic">Anthropic</option>
                 <option value="google">Google</option>
+                <option value="gemini">Gemini</option>
                 <option value="gcp-vertex">GCP Vertex AI</option>
                 <option value="response_api">Response API</option>
                 <option value="custom">Custom</option>
@@ -376,94 +393,107 @@
               type="url"
               bind:value={formData.api_base}
               class="input"
-              placeholder={formData.provider_type === 'gcp-vertex'
+              placeholder={formData.provider_type === 'gcp-vertex' ||
+              formData.provider_type === 'gemini'
                 ? 'https://us-central1-aiplatform.googleapis.com'
                 : 'https://api.openai.com/v1'}
               required
             />
           </div>
 
-          <!-- GCP Vertex AI specific fields -->
-          {#if formData.provider_type === 'gcp-vertex'}
+          <!-- GCP Vertex AI / Gemini specific fields -->
+          {#if formData.provider_type === 'gcp-vertex' || formData.provider_type === 'gemini'}
             <div
               class="space-y-3 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700"
             >
               <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label for="gcp_project" class="label">
-                  GCP Project ID <span class="text-red-500">*</span>
-                </label>
-                <input
-                  id="gcp_project"
-                  type="text"
-                  bind:value={formData.gcp_project}
-                  class="input"
-                  placeholder="my-project-id"
-                  required
-                />
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  Your GCP project identifier
-                </p>
+                <div>
+                  <label for="gcp_project" class="label">
+                    GCP Project ID <span class="text-red-500">*</span>
+                  </label>
+                  <input
+                    id="gcp_project"
+                    type="text"
+                    bind:value={formData.gcp_project}
+                    class="input"
+                    placeholder="my-project-id"
+                    required
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Your GCP project identifier
+                  </p>
+                </div>
+
+                <div>
+                  <label for="gcp_location" class="label"> GCP Location </label>
+                  <input
+                    id="gcp_location"
+                    type="text"
+                    bind:value={formData.gcp_location}
+                    class="input"
+                    placeholder="us-central1"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Default: us-central1
+                  </p>
+                </div>
+
+                <div>
+                  <label for="gcp_publisher" class="label">
+                    GCP Publisher
+                  </label>
+                  <input
+                    id="gcp_publisher"
+                    type="text"
+                    bind:value={formData.gcp_publisher}
+                    class="input"
+                    placeholder={formData.provider_type === 'gemini'
+                      ? 'google'
+                      : 'anthropic'}
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Default: {formData.provider_type === 'gemini'
+                      ? 'google'
+                      : 'anthropic'}
+                  </p>
+                </div>
               </div>
 
-              <div>
-                <label for="gcp_location" class="label"> GCP Location </label>
-                <input
-                  id="gcp_location"
-                  type="text"
-                  bind:value={formData.gcp_location}
-                  class="input"
-                  placeholder="us-central1"
-                />
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  Default: us-central1
-                </p>
-              </div>
+              {#if formData.provider_type === 'gcp-vertex'}
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label for="gcp_blocking_action" class="label">
+                      Blocking Action
+                    </label>
+                    <input
+                      id="gcp_blocking_action"
+                      type="text"
+                      bind:value={formData.gcp_blocking_action}
+                      class="input"
+                      placeholder="rawPredict"
+                    />
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Default: rawPredict (Gemini: generateContent)
+                    </p>
+                  </div>
 
-              <div>
-                <label for="gcp_publisher" class="label"> GCP Publisher </label>
-                <input
-                  id="gcp_publisher"
-                  type="text"
-                  bind:value={formData.gcp_publisher}
-                  class="input"
-                  placeholder="anthropic"
-                />
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  Default: anthropic
-                </p>
-              </div>
-              </div>
-
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label for="gcp_blocking_action" class="label"> Blocking Action </label>
-                <input
-                  id="gcp_blocking_action"
-                  type="text"
-                  bind:value={formData.gcp_blocking_action}
-                  class="input"
-                  placeholder="rawPredict"
-                />
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  Default: rawPredict (Gemini: generateContent)
-                </p>
-              </div>
-
-              <div>
-                <label for="gcp_streaming_action" class="label"> Streaming Action </label>
-                <input
-                  id="gcp_streaming_action"
-                  type="text"
-                  bind:value={formData.gcp_streaming_action}
-                  class="input"
-                  placeholder="streamRawPredict"
-                />
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  Default: streamRawPredict (Gemini: streamGenerateContent)
-                </p>
-              </div>
-              </div>
+                  <div>
+                    <label for="gcp_streaming_action" class="label">
+                      Streaming Action
+                    </label>
+                    <input
+                      id="gcp_streaming_action"
+                      type="text"
+                      bind:value={formData.gcp_streaming_action}
+                      class="input"
+                      placeholder="streamRawPredict"
+                    />
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Default: streamRawPredict (Gemini: streamGenerateContent)
+                    </p>
+                  </div>
+                </div>
+              {/if}
             </div>
           {/if}
 

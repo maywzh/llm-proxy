@@ -482,6 +482,7 @@ impl Transformer for PassthroughTransformer {
             Protocol::Anthropic => "/v1/messages",
             Protocol::ResponseApi => "/v1/responses",
             Protocol::GcpVertex => "/v1/messages", // GCP Vertex uses Anthropic format
+            Protocol::Gemini => "/v1/projects",    // Gemini uses dynamic endpoints
         }
     }
 

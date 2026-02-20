@@ -10,6 +10,7 @@ const PROVIDER_COLORS: Record<string, string> = {
   openai: '#412991',
   anthropic: '#D97757',
   google: '#4285F4',
+  gemini: '#4285F4',
   azure: '#0078D4',
   'gcp-vertex': '#4285F4',
   response_api: '#10B981',
@@ -25,6 +26,7 @@ function normalizeProviderType(providerType: string): string {
   if (t === 'azure') return 'azure';
   if (t === 'gcp-vertex' || t === 'gcp_vertex' || t === 'vertex')
     return 'gcp-vertex';
+  if (t === 'gemini' || t === 'gcp-gemini') return 'gemini';
   if (t === 'google') return 'google';
   if (t === 'response_api' || t === 'response-api' || t === 'responses')
     return 'response_api';
@@ -115,6 +117,15 @@ const ProviderIcon: React.FC<ProviderIconProps> = ({
           <path d="M12 3L2 9l10 6 10-6-10-6z" fill="#4285F4" />
           <path d="M2 9v6l10 6V15L2 9z" fill="#34A853" />
           <path d="M22 9v6l-10 6V15l10-6z" fill="#FBBC05" />
+        </svg>
+      );
+    case 'gemini':
+      return (
+        <svg className={className} viewBox="0 0 24 24" fill="none">
+          <path
+            d="M12 0C12 6.627 6.627 12 0 12c6.627 0 12 5.373 12 12 0-6.627 5.373-12 12-12-6.627 0-12-5.373-12-12z"
+            fill="#4285F4"
+          />
         </svg>
       );
     case 'response_api':

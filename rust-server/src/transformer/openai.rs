@@ -27,6 +27,10 @@ pub struct OpenAIMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_blocks: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_specific_fields: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<OpenAIToolCall>>,
@@ -67,6 +71,8 @@ pub struct OpenAIToolCall {
     #[serde(rename = "type")]
     pub call_type: String,
     pub function: OpenAIFunctionCall,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_specific_fields: Option<Value>,
 }
 
 /// OpenAI function call structure.
@@ -178,6 +184,10 @@ pub struct OpenAIDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_blocks: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_specific_fields: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<OpenAIDeltaToolCall>>,
 }
 
@@ -252,6 +262,7 @@ impl OpenAITransformer {
             None => vec![],
         };
 
+        let mut tc_signatures: Vec<String> = Vec::new();
         let tool_calls = msg
             .tool_calls
             .as_ref()
@@ -261,8 +272,27 @@ impl OpenAITransformer {
                     .map(|tc| {
                         let arguments: Value =
                             serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
+                        // Extract thought_signature from tool_call provider_specific_fields
+                        if let Some(ref psf) = tc.provider_specific_fields {
+                            if let Some(sig) = psf.get("thought_signature").and_then(|s| s.as_str())
+                            {
+                                tc_signatures.push(sig.to_string());
+                            }
+                        }
+                        // Strip __thought__ signature from tool_call_id if present
+                        let id = if let Some((base, sig)) = tc
+                            .id
+                            .split_once(crate::api::gemini3::THOUGHT_SIGNATURE_SEPARATOR)
+                        {
+                            if !sig.is_empty() && !tc_signatures.iter().any(|s| s == sig) {
+                                tc_signatures.push(sig.to_string());
+                            }
+                            base.to_string()
+                        } else {
+                            tc.id.clone()
+                        };
                         UnifiedToolCall {
-                            id: tc.id.clone(),
+                            id,
                             name: tc.function.name.clone(),
                             arguments,
                         }
@@ -271,12 +301,75 @@ impl OpenAITransformer {
             })
             .unwrap_or_default();
 
+        // Add reasoning_content as Thinking content if present
+        let mut content = content;
+        if let Some(ref reasoning) = msg.reasoning_content {
+            if !reasoning.is_empty() {
+                content.insert(0, UnifiedContent::thinking(reasoning, None));
+            }
+        }
+        // Parse thinking_blocks for structured thinking content with signatures
+        if let Some(ref blocks) = msg.thinking_blocks {
+            for block in blocks {
+                if block.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                    let text = block.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
+                    let sig = block
+                        .get("signature")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string());
+                    if sig.is_some() && !text.is_empty() {
+                        // thinking_blocks with both text+sig: add thinking then signature
+                        content.insert(0, UnifiedContent::thinking(text, None));
+                        content.push(UnifiedContent::thinking("", sig));
+                    } else if sig.is_some() {
+                        // Signature-only block
+                        content.push(UnifiedContent::thinking("", sig));
+                    }
+                    // text-only blocks already covered by reasoning_content above
+                }
+            }
+        }
+        // Parse provider_specific_fields.thought_signatures as signature-only blocks
+        // (fallback if no thinking_blocks with signatures)
+        let has_signature = content.iter().any(|c| matches!(c, UnifiedContent::Thinking { text, signature } if text.is_empty() && signature.is_some()));
+        if !has_signature {
+            if let Some(ref psf) = msg.provider_specific_fields {
+                if let Some(sigs) = psf.get("thought_signatures").and_then(|s| s.as_array()) {
+                    for sig_val in sigs {
+                        if let Some(sig) = sig_val.as_str() {
+                            content.push(UnifiedContent::thinking("", Some(sig.to_string())));
+                        }
+                    }
+                }
+            }
+        }
+        // Extract signatures from tool_call_ids (__thought__ encoding)
+        // and tool_call provider_specific_fields.thought_signature as final fallback
+        let has_signature_now = content.iter().any(|c| matches!(c, UnifiedContent::Thinking { text, signature } if text.is_empty() && signature.is_some()));
+        if !has_signature_now {
+            for sig in &tc_signatures {
+                content.push(UnifiedContent::thinking("", Some(sig.clone())));
+            }
+        }
+
+        // Strip __thought__ from tool_call_id if present (tool result messages)
+        let tool_call_id = msg.tool_call_id.as_ref().map(|id| {
+            if id.contains(crate::api::gemini3::THOUGHT_SIGNATURE_SEPARATOR) {
+                id.split(crate::api::gemini3::THOUGHT_SIGNATURE_SEPARATOR)
+                    .next()
+                    .unwrap_or(id)
+                    .to_string()
+            } else {
+                id.clone()
+            }
+        });
+
         Ok(UnifiedMessage {
             role,
             content,
             name: msg.name.clone(),
             tool_calls,
-            tool_call_id: msg.tool_call_id.clone(),
+            tool_call_id,
         })
     }
 
@@ -323,6 +416,7 @@ impl OpenAITransformer {
                             name: tc.name.clone(),
                             arguments: serde_json::to_string(&tc.arguments).unwrap_or_default(),
                         },
+                        provider_specific_fields: None,
                     })
                     .collect(),
             )
@@ -332,6 +426,8 @@ impl OpenAITransformer {
             role,
             content,
             reasoning_content: None,
+            thinking_blocks: None,
+            provider_specific_fields: None,
             name: msg.name.clone(),
             tool_calls,
             tool_call_id: msg.tool_call_id.clone(),
@@ -536,6 +632,8 @@ impl Transformer for OpenAITransformer {
                 role: "system".to_string(),
                 content: Some(OpenAIContent::Text(system.clone())),
                 reasoning_content: None,
+                thinking_blocks: None,
+                provider_specific_fields: None,
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -570,6 +668,8 @@ impl Transformer for OpenAITransformer {
                             role: "tool".to_string(),
                             content: Some(OpenAIContent::Text(content_str)),
                             reasoning_content: None,
+                            thinking_blocks: None,
+                            provider_specific_fields: None,
                             name: None,
                             tool_calls: None,
                             tool_call_id: Some(tool_use_id.clone()),
@@ -590,6 +690,8 @@ impl Transformer for OpenAITransformer {
                         role: "user".to_string(),
                         content: Some(OpenAIContent::Parts(non_tool_parts)),
                         reasoning_content: None,
+                        thinking_blocks: None,
+                        provider_specific_fields: None,
                         name: msg.name.clone(),
                         tool_calls: None,
                         tool_call_id: None,
@@ -696,41 +798,9 @@ impl Transformer for OpenAITransformer {
             .first()
             .ok_or_else(|| AppError::BadRequest("No choices in response".to_string()))?;
 
-        // Convert message content
-        let content = match &choice.message.content {
-            Some(OpenAIContent::Text(text)) => vec![UnifiedContent::text(text)],
-            Some(OpenAIContent::Parts(parts)) => parts
-                .iter()
-                .map(|p| match p {
-                    OpenAIContentPart::Text { text } => UnifiedContent::text(text),
-                    OpenAIContentPart::ImageUrl { image_url } => {
-                        UnifiedContent::image_url(&image_url.url)
-                    }
-                })
-                .collect(),
-            None => vec![],
-        };
-
-        // Convert tool calls
-        let tool_calls: Vec<UnifiedToolCall> = choice
-            .message
-            .tool_calls
-            .as_ref()
-            .map(|calls| {
-                calls
-                    .iter()
-                    .map(|tc| {
-                        let arguments: Value =
-                            serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
-                        UnifiedToolCall {
-                            id: tc.id.clone(),
-                            name: tc.function.name.clone(),
-                            arguments,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Reuse message_to_unified to parse content, thinking_blocks,
+        // provider_specific_fields, and tool calls consistently
+        let unified_msg = Self::message_to_unified(&choice.message)?;
 
         let stop_reason = choice
             .finish_reason
@@ -745,10 +815,10 @@ impl Transformer for OpenAITransformer {
         Ok(UnifiedResponse {
             id: response.id,
             model: original_model.to_string(),
-            content,
+            content: unified_msg.content,
             stop_reason,
             usage,
-            tool_calls,
+            tool_calls: unified_msg.tool_calls,
         })
     }
 
@@ -760,26 +830,59 @@ impl Transformer for OpenAITransformer {
         // Convert content to OpenAI format - separate text and thinking content
         let mut text_parts: Vec<OpenAIContentPart> = Vec::new();
         let mut reasoning_content: Option<String> = None;
+        let mut thinking_blocks: Vec<Value> = Vec::new();
+        let mut thought_signatures: Vec<String> = Vec::new();
 
         for c in &unified.content {
             match c {
                 UnifiedContent::Text { text } => {
                     text_parts.push(OpenAIContentPart::Text { text: text.clone() });
                 }
-                UnifiedContent::Thinking { text, .. } => {
-                    // Collect thinking content for reasoning_content field
-                    match &mut reasoning_content {
-                        Some(existing) => {
-                            existing.push_str(text);
+                UnifiedContent::Thinking { text, signature } => {
+                    if text.is_empty() && signature.is_some() {
+                        // Signature-only block — collect for thinking_blocks and provider_specific_fields
+                        let sig = signature.as_ref().unwrap();
+                        thought_signatures.push(sig.clone());
+                        // If there's already a thinking block without signature, attach to it
+                        if let Some(last_block) = thinking_blocks.last_mut() {
+                            if last_block.get("signature").is_none() {
+                                last_block["signature"] = json!(sig);
+                            }
                         }
-                        None => {
-                            reasoning_content = Some(text.clone());
+                    } else {
+                        // Collect thinking content for reasoning_content field
+                        match &mut reasoning_content {
+                            Some(existing) => {
+                                existing.push_str(text);
+                            }
+                            None => {
+                                reasoning_content = Some(text.clone());
+                            }
                         }
+                        // Also add to thinking_blocks
+                        thinking_blocks.push(json!({
+                            "type": "thinking",
+                            "thinking": text,
+                        }));
                     }
                 }
                 _ => {}
             }
         }
+
+        // Build provider_specific_fields with thought_signatures
+        let provider_specific_fields = if !thought_signatures.is_empty() {
+            Some(json!({ "thought_signatures": thought_signatures }))
+        } else {
+            None
+        };
+
+        // Only include thinking_blocks if non-empty
+        let thinking_blocks_opt = if thinking_blocks.is_empty() {
+            None
+        } else {
+            Some(thinking_blocks)
+        };
 
         // Build content field
         let content = if text_parts.is_empty() {
@@ -794,21 +897,40 @@ impl Transformer for OpenAITransformer {
             Some(OpenAIContent::Parts(text_parts))
         };
 
-        // Convert tool calls
+        // Convert tool calls — encode thought_signatures into tool_call_id
+        // and set provider_specific_fields.thought_signature on each tool call
         let tool_calls: Option<Vec<OpenAIToolCall>> = if unified.tool_calls.is_empty() {
             None
         } else {
+            // Collect the last signature to encode into all tool call IDs (litellm compat)
+            let last_sig = thought_signatures.last().cloned();
             Some(
                 unified
                     .tool_calls
                     .iter()
-                    .map(|tc| OpenAIToolCall {
-                        id: tc.id.clone(),
-                        call_type: "function".to_string(),
-                        function: OpenAIFunctionCall {
-                            name: tc.name.clone(),
-                            arguments: serde_json::to_string(&tc.arguments).unwrap_or_default(),
-                        },
+                    .map(|tc| {
+                        let (id, psf) = if let Some(ref sig) = last_sig {
+                            (
+                                format!(
+                                    "{}{}{}",
+                                    tc.id,
+                                    crate::api::gemini3::THOUGHT_SIGNATURE_SEPARATOR,
+                                    sig
+                                ),
+                                Some(json!({ "thought_signature": sig })),
+                            )
+                        } else {
+                            (tc.id.clone(), None)
+                        };
+                        OpenAIToolCall {
+                            id,
+                            call_type: "function".to_string(),
+                            function: OpenAIFunctionCall {
+                                name: tc.name.clone(),
+                                arguments: serde_json::to_string(&tc.arguments).unwrap_or_default(),
+                            },
+                            provider_specific_fields: psf,
+                        }
                     })
                     .collect(),
             )
@@ -830,6 +952,8 @@ impl Transformer for OpenAITransformer {
                     role: "assistant".to_string(),
                     content,
                     reasoning_content,
+                    thinking_blocks: thinking_blocks_opt,
+                    provider_specific_fields,
                     name: None,
                     tool_calls,
                     tool_call_id: None,
@@ -878,6 +1002,55 @@ impl Transformer for OpenAITransformer {
                             0, // Text content is always index 0
                             UnifiedContent::text(content),
                         ));
+                    }
+
+                    // Handle reasoning_content delta (thinking content)
+                    if let Some(ref reasoning) = choice.delta.reasoning_content {
+                        chunks.push(UnifiedStreamChunk::content_block_delta(
+                            0,
+                            UnifiedContent::thinking(reasoning, None),
+                        ));
+                    }
+
+                    // Handle thinking_blocks delta (structured thinking with signatures)
+                    if let Some(ref blocks) = choice.delta.thinking_blocks {
+                        for block in blocks {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                                let text =
+                                    block.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
+                                let sig = block
+                                    .get("signature")
+                                    .and_then(|s| s.as_str())
+                                    .map(|s| s.to_string());
+                                if !text.is_empty() {
+                                    chunks.push(UnifiedStreamChunk::content_block_delta(
+                                        0,
+                                        UnifiedContent::thinking(text, None),
+                                    ));
+                                }
+                                if let Some(s) = sig {
+                                    chunks.push(UnifiedStreamChunk::content_block_delta(
+                                        0,
+                                        UnifiedContent::thinking("", Some(s)),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
+                    // Handle provider_specific_fields.thought_signatures delta
+                    if let Some(ref psf) = choice.delta.provider_specific_fields {
+                        if let Some(sigs) = psf.get("thought_signatures").and_then(|s| s.as_array())
+                        {
+                            for sig_val in sigs {
+                                if let Some(sig) = sig_val.as_str() {
+                                    chunks.push(UnifiedStreamChunk::content_block_delta(
+                                        0,
+                                        UnifiedContent::thinking("", Some(sig.to_string())),
+                                    ));
+                                }
+                            }
+                        }
                     }
 
                     // Handle tool_calls delta (streaming tool use)
@@ -1013,8 +1186,28 @@ impl Transformer for OpenAITransformer {
                             });
                             return Ok(format!("data: {}\n\n", openai_chunk));
                         }
-                        UnifiedContent::Thinking { text, .. } => {
-                            // Output thinking content as reasoning_content for OpenAI-compatible APIs
+                        UnifiedContent::Thinking { text, signature } => {
+                            if text.is_empty() && signature.is_some() {
+                                // Signature-only: output as thinking_blocks with signature + provider_specific_fields
+                                let sig = signature.as_ref().unwrap();
+                                let openai_chunk = json!({
+                                    "id": "chatcmpl-stream",
+                                    "object": "chat.completion.chunk",
+                                    "created": chrono::Utc::now().timestamp(),
+                                    "model": "model",
+                                    "choices": [{
+                                        "index": chunk.index,
+                                        "delta": {
+                                            "provider_specific_fields": {
+                                                "thought_signatures": [sig]
+                                            }
+                                        },
+                                        "finish_reason": null
+                                    }]
+                                });
+                                return Ok(format!("data: {}\n\n", openai_chunk));
+                            }
+                            // Regular thinking content as reasoning_content
                             let openai_chunk = json!({
                                 "id": "chatcmpl-stream",
                                 "object": "chat.completion.chunk",
