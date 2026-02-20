@@ -721,10 +721,65 @@ class GeminiTransformer(Transformer):
     # =========================================================================
 
     @staticmethod
+    def _sanitize_schema_for_gemini(schema: Any) -> Any:
+        """Recursively clean JSON Schema to be Gemini-compatible.
+
+        Gemini functionDeclarations.parameters uses OpenAPI schema,
+        which does not support: $schema, type-as-array, additionalProperties (bool).
+        """
+        if not isinstance(schema, dict):
+            return schema
+
+        result: dict[str, Any] = {}
+        for key, value in schema.items():
+            # Remove unsupported top-level keys
+            if key in ("$schema", "additionalProperties"):
+                continue
+
+            if key == "type" and isinstance(value, list):
+                # ["string", "null"] → type: "string", nullable: true
+                non_null = [t for t in value if t != "null"]
+                if non_null:
+                    result["type"] = non_null[0]
+                else:
+                    result["type"] = "string"
+                if "null" in value:
+                    result["nullable"] = True
+            elif key == "properties" and isinstance(value, dict):
+                result["properties"] = {
+                    k: GeminiTransformer._sanitize_schema_for_gemini(v)
+                    for k, v in value.items()
+                }
+            elif key == "items" and isinstance(value, dict):
+                result["items"] = GeminiTransformer._sanitize_schema_for_gemini(value)
+            elif key == "anyOf" and isinstance(value, list):
+                # anyOf with null → extract non-null type, set nullable
+                non_null = [
+                    v
+                    for v in value
+                    if v != {"type": "null"} and v.get("type") != "null"
+                ]
+                if len(non_null) == 1 and len(value) > len(non_null):
+                    sanitized = GeminiTransformer._sanitize_schema_for_gemini(
+                        non_null[0]
+                    )
+                    sanitized["nullable"] = True
+                    return sanitized
+                result[key] = [
+                    GeminiTransformer._sanitize_schema_for_gemini(v) for v in value
+                ]
+            else:
+                result[key] = value
+
+        return result
+
+    @staticmethod
     def _unified_tool_to_gemini(tool: UnifiedTool) -> dict[str, Any]:
         decl: dict[str, Any] = {
             "name": tool.name,
-            "parameters": tool.input_schema,
+            "parameters": GeminiTransformer._sanitize_schema_for_gemini(
+                tool.input_schema
+            ),
         }
         if tool.description:
             decl["description"] = tool.description
