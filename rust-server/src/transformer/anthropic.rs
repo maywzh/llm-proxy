@@ -447,24 +447,37 @@ impl AnthropicTransformer {
             }
         }
 
+        // Deduplicate tool_use blocks by id when converting content.
+        // Clients (e.g. claude-code) can occasionally send the same tool_use id
+        // twice in a single message's content array (e.g. due to stream replay),
+        // which Anthropic-compatible providers reject with a 400 error.
+        let content_blocks: Vec<AnthropicContentBlock> = {
+            let mut seen_tool_use_ids = std::collections::HashSet::new();
+            msg.content
+                .iter()
+                .filter_map(|c| {
+                    if let UnifiedContent::ToolUse { id, .. } = c {
+                        if !seen_tool_use_ids.insert(id.clone()) {
+                            tracing::warn!(
+                                tool_use_id = %id,
+                                "Dropping duplicate tool_use id in message content"
+                            );
+                            return None;
+                        }
+                    }
+                    Self::unified_to_content_block(c)
+                })
+                .collect()
+        };
+
         let content = if msg.content.len() == 1 {
             if let Some(text) = msg.content[0].as_text() {
                 AnthropicContent::Text(text.to_string())
             } else {
-                AnthropicContent::Blocks(
-                    msg.content
-                        .iter()
-                        .filter_map(Self::unified_to_content_block)
-                        .collect(),
-                )
+                AnthropicContent::Blocks(content_blocks)
             }
         } else {
-            AnthropicContent::Blocks(
-                msg.content
-                    .iter()
-                    .filter_map(Self::unified_to_content_block)
-                    .collect(),
-            )
+            AnthropicContent::Blocks(content_blocks)
         };
 
         // Append tool_calls as tool_use content blocks for assistant messages.
@@ -2240,5 +2253,184 @@ mod tests {
         let text = "normal text without billing header";
         let result = strip_billing_header(text);
         assert_eq!(result, text);
+    }
+
+    #[test]
+    fn test_unified_to_message_deduplicates_duplicate_tool_use_in_content() {
+        // Regression test: client (e.g. claude-code) may send the same tool_use id
+        // twice in a single message content array. proxy must deduplicate before
+        // forwarding to the provider, or Anthropic-compatible APIs reject with 400.
+        let msg = UnifiedMessage {
+            role: Role::Assistant,
+            content: vec![
+                UnifiedContent::ToolUse {
+                    id: "toolu_abc123".to_string(),
+                    name: "Write".to_string(),
+                    input: json!({"file_path": "/tmp/out.md", "content": "hello"}),
+                },
+                UnifiedContent::ToolUse {
+                    id: "toolu_abc123".to_string(), // same id, duplicate
+                    name: "Write".to_string(),
+                    input: json!({"file_path": "/tmp/out.md", "content": "hello"}),
+                },
+            ],
+            name: None,
+            tool_calls: vec![],
+            tool_call_id: None,
+        };
+
+        let anthropic_msg = AnthropicTransformer::unified_to_message(&msg);
+        if let AnthropicContent::Blocks(blocks) = &anthropic_msg.content {
+            let tool_use_blocks: Vec<_> = blocks
+                .iter()
+                .filter(|b| matches!(b, AnthropicContentBlock::ToolUse { .. }))
+                .collect();
+            assert_eq!(
+                tool_use_blocks.len(),
+                1,
+                "Duplicate tool_use id must be deduplicated: got {} blocks",
+                tool_use_blocks.len()
+            );
+            if let AnthropicContentBlock::ToolUse { id, name, .. } = tool_use_blocks[0] {
+                assert_eq!(id, "toolu_abc123");
+                assert_eq!(name, "Write");
+            }
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_unified_to_message_deduplicates_mixed_content_with_duplicate_tool_use() {
+        // Text block + 2 duplicate tool_use blocks + 1 unique tool_use block.
+        // After dedup: text + 1 unique tool_use (first of each id wins).
+        let msg = UnifiedMessage {
+            role: Role::Assistant,
+            content: vec![
+                UnifiedContent::Text {
+                    text: "Calling tools:".to_string(),
+                },
+                UnifiedContent::ToolUse {
+                    id: "toolu_dup".to_string(),
+                    name: "Read".to_string(),
+                    input: json!({"path": "/a"}),
+                },
+                UnifiedContent::ToolUse {
+                    id: "toolu_dup".to_string(), // duplicate
+                    name: "Read".to_string(),
+                    input: json!({"path": "/a"}),
+                },
+                UnifiedContent::ToolUse {
+                    id: "toolu_unique".to_string(),
+                    name: "Write".to_string(),
+                    input: json!({"path": "/b"}),
+                },
+            ],
+            name: None,
+            tool_calls: vec![],
+            tool_call_id: None,
+        };
+
+        let anthropic_msg = AnthropicTransformer::unified_to_message(&msg);
+        if let AnthropicContent::Blocks(blocks) = &anthropic_msg.content {
+            assert_eq!(blocks.len(), 3, "Expected text + 2 unique tool_use blocks");
+
+            let tool_use_ids: Vec<&str> = blocks
+                .iter()
+                .filter_map(|b| {
+                    if let AnthropicContentBlock::ToolUse { id, .. } = b {
+                        Some(id.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(tool_use_ids, vec!["toolu_dup", "toolu_unique"]);
+        } else {
+            panic!("Expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_transform_request_in_deduplicates_duplicate_tool_use_anthropic_to_anthropic() {
+        // End-to-end: Anthropic client sends a request where assistant message has
+        // 2 identical tool_use blocks (simulating claude-code stream replay bug).
+        // After transform_request_out + transform_request_in, only 1 block should remain.
+        let anthropic = AnthropicTransformer::new();
+
+        let raw_request = json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Write a file"
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Sure, writing now:"},
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_vrtx_016LnbABjuH2H7vy4BJwC8eq",
+                            "name": "Write",
+                            "input": {"file_path": "/tmp/out.md", "content": "hello"}
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_vrtx_016LnbABjuH2H7vy4BJwC8eq",
+                            "name": "Write",
+                            "input": {"file_path": "/tmp/out.md", "content": "hello"}
+                        }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_vrtx_016LnbABjuH2H7vy4BJwC8eq",
+                            "content": "ok"
+                        }
+                    ]
+                }
+            ],
+            "tools": [
+                {
+                    "name": "Write",
+                    "description": "Write a file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {"type": "string"},
+                            "content": {"type": "string"}
+                        },
+                        "required": ["file_path", "content"]
+                    }
+                }
+            ]
+        });
+
+        let unified = anthropic.transform_request_out(raw_request).unwrap();
+        let provider_req = anthropic.transform_request_in(&unified).unwrap();
+
+        let messages = provider_req["messages"].as_array().unwrap();
+        let assistant_msg = &messages[1];
+        assert_eq!(assistant_msg["role"], "assistant");
+
+        let content = assistant_msg["content"].as_array().unwrap();
+        let tool_use_blocks: Vec<_> = content.iter().filter(|b| b["type"] == "tool_use").collect();
+
+        assert_eq!(
+            tool_use_blocks.len(),
+            1,
+            "provider request must have exactly 1 tool_use block, got {}: {}",
+            tool_use_blocks.len(),
+            serde_json::to_string_pretty(&assistant_msg["content"]).unwrap()
+        );
+        assert_eq!(
+            tool_use_blocks[0]["id"],
+            "toolu_vrtx_016LnbABjuH2H7vy4BJwC8eq"
+        );
     }
 }
