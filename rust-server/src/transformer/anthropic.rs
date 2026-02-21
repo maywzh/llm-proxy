@@ -560,6 +560,107 @@ impl AnthropicTransformer {
         }
     }
 
+    /// Rename duplicate tool_use ids across all messages by appending a numeric
+    /// suffix (_1, _2, …) to each duplicate occurrence, and update the
+    /// corresponding tool_result blocks to use the same new ids.
+    ///
+    /// Clients (e.g. claude-code) can replay the same tool call more than once in
+    /// a conversation history (stream replay, retry logic). Anthropic-compatible
+    /// providers reject requests where two tool_use blocks share the same id, or
+    /// where a tool_result id is referenced more than once.
+    fn deduplicate_tool_ids(messages: &mut [AnthropicMessage]) {
+        // First pass: collect a mapping of original_id → list of new ids (one per occurrence).
+        // We assign new ids in encounter order; the first occurrence keeps the original id.
+        use std::collections::HashMap;
+
+        // id_occurrences: original_id → number of times seen so far
+        let mut id_occurrences: HashMap<String, usize> = HashMap::new();
+
+        // We need a two-pass strategy:
+        // Pass 1: scan all tool_use blocks to build the remap table.
+        // Pass 2: apply remap to tool_use blocks and then fix tool_result blocks.
+
+        // Build remap table from tool_use occurrences.
+        struct Remap {
+            original: String,
+            new_id: String,
+        }
+        let mut tool_use_remaps: Vec<Remap> = Vec::new();
+
+        for msg in messages.iter() {
+            if let AnthropicContent::Blocks(blocks) = &msg.content {
+                for block in blocks {
+                    if let AnthropicContentBlock::ToolUse { id, .. } = block {
+                        let count = id_occurrences.entry(id.clone()).or_insert(0);
+                        let new_id = if *count == 0 {
+                            id.clone()
+                        } else {
+                            let candidate = format!("{}_{}", id, count);
+                            tracing::warn!(
+                                original_id = %id,
+                                new_id = %candidate,
+                                occurrence = *count,
+                                "Renaming duplicate tool_use id with suffix"
+                            );
+                            candidate
+                        };
+                        tool_use_remaps.push(Remap {
+                            original: id.clone(),
+                            new_id,
+                        });
+                        *count += 1;
+                    }
+                }
+            }
+        }
+
+        // If nothing was duplicated, skip the mutation pass.
+        if id_occurrences.values().all(|&c| c <= 1) {
+            return;
+        }
+
+        // Build per-original-id rename cursor: each original id has a vec of new ids in order.
+        let mut rename_seq: HashMap<String, Vec<String>> = HashMap::new();
+        for r in tool_use_remaps {
+            rename_seq.entry(r.original).or_default().push(r.new_id);
+        }
+        // Cursor to track how far we are through each sequence during the apply pass.
+        let mut rename_cursor: HashMap<String, usize> = HashMap::new();
+
+        // Also build a flat mapping old_id → [new_ids in order] for tool_result lookup.
+        // tool_result blocks reference tool_use ids; we apply the same suffix sequence
+        // so the N-th tool_result for a given id maps to the N-th new tool_use id.
+        let mut result_cursor: HashMap<String, usize> = HashMap::new();
+
+        for msg in messages.iter_mut() {
+            if let AnthropicContent::Blocks(blocks) = &mut msg.content {
+                for block in blocks.iter_mut() {
+                    match block {
+                        AnthropicContentBlock::ToolUse { id, .. } => {
+                            if let Some(seq) = rename_seq.get(id.as_str()) {
+                                let cursor = rename_cursor.entry(id.clone()).or_insert(0);
+                                if let Some(new_id) = seq.get(*cursor) {
+                                    *id = new_id.clone();
+                                }
+                                *cursor += 1;
+                            }
+                        }
+                        AnthropicContentBlock::ToolResult { tool_use_id, .. } => {
+                            if let Some(seq) = rename_seq.get(tool_use_id.as_str()) {
+                                let cursor = result_cursor.entry(tool_use_id.clone()).or_insert(0);
+                                if let Some(new_id) = seq.get(*cursor) {
+                                    *tool_use_id = new_id.clone();
+                                }
+                                *cursor += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
     /// Convert Anthropic stop reason to unified stop reason.
     fn stop_reason_to_unified(reason: &str) -> StopReason {
         match reason {
@@ -677,6 +778,13 @@ impl Transformer for AnthropicTransformer {
         // role:"user" message with a single tool_result block. Anthropic requires
         // all tool_result blocks to be in a single user message.
         messages = Self::consolidate_tool_result_messages(messages);
+
+        // Rename duplicate tool_use / tool_result ids across all messages.
+        // Clients (e.g. claude-code) can send the same tool_use id more than once
+        // in a conversation (e.g. due to stream replay). Anthropic-compatible providers
+        // reject this with 400. Append a numeric suffix (_1, _2, …) to each duplicate
+        // occurrence and update the corresponding tool_result blocks to match.
+        Self::deduplicate_tool_ids(&mut messages);
 
         // Anthropic API requires all messages to have non-empty content,
         // except for the optional final assistant message (prefill).
@@ -2240,5 +2348,174 @@ mod tests {
         let text = "normal text without billing header";
         let result = strip_billing_header(text);
         assert_eq!(result, text);
+    }
+
+    #[test]
+    fn test_deduplicate_tool_ids_renames_duplicate_tool_use_with_suffix() {
+        // Regression: client sends the same tool_use id twice in one assistant message.
+        // Proxy must rename the duplicate to keep ids unique, not drop it.
+        let anthropic = AnthropicTransformer::new();
+
+        let raw = json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Do it"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Writing:"},
+                        {"type": "tool_use", "id": "toolu_abc", "name": "Write",
+                         "input": {"file_path": "/a", "content": "v1"}},
+                        {"type": "tool_use", "id": "toolu_abc", "name": "Write",
+                         "input": {"file_path": "/a", "content": "v2"}}
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_abc", "content": "created"},
+                        {"type": "tool_result", "tool_use_id": "toolu_abc", "content": "updated"}
+                    ]
+                }
+            ],
+            "tools": [{"name": "Write", "description": "Write",
+                        "input_schema": {"type": "object",
+                                         "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}},
+                                         "required": ["file_path", "content"]}}]
+        });
+
+        let unified = anthropic.transform_request_out(raw).unwrap();
+        let provider = anthropic.transform_request_in(&unified).unwrap();
+        let messages = provider["messages"].as_array().unwrap();
+
+        // Assistant message: 2 tool_use blocks, ids must be unique
+        let assistant = &messages[1];
+        let asst_content = assistant["content"].as_array().unwrap();
+        let tool_use_blocks: Vec<_> = asst_content
+            .iter()
+            .filter(|b| b["type"] == "tool_use")
+            .collect();
+        assert_eq!(
+            tool_use_blocks.len(),
+            2,
+            "both tool_use blocks must be kept"
+        );
+        let id0 = tool_use_blocks[0]["id"].as_str().unwrap();
+        let id1 = tool_use_blocks[1]["id"].as_str().unwrap();
+        assert_eq!(id0, "toolu_abc", "first occurrence keeps original id");
+        assert_eq!(id1, "toolu_abc_1", "second occurrence gets _1 suffix");
+
+        // User message: tool_result ids must match their respective tool_use ids
+        let user = &messages[2];
+        let user_content = user["content"].as_array().unwrap();
+        let result_blocks: Vec<_> = user_content
+            .iter()
+            .filter(|b| b["type"] == "tool_result")
+            .collect();
+        assert_eq!(
+            result_blocks.len(),
+            2,
+            "both tool_result blocks must be kept"
+        );
+        let rid0 = result_blocks[0]["tool_use_id"].as_str().unwrap();
+        let rid1 = result_blocks[1]["tool_use_id"].as_str().unwrap();
+        assert_eq!(rid0, "toolu_abc", "first tool_result keeps original id");
+        assert_eq!(
+            rid1, "toolu_abc_1",
+            "second tool_result gets _1 suffix to match tool_use"
+        );
+    }
+
+    #[test]
+    fn test_deduplicate_tool_ids_three_occurrences() {
+        // Three occurrences of the same id → _1, _2 suffixes for duplicates.
+        let anthropic = AnthropicTransformer::new();
+
+        let raw = json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "x"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "F", "input": {}},
+                        {"type": "tool_use", "id": "t1", "name": "F", "input": {}},
+                        {"type": "tool_use", "id": "t1", "name": "F", "input": {}}
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "r0"},
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "r1"},
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "r2"}
+                    ]
+                }
+            ],
+            "tools": [{"name": "F", "description": "f", "input_schema": {"type": "object", "properties": {}}}]
+        });
+
+        let unified = anthropic.transform_request_out(raw).unwrap();
+        let provider = anthropic.transform_request_in(&unified).unwrap();
+        let messages = provider["messages"].as_array().unwrap();
+
+        let asst_content = messages[1]["content"].as_array().unwrap();
+        let tu_ids: Vec<_> = asst_content
+            .iter()
+            .filter(|b| b["type"] == "tool_use")
+            .map(|b| b["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(tu_ids, vec!["t1", "t1_1", "t1_2"]);
+
+        let user_content = messages[2]["content"].as_array().unwrap();
+        let tr_ids: Vec<_> = user_content
+            .iter()
+            .filter(|b| b["type"] == "tool_result")
+            .map(|b| b["tool_use_id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(tr_ids, vec!["t1", "t1_1", "t1_2"]);
+    }
+
+    #[test]
+    fn test_deduplicate_tool_ids_no_duplicates_unchanged() {
+        // When all ids are already unique, nothing should change.
+        let anthropic = AnthropicTransformer::new();
+
+        let raw = json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "x"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "F", "input": {}},
+                        {"type": "tool_use", "id": "t2", "name": "F", "input": {}}
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "r1"},
+                        {"type": "tool_result", "tool_use_id": "t2", "content": "r2"}
+                    ]
+                }
+            ],
+            "tools": [{"name": "F", "description": "f", "input_schema": {"type": "object", "properties": {}}}]
+        });
+
+        let unified = anthropic.transform_request_out(raw).unwrap();
+        let provider = anthropic.transform_request_in(&unified).unwrap();
+        let messages = provider["messages"].as_array().unwrap();
+
+        let asst_content = messages[1]["content"].as_array().unwrap();
+        let tu_ids: Vec<_> = asst_content
+            .iter()
+            .filter(|b| b["type"] == "tool_use")
+            .map(|b| b["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(tu_ids, vec!["t1", "t2"]);
     }
 }
