@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+- **anthropic**: Rename duplicate tool_use/tool_result ids with numeric suffix
+
+### CI
+
+- Add GitHub Actions CI workflow for PRs
+
+### Documentation
+
+- Add Contributor Covenant v2.1 code of conduct
+- Add security policy
+- Add contributing and changelog sections to README
+
+### Refactoring
+
+- **proxy**: Modularize cross-protocol streaming state machine
+
+## [0.0.1] - 2026-02-20
+
+### Bug Fixes
+
 - Improve SSE chunk rewriting and response handling in streaming utilities
 - Add error handling for get_next_provider in benchmarks
 - **react-admin**: Upgrade React to 19.2.3 to fix CVE-2025-55182
