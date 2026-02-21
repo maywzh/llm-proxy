@@ -53,6 +53,8 @@ pub use features::{
 };
 pub use passthrough::{should_bypass, transform_request_bypass, PassthroughTransformer};
 pub use stream::CrossProtocolStreamState;
+pub use stream::SseEvent;
+pub use stream::SseParser;
 pub use unified::provider_type_to_protocol;
 pub use unified::*;
 

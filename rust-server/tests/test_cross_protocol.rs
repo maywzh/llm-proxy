@@ -1181,3 +1181,78 @@ fn test_stop_sequences_preservation() {
     let stop_seqs = anthropic_request["stop_sequences"].as_array().unwrap();
     assert_eq!(stop_seqs.len(), 2);
 }
+
+// ============================================================================
+// SseParser Integration Tests
+// ============================================================================
+
+#[cfg(test)]
+mod sse_parser_integration {
+    use llm_proxy_rust::transformer::SseParser;
+
+    #[test]
+    fn test_sse_parser_handles_fragmented_chunks() {
+        let mut parser = SseParser::new();
+
+        // Simulates TCP fragmentation: event split across two chunks
+        let chunk1 = b"data: {\"type\":\"ping\"}\n";
+        let chunk2 = b"\ndata: {\"type\":\"content_block_delta\"}\n\n";
+
+        let events1 = parser.parse(chunk1);
+        assert!(events1.is_empty(), "incomplete event should yield nothing");
+
+        let events2 = parser.parse(chunk2);
+        assert_eq!(
+            events2.len(),
+            2,
+            "both events should be emitted on second chunk"
+        );
+        assert_eq!(events2[0].data.as_deref(), Some("{\"type\":\"ping\"}"));
+        assert_eq!(
+            events2[1].data.as_deref(),
+            Some("{\"type\":\"content_block_delta\"}")
+        );
+    }
+
+    #[test]
+    fn test_sse_parser_skips_comment_lines() {
+        let mut parser = SseParser::new();
+        let chunk = b": heartbeat\ndata: hello\n\n";
+        let events = parser.parse(chunk);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_sse_parser_done_event() {
+        let mut parser = SseParser::new();
+        let chunk = b"data: [DONE]\n\n";
+        let events = parser.parse(chunk);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data.as_deref(), Some("[DONE]"));
+    }
+
+    #[test]
+    fn test_sse_parser_handles_utf8_fragmented_chunks() {
+        let mut parser = SseParser::new();
+
+        let events1 = parser.parse(b"data: \xE4\xB8");
+        assert!(
+            events1.is_empty(),
+            "incomplete utf8 should wait for next chunk"
+        );
+
+        let events2 = parser.parse(b"\xAD\n\n");
+        assert_eq!(events2.len(), 1);
+        assert_eq!(events2[0].data.as_deref(), Some("中"));
+    }
+
+    #[test]
+    fn test_sse_parser_multiline_data_payload() {
+        let mut parser = SseParser::new();
+        let chunk = b"data: {\"a\":1}\ndata: {\"b\":2}\n\n";
+        let events = parser.parse(chunk);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data.as_deref(), Some("{\"a\":1}\n{\"b\":2}"));
+    }
+}

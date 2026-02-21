@@ -13,6 +13,7 @@ use crate::core::OutboundTokenCounter;
 /// SSE event parsed from stream.
 #[derive(Debug, Clone, Default)]
 pub struct SseEvent {
+    pub raw: Option<String>,
     pub event: Option<String>,
     pub data: Option<String>,
     pub id: Option<String>,
@@ -21,33 +22,31 @@ pub struct SseEvent {
 
 /// SSE parser state.
 pub struct SseParser {
-    buffer: String,
+    buffer: Vec<u8>,
 }
 
 impl SseParser {
     /// Create a new SSE parser.
     pub fn new() -> Self {
-        SseParser {
-            buffer: String::new(),
-        }
+        SseParser { buffer: Vec::new() }
     }
 
     /// Parse incoming bytes and return complete events.
     pub fn parse(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        let chunk_str = match std::str::from_utf8(chunk) {
-            Ok(s) => s,
-            Err(_) => return vec![],
-        };
-
-        self.buffer.push_str(chunk_str);
+        self.buffer.extend_from_slice(chunk);
 
         let mut events = vec![];
-        let mut current_event = SseEvent::default();
 
         // Split by double newlines (event boundaries)
-        while let Some(pos) = self.buffer.find("\n\n") {
-            let event_block = self.buffer[..pos].to_string();
-            self.buffer = self.buffer[pos + 2..].to_string();
+        while let Some(pos) = self.buffer.windows(2).position(|w| w == b"\n\n") {
+            let event_block = self.buffer[..pos].to_vec();
+            self.buffer.drain(..pos + 2);
+
+            let event_block = match std::str::from_utf8(&event_block) {
+                Ok(block) => block,
+                Err(_) => continue,
+            };
+            let mut current_event = SseEvent::default();
 
             for line in event_block.lines() {
                 if line.is_empty() {
@@ -86,9 +85,12 @@ impl SseParser {
                 }
             }
 
-            if current_event.data.is_some() || current_event.event.is_some() {
+            if current_event.data.is_some()
+                || current_event.event.is_some()
+                || !event_block.trim().is_empty()
+            {
+                current_event.raw = Some(format!("{}\n\n", event_block));
                 events.push(current_event);
-                current_event = SseEvent::default();
             }
         }
 
@@ -96,7 +98,7 @@ impl SseParser {
     }
 
     /// Get remaining buffer content.
-    pub fn remaining(&self) -> &str {
+    pub fn remaining(&self) -> &[u8] {
         &self.buffer
     }
 
@@ -744,11 +746,45 @@ mod tests {
     }
 
     #[test]
+    fn test_sse_parser_partial_utf8() {
+        let mut parser = SseParser::new();
+
+        // Split "中" (E4 B8 AD) across chunks.
+        let events = parser.parse(b"data: \xE4\xB8");
+        assert!(events.is_empty());
+
+        let events = parser.parse(b"\xAD\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data.as_deref(), Some("中"));
+    }
+
+    #[test]
     fn test_sse_parser_comment() {
         let mut parser = SseParser::new();
         let events = parser.parse(b": comment\ndata: hello\n\n");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_sse_parser_preserves_raw_event_block() {
+        let mut parser = SseParser::new();
+        let events = parser.parse(b"id: evt_1\nretry: 3000\ndata: hello\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].raw.as_deref(),
+            Some("id: evt_1\nretry: 3000\ndata: hello\n\n")
+        );
+    }
+
+    #[test]
+    fn test_sse_parser_emits_comment_only_event_for_raw_passthrough() {
+        let mut parser = SseParser::new();
+        let events = parser.parse(b": heartbeat\n\n");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, None);
+        assert_eq!(events[0].event, None);
+        assert_eq!(events[0].raw.as_deref(), Some(": heartbeat\n\n"));
     }
 
     #[test]

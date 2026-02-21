@@ -63,6 +63,49 @@ impl Default for RequestLogRecord {
     }
 }
 
+/// Build a normalized streaming request log record.
+#[allow(clippy::too_many_arguments)]
+pub fn build_streaming_request_log_record(
+    request_id: &str,
+    endpoint: &str,
+    credential_name: &str,
+    model_requested: &str,
+    mapped_model: &str,
+    provider_name: &str,
+    provider_type: &str,
+    client_protocol: &str,
+    provider_protocol: &str,
+    status_code: i32,
+    input_tokens: usize,
+    output_tokens: usize,
+    total_duration_ms: i32,
+    ttft_ms: Option<i32>,
+    error_category: Option<&str>,
+    request_headers: Option<&str>,
+) -> RequestLogRecord {
+    RequestLogRecord {
+        request_id: request_id.to_string(),
+        endpoint: Some(endpoint.to_string()),
+        credential_name: Some(credential_name.to_string()),
+        model_requested: Some(model_requested.to_string()),
+        model_mapped: Some(mapped_model.to_string()),
+        provider_name: Some(provider_name.to_string()),
+        provider_type: Some(provider_type.to_string()),
+        client_protocol: Some(client_protocol.to_string()),
+        provider_protocol: Some(provider_protocol.to_string()),
+        is_streaming: true,
+        status_code: Some(status_code),
+        input_tokens: input_tokens as i32,
+        output_tokens: output_tokens as i32,
+        total_tokens: (input_tokens + output_tokens) as i32,
+        total_duration_ms: Some(total_duration_ms),
+        ttft_ms,
+        error_category: error_category.map(String::from),
+        request_headers: request_headers.map(String::from),
+        ..Default::default()
+    }
+}
+
 pub struct RequestLogger {
     tx: mpsc::Sender<RequestLogRecord>,
     done_rx: Mutex<Option<oneshot::Receiver<()>>>,
