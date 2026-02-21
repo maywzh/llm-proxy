@@ -34,3 +34,12 @@ c265ac4ce2b5e8b29b61bd37af7a803de61bd9b7:scripts/verify_auth.sh:curl-auth-header
 # GCP Vertex test fixtures - mock OAuth access tokens
 1754fd0253c9f592bcefdfdfe6b1f596e1d76822:python-server/tests/test_gcp_vertex.py:generic-api-key:868
 1754fd0253c9f592bcefdfdfe6b1f596e1d76822:rust-server/tests/test_gcp_vertex.rs:generic-api-key:795
+0e089917ec96373e4df87bfdecea302bd5d276f6:python-server/tests/test_gcp_vertex.py:generic-api-key:868
+0e089917ec96373e4df87bfdecea302bd5d276f6:rust-server/tests/test_gcp_vertex.rs:generic-api-key:795
+73c1d942ba4335ae2744131eebff491313985d10:rust-server/tests/test_rate_limiting.rs:generic-api-key:269
+73c1d942ba4335ae2744131eebff491313985d10:rust-server/tests/test_rate_limiting.rs:generic-api-key:288
+be592e76ba57d0c3a955d3565e7b60a3f4131aec:rust-server/tests/test_rate_limiting.rs:generic-api-key:246
+be592e76ba57d0c3a955d3565e7b60a3f4131aec:rust-server/tests/test_rate_limiting.rs:generic-api-key:263
+be592e76ba57d0c3a955d3565e7b60a3f4131aec:scripts/verify_auth.sh:curl-auth-header:143
+83a5caaadc05454ce3c9a0132796aaddc70e4d5e:python-server/tests/test_rate_limiting.py:generic-api-key:287
+83a5caaadc05454ce3c9a0132796aaddc70e4d5e:python-server/tests/test_rate_limiting.py:generic-api-key:295

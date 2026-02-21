@@ -63,7 +63,8 @@ pub use middleware::{
 };
 pub use rate_limiter::RateLimiter;
 pub use request_logger::{
-    init_request_logger, log_request_record, shutdown_request_logger, RequestLogRecord,
+    build_streaming_request_log_record, init_request_logger, log_request_record,
+    shutdown_request_logger, RequestLogRecord,
 };
 pub use stream_metrics::{record_stream_metrics, StreamStats};
 pub use token_counter::OutboundTokenCounter;

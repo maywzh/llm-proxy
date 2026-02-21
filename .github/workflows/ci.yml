@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  gitleaks:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  rust-check:
+    name: Rust Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-server
+      - name: fmt
+        run: cargo fmt --manifest-path rust-server/Cargo.toml -- --check
+      - name: clippy
+        run: cargo clippy --manifest-path rust-server/Cargo.toml --all-targets --all-features -- -D warnings
+
+  python-check:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: format check
+        run: uvx ruff format --check python-server/
+      - name: lint
+        run: uvx ruff check python-server/

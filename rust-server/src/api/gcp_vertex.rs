@@ -584,7 +584,6 @@ async fn handle_streaming_response(
                     );
                 }
 
-                state.finalized = true;
                 None
             }
         }

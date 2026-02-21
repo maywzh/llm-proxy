@@ -584,6 +584,16 @@ Deployment manifests: [k8s/dev/k8s.yaml](k8s/dev/k8s.yaml)
 - [rust-server/README.md](rust-server/README.md) - Detailed usage documentation
 - [rust-server/CONFIGURATION.md](rust-server/CONFIGURATION.md) - Configuration guide
 
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming, commit format, and PR process.
+
+**Branch strategy:** Simplified Gitflow — `feature/`, `fix/`, `refactor/` branches target `develop`; `hotfix/` targets `main`.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history, auto-generated from Conventional Commits via [git-cliff](https://git-cliff.org/).
+
 ## 📄 License
 
 MIT License - See project files for details

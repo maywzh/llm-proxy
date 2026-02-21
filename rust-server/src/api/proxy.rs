@@ -16,6 +16,7 @@ use axum::{
 };
 use futures::StreamExt;
 use serde_json::{json, Value};
+use tokio::select;
 
 use crate::api::auth::{verify_auth, AuthFormat};
 use crate::api::claude_models::{ClaudeTokenCountRequest, ClaudeTokenCountResponse};
@@ -46,16 +47,51 @@ use crate::core::langfuse::{fail_generation_if_sampled, init_langfuse_trace, Gen
 use crate::core::logging::{generate_request_id, PROVIDER_CONTEXT, REQUEST_ID};
 use crate::core::metrics::get_metrics;
 use crate::core::middleware::{extract_client, HasCredentials};
-use crate::core::request_logger::{log_request_record, RequestLogRecord};
+use crate::core::request_logger::{
+    build_streaming_request_log_record, log_request_record, RequestLogRecord,
+};
 use crate::core::stream_metrics::{record_stream_metrics, StreamStats};
 use crate::core::utils::{get_key_name, strip_provider_suffix};
 use crate::core::StreamCancelHandle;
 use crate::core::{AppError, Result};
 use crate::transformer::{
-    provider_type_to_protocol, CrossProtocolStreamState, Protocol, ProtocolDetector,
-    TransformContext, TransformPipeline, TransformerRegistry,
+    provider_type_to_protocol, CrossProtocolStreamState, Protocol, ProtocolDetector, SseEvent,
+    SseParser, TransformContext, TransformPipeline, Transformer, TransformerRegistry,
 };
 use crate::with_request_context;
+
+// ============================================================================
+// Cross-Protocol Streaming State
+// ============================================================================
+
+pub(crate) struct CrossProtocolStreamingState {
+    pub(crate) stream: std::pin::Pin<
+        Box<
+            dyn futures::stream::Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>>
+                + Send,
+        >,
+    >,
+    pub(crate) stream_state: crate::transformer::CrossProtocolStreamState,
+    pub(crate) registry: std::sync::Arc<crate::transformer::TransformerRegistry>,
+    pub(crate) client_protocol: crate::transformer::Protocol,
+    pub(crate) provider_protocol: crate::transformer::Protocol,
+    pub(crate) model: String,
+    pub(crate) provider: String,
+    pub(crate) client: String,
+    pub(crate) start_time: std::time::Instant,
+    pub(crate) first_token_time: Option<std::time::Instant>,
+    pub(crate) finalized: bool,
+    pub(crate) sse_parser: SseParser,
+    pub(crate) cancel_rx: tokio::sync::watch::Receiver<bool>,
+    pub(crate) cancel_handle: crate::core::StreamCancelHandle,
+    pub(crate) request_id: String,
+    pub(crate) endpoint: String,
+    pub(crate) credential_name: String,
+    pub(crate) model_requested: String,
+    pub(crate) mapped_model: String,
+    pub(crate) provider_type: String,
+    pub(crate) request_headers: Option<String>,
+}
 
 // ============================================================================
 // Proxy State Extension
@@ -849,6 +885,303 @@ async fn handle_error_response(
     }
 }
 
+/// Record streaming completion metrics and request log.
+/// Called on both normal completion (status 200) and client disconnect (status 499).
+#[allow(clippy::too_many_arguments)]
+fn record_streaming_completion(
+    request_id: &str,
+    endpoint: &str,
+    credential_name: &str,
+    model_requested: &str,
+    mapped_model: &str,
+    provider_name: &str,
+    provider_type: &str,
+    client: &str,
+    client_protocol: Protocol,
+    provider_protocol: Protocol,
+    request_headers: Option<&str>,
+    start_time: Instant,
+    first_token_time: Option<Instant>,
+    input_tokens: usize,
+    output_tokens: usize,
+    status_code: i32,
+    error_category: Option<&str>,
+) {
+    let stats = StreamStats {
+        model: model_requested.to_string(),
+        provider: provider_name.to_string(),
+        api_key_name: credential_name.to_string(),
+        client: client.to_string(),
+        input_tokens,
+        output_tokens,
+        start_time,
+        first_token_time,
+    };
+    record_stream_metrics(&stats);
+
+    let ttft_ms = first_token_time.map(|ft| {
+        ft.duration_since(start_time)
+            .as_millis()
+            .min(i32::MAX as u128) as i32
+    });
+    let total_duration_ms = start_time.elapsed().as_millis().min(i32::MAX as u128) as i32;
+
+    let record = build_streaming_request_log_record(
+        request_id,
+        endpoint,
+        credential_name,
+        model_requested,
+        mapped_model,
+        provider_name,
+        provider_type,
+        &client_protocol.to_string(),
+        &provider_protocol.to_string(),
+        status_code,
+        input_tokens,
+        output_tokens,
+        total_duration_ms,
+        ttft_ms,
+        error_category,
+        request_headers,
+    );
+    log_request_record(record);
+}
+
+fn rebuild_sse_event(event: &SseEvent) -> Option<String> {
+    if let Some(raw) = event.raw.as_ref() {
+        return Some(raw.clone());
+    }
+
+    let mut output = String::new();
+
+    if let Some(event_name) = event.event.as_deref() {
+        output.push_str("event: ");
+        output.push_str(event_name);
+        output.push('\n');
+    }
+
+    if let Some(id) = event.id.as_deref() {
+        output.push_str("id: ");
+        output.push_str(id);
+        output.push('\n');
+    }
+
+    if let Some(retry) = event.retry {
+        output.push_str("retry: ");
+        output.push_str(&retry.to_string());
+        output.push('\n');
+    }
+
+    if let Some(data) = event.data.as_deref() {
+        for line in data.split('\n') {
+            output.push_str("data: ");
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+
+    if output.is_empty() {
+        None
+    } else {
+        output.push('\n');
+        Some(output)
+    }
+}
+
+/// Pure SSE event transformation kernel: provider format → unified → client SSE string.
+/// Passthrough raw event on transform error to preserve stream continuity.
+fn transform_sse_events(
+    stream_state: &mut CrossProtocolStreamState,
+    events: Vec<SseEvent>,
+    provider_t: &dyn Transformer,
+    client_t: &dyn Transformer,
+    client_protocol: Protocol,
+) -> String {
+    let mut output = String::new();
+    for sse_event in events {
+        let Some(raw) = rebuild_sse_event(&sse_event) else {
+            continue;
+        };
+        let event_bytes = bytes::Bytes::from(raw.clone());
+        match provider_t.transform_stream_chunk_in(&event_bytes) {
+            Ok(unified_chunks) => {
+                let processed = stream_state.process_chunks(unified_chunks);
+                for chunk in processed {
+                    if let Ok(formatted) =
+                        client_t.transform_stream_chunk_out(&chunk, client_protocol)
+                    {
+                        output.push_str(&formatted);
+                    }
+                }
+            }
+            Err(_) => output.push_str(&raw),
+        }
+    }
+    output
+}
+
+/// Parse incoming bytes via SseParser and transform through the pipeline.
+fn process_stream_bytes(
+    state: &mut CrossProtocolStreamingState,
+    bytes: &bytes::Bytes,
+) -> axum::body::Bytes {
+    if state.first_token_time.is_none() {
+        state.first_token_time = Some(Instant::now());
+    }
+
+    let parsed_events = state.sse_parser.parse(bytes);
+    if parsed_events.is_empty() {
+        return axum::body::Bytes::new();
+    }
+
+    // Clone Arc refs before mutably borrowing stream_state
+    let provider_t = state.registry.get(state.provider_protocol).cloned();
+    let client_t = state.registry.get(state.client_protocol).cloned();
+
+    match (provider_t, client_t) {
+        (Some(pt), Some(ct)) => {
+            let output = transform_sse_events(
+                &mut state.stream_state,
+                parsed_events,
+                pt.as_ref(),
+                ct.as_ref(),
+                state.client_protocol,
+            );
+            axum::body::Bytes::from(output)
+        }
+        _ => {
+            let output: String = parsed_events
+                .into_iter()
+                .filter_map(|e| rebuild_sse_event(&e))
+                .collect();
+            axum::body::Bytes::from(output)
+        }
+    }
+}
+
+/// Flush SSE parser buffer, call finalize(), and emit closing events.
+fn finalize_cross_protocol_stream(state: &mut CrossProtocolStreamingState) -> axum::body::Bytes {
+    // Clone Arc refs before mutably borrowing stream_state
+    let provider_t = state.registry.get(state.provider_protocol).cloned();
+    let client_t = state.registry.get(state.client_protocol).cloned();
+
+    let mut output = String::new();
+
+    // Flush any remaining data in the SSE parser buffer
+    let remaining_events = state.sse_parser.parse(b"\n\n");
+    if !remaining_events.is_empty() {
+        let flushed_output = match (provider_t.as_ref(), client_t.as_ref()) {
+            (Some(pt), Some(ct)) => transform_sse_events(
+                &mut state.stream_state,
+                remaining_events,
+                pt.as_ref(),
+                ct.as_ref(),
+                state.client_protocol,
+            ),
+            _ => remaining_events
+                .into_iter()
+                .filter_map(|e| rebuild_sse_event(&e))
+                .collect(),
+        };
+        output.push_str(&flushed_output);
+    }
+
+    tracing::debug!(
+        model = %state.model,
+        provider = %state.provider,
+        accumulated_usage = ?state.stream_state.usage(),
+        message_delta_emitted = state.stream_state.message_delta_emitted,
+        "Stream ended, calling finalize()"
+    );
+
+    let final_chunks = state.stream_state.finalize();
+
+    tracing::debug!(
+        final_chunks_count = final_chunks.len(),
+        final_chunks = ?final_chunks.iter().map(|c| format!("{:?} usage={:?}", c.chunk_type, c.usage)).collect::<Vec<_>>(),
+        "finalize() returned chunks"
+    );
+
+    if let Some(ct) = client_t {
+        for chunk in &final_chunks {
+            if let Ok(formatted) = ct.transform_stream_chunk_out(chunk, state.client_protocol) {
+                output.push_str(&formatted);
+            }
+        }
+    }
+
+    tracing::debug!(
+        output_len = output.len(),
+        output_preview = %if output.len() > 500 { &output[..500] } else { &output },
+        "Final output before [DONE]"
+    );
+
+    if !state.stream_state.message_stopped {
+        output.push_str("data: [DONE]\n\n");
+    }
+
+    axum::body::Bytes::from(output)
+}
+
+fn record_disconnect_metrics(state: &CrossProtocolStreamingState) {
+    get_metrics().client_disconnects_total.inc();
+    let final_usage = state.stream_state.get_final_usage(None);
+    record_streaming_completion(
+        &state.request_id,
+        &state.endpoint,
+        &state.credential_name,
+        &state.model_requested,
+        &state.mapped_model,
+        &state.provider,
+        &state.provider_type,
+        &state.client,
+        state.client_protocol,
+        state.provider_protocol,
+        state.request_headers.as_deref(),
+        state.start_time,
+        state.first_token_time,
+        final_usage
+            .as_ref()
+            .map(|u| u.input_tokens as usize)
+            .unwrap_or(0),
+        final_usage
+            .as_ref()
+            .map(|u| u.output_tokens as usize)
+            .unwrap_or(0),
+        499,
+        Some("client_disconnect"),
+    );
+}
+
+fn record_completion_metrics(state: &CrossProtocolStreamingState) {
+    let final_usage = state.stream_state.get_final_usage(None);
+    record_streaming_completion(
+        &state.request_id,
+        &state.endpoint,
+        &state.credential_name,
+        &state.model_requested,
+        &state.mapped_model,
+        &state.provider,
+        &state.provider_type,
+        &state.client,
+        state.client_protocol,
+        state.provider_protocol,
+        state.request_headers.as_deref(),
+        state.start_time,
+        state.first_token_time,
+        final_usage
+            .as_ref()
+            .map(|u| u.input_tokens as usize)
+            .unwrap_or(0),
+        final_usage
+            .as_ref()
+            .map(|u| u.output_tokens as usize)
+            .unwrap_or(0),
+        200,
+        None,
+    );
+}
+
 /// Handle streaming response with protocol conversion
 #[allow(clippy::too_many_arguments)]
 async fn handle_streaming_proxy_response(
@@ -946,10 +1279,6 @@ async fn handle_streaming_proxy_response(
         // Cross-protocol streaming requires chunk-by-chunk transformation
         // with state tracking to emit proper event sequences
         // Use unfold pattern to enable metrics recording at stream end
-        use futures::stream::Stream;
-        use std::pin::Pin;
-        use tokio::select;
-        use tokio::sync::watch;
 
         // DEBUG: Log that we're entering cross-protocol streaming path
         tracing::debug!(
@@ -965,39 +1294,6 @@ async fn handle_streaming_proxy_response(
         // Clone the handle so we can mark it completed from inside the unfold closure
         let cancel_handle_for_completion = cancel_handle.clone();
 
-        struct CrossProtocolStreamingState {
-            stream: Pin<
-                Box<dyn Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>> + Send>,
-            >,
-            stream_state: CrossProtocolStreamState,
-            registry: Arc<TransformerRegistry>,
-            client_protocol: Protocol,
-            provider_protocol: Protocol,
-            // Metrics tracking
-            model: String,
-            provider: String,
-            api_key_name: String,
-            client: String,
-            start_time: Instant,
-            first_token_time: Option<Instant>,
-            // Flag to track if we've sent the final output
-            finalized: bool,
-            // SSE line buffer for handling TCP fragmentation
-            sse_line_buffer: String,
-            // Cancellation receiver for client disconnect detection
-            cancel_rx: watch::Receiver<bool>,
-            // Handle to mark completion when stream ends normally
-            cancel_handle: StreamCancelHandle,
-            // Request logging context
-            request_id: String,
-            endpoint: String,
-            credential_name: String,
-            model_requested: String,
-            mapped_model: String,
-            provider_type: String,
-            request_headers: Option<String>,
-        }
-
         let masked = masked_headers;
         let streaming_state = CrossProtocolStreamingState {
             stream: Box::pin(response.bytes_stream()),
@@ -1007,12 +1303,11 @@ async fn handle_streaming_proxy_response(
             provider_protocol,
             model: model_label.clone(),
             provider: provider_name.clone(),
-            api_key_name: api_key_name.to_string(),
             client: client.clone(),
             start_time: request_start,
             first_token_time: None,
             finalized: false,
-            sse_line_buffer: String::new(),
+            sse_parser: SseParser::new(),
             cancel_rx,
             cancel_handle: cancel_handle_for_completion,
             request_id: request_id.clone(),
@@ -1025,20 +1320,16 @@ async fn handle_streaming_proxy_response(
         };
 
         let transform_stream = futures::stream::unfold(streaming_state, |mut state| async move {
-            // If we've already finalized, end the stream
             if state.finalized {
                 return None;
             }
 
-            // Use select! to race between stream data and cancellation
             let chunk_result = {
                 let stream_future = state.stream.next();
                 let cancel_future = async {
                     let mut rx = state.cancel_rx.clone();
                     let _ = rx.changed().await;
-                    true
                 };
-
                 select! {
                     chunk = stream_future => chunk,
                     _ = cancel_future => {
@@ -1047,52 +1338,7 @@ async fn handle_streaming_proxy_response(
                             model = %state.model,
                             "Client disconnected during cross-protocol streaming, cancelling stream"
                         );
-                        get_metrics().client_disconnects_total.inc();
-
-                        // Record partial metrics
-                        let final_usage = state.stream_state.get_final_usage(None);
-                        let stats = StreamStats {
-                            model: state.model.clone(),
-                            provider: state.provider.clone(),
-                            api_key_name: state.api_key_name.clone(),
-                            client: state.client.clone(),
-                            input_tokens: final_usage
-                                .as_ref()
-                                .map(|u| u.input_tokens as usize)
-                                .unwrap_or(0),
-                            output_tokens: final_usage
-                                .as_ref()
-                                .map(|u| u.output_tokens as usize)
-                                .unwrap_or(0),
-                            start_time: state.start_time,
-                            first_token_time: state.first_token_time,
-                        };
-                        record_stream_metrics(&stats);
-
-                        // Log request record for client disconnect
-                        let ttft = state.first_token_time.map(|ft| ft.duration_since(state.start_time).as_millis().min(i32::MAX as u128) as i32);
-                        log_request_record(RequestLogRecord {
-                            request_id: state.request_id.clone(),
-                            endpoint: Some(state.endpoint.clone()),
-                            credential_name: Some(state.credential_name.clone()),
-                            model_requested: Some(state.model_requested.clone()),
-                            model_mapped: Some(state.mapped_model.clone()),
-                            provider_name: Some(state.provider.clone()),
-                            provider_type: Some(state.provider_type.clone()),
-                            client_protocol: Some(state.client_protocol.to_string()),
-                            provider_protocol: Some(state.provider_protocol.to_string()),
-                            is_streaming: true,
-                            status_code: Some(499),
-                            input_tokens: stats.input_tokens as i32,
-                            output_tokens: stats.output_tokens as i32,
-                            total_tokens: (stats.input_tokens + stats.output_tokens) as i32,
-                            total_duration_ms: Some(state.start_time.elapsed().as_millis().min(i32::MAX as u128) as i32),
-                            ttft_ms: ttft,
-                            error_category: Some("client_disconnect".to_string()),
-                            request_headers: state.request_headers.clone(),
-                            ..Default::default()
-                        });
-
+                        record_disconnect_metrics(&state);
                         return None;
                     }
                 }
@@ -1100,213 +1346,16 @@ async fn handle_streaming_proxy_response(
 
             match chunk_result {
                 Some(Ok(bytes)) => {
-                    // Track first token time
-                    if state.first_token_time.is_none() {
-                        state.first_token_time = Some(Instant::now());
-                    }
-
-                    // Append incoming bytes to SSE line buffer
-                    let chunk_str = String::from_utf8_lossy(&bytes);
-                    state.sse_line_buffer.push_str(&chunk_str);
-
-                    // Extract complete SSE events from buffer (events end with \n\n)
-                    let mut complete_events = Vec::new();
-                    while let Some(pos) = state.sse_line_buffer.find("\n\n") {
-                        let event = state.sse_line_buffer[..pos].to_string();
-                        state.sse_line_buffer = state.sse_line_buffer[pos + 2..].to_string();
-                        if !event.trim().is_empty() {
-                            complete_events.push(event);
-                        }
-                    }
-
-                    // If no complete events yet, return empty and wait for more data
-                    if complete_events.is_empty() {
-                        return Some((Ok::<_, std::io::Error>(axum::body::Bytes::new()), state));
-                    }
-
-                    // Get transformers
-                    let provider_transformer = state.registry.get(state.provider_protocol);
-                    let client_transformer = state.registry.get(state.client_protocol);
-
-                    let output = if let (Some(provider_t), Some(client_t)) =
-                        (provider_transformer, client_transformer)
-                    {
-                        let mut output = String::new();
-
-                        // Process each complete SSE event
-                        for event in complete_events {
-                            // Reconstruct bytes with \n\n for the transformer
-                            let event_bytes = bytes::Bytes::from(format!("{}\n\n", event));
-
-                            // Transform chunks from provider format to unified format
-                            match provider_t.transform_stream_chunk_in(&event_bytes) {
-                                Ok(unified_chunks) => {
-                                    // Process chunks through state tracker
-                                    let processed_chunks =
-                                        state.stream_state.process_chunks(unified_chunks);
-
-                                    // Transform unified chunks to client format
-                                    for chunk in processed_chunks {
-                                        if let Ok(formatted) = client_t.transform_stream_chunk_out(
-                                            &chunk,
-                                            state.client_protocol,
-                                        ) {
-                                            output.push_str(&formatted);
-                                        }
-                                    }
-                                }
-                                Err(_) => {
-                                    // Passthrough on error
-                                    output.push_str(&event);
-                                    output.push_str("\n\n");
-                                }
-                            }
-                        }
-                        axum::body::Bytes::from(output)
-                    } else {
-                        // No transformers, reconstruct the events
-                        let output: String = complete_events
-                            .into_iter()
-                            .map(|e| format!("{}\n\n", e))
-                            .collect();
-                        axum::body::Bytes::from(output)
-                    };
-
+                    let output = process_stream_bytes(&mut state, &bytes);
                     Some((Ok::<_, std::io::Error>(output), state))
                 }
                 Some(Err(e)) => Some((Err(std::io::Error::other(e.to_string())), state)),
                 None => {
-                    // Process any remaining data in the SSE line buffer
-                    let provider_transformer = state.registry.get(state.provider_protocol);
-                    let client_transformer = state.registry.get(state.client_protocol);
-
-                    let mut output = String::new();
-
-                    if !state.sse_line_buffer.trim().is_empty() {
-                        let remaining = std::mem::take(&mut state.sse_line_buffer);
-                        if let (Some(provider_t), Some(client_t)) =
-                            (provider_transformer.as_ref(), client_transformer.as_ref())
-                        {
-                            // Process remaining buffer as an event
-                            let event_bytes = bytes::Bytes::from(format!("{}\n\n", remaining));
-                            if let Ok(unified_chunks) =
-                                provider_t.transform_stream_chunk_in(&event_bytes)
-                            {
-                                let processed_chunks =
-                                    state.stream_state.process_chunks(unified_chunks);
-                                for chunk in processed_chunks {
-                                    if let Ok(formatted) = client_t
-                                        .transform_stream_chunk_out(&chunk, state.client_protocol)
-                                    {
-                                        output.push_str(&formatted);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Stream ended - finalize and emit closing events
-
-                    // DEBUG: Log state before finalize
-                    tracing::debug!(
-                        model = %state.model,
-                        provider = %state.provider,
-                        accumulated_usage = ?state.stream_state.usage(),
-                        message_delta_emitted = state.stream_state.message_delta_emitted,
-                        "Stream ended, calling finalize()"
-                    );
-
-                    // Generate final events (message_delta with usage, message_stop)
-                    let final_chunks = state.stream_state.finalize();
-
-                    // DEBUG: Log final chunks
-                    tracing::debug!(
-                        final_chunks_count = final_chunks.len(),
-                        final_chunks = ?final_chunks.iter().map(|c| format!("{:?} usage={:?}", c.chunk_type, c.usage)).collect::<Vec<_>>(),
-                        "finalize() returned chunks"
-                    );
-
-                    if let Some(client_t) = client_transformer {
-                        for chunk in &final_chunks {
-                            if let Ok(formatted) =
-                                client_t.transform_stream_chunk_out(chunk, state.client_protocol)
-                            {
-                                output.push_str(&formatted);
-                            }
-                        }
-                    }
-
-                    // DEBUG: Log final output
-                    tracing::debug!(
-                        output_len = output.len(),
-                        output_preview = %if output.len() > 500 { &output[..500] } else { &output },
-                        "Final output before [DONE]"
-                    );
-
-                    // Add [DONE] marker only if finalize didn't emit MessageStop
-                    // (finalize emits MessageStop which OpenAI transformer converts to [DONE])
-                    if !state.stream_state.message_stopped {
-                        output.push_str("data: [DONE]\n\n");
-                    }
-
-                    // Mark the cancel handle as completed since stream finished normally
-                    // This prevents false positive disconnect metrics when DisconnectStream is dropped
+                    let output = finalize_cross_protocol_stream(&mut state);
                     state.cancel_handle.mark_completed();
-
-                    // Record metrics
-                    let final_usage = state.stream_state.get_final_usage(None);
-                    let stats = StreamStats {
-                        model: state.model.clone(),
-                        provider: state.provider.clone(),
-                        api_key_name: state.api_key_name.clone(),
-                        client: state.client.clone(),
-                        input_tokens: final_usage
-                            .as_ref()
-                            .map(|u| u.input_tokens as usize)
-                            .unwrap_or(0),
-                        output_tokens: final_usage
-                            .as_ref()
-                            .map(|u| u.output_tokens as usize)
-                            .unwrap_or(0),
-                        start_time: state.start_time,
-                        first_token_time: state.first_token_time,
-                    };
-                    record_stream_metrics(&stats);
-
-                    // Log request record for streaming success
-                    let ttft = state.first_token_time.map(|ft| {
-                        ft.duration_since(state.start_time)
-                            .as_millis()
-                            .min(i32::MAX as u128) as i32
-                    });
-                    log_request_record(RequestLogRecord {
-                        request_id: state.request_id.clone(),
-                        endpoint: Some(state.endpoint.clone()),
-                        credential_name: Some(state.credential_name.clone()),
-                        model_requested: Some(state.model_requested.clone()),
-                        model_mapped: Some(state.mapped_model.clone()),
-                        provider_name: Some(state.provider.clone()),
-                        provider_type: Some(state.provider_type.clone()),
-                        client_protocol: Some(state.client_protocol.to_string()),
-                        provider_protocol: Some(state.provider_protocol.to_string()),
-                        is_streaming: true,
-                        status_code: Some(200),
-                        input_tokens: stats.input_tokens as i32,
-                        output_tokens: stats.output_tokens as i32,
-                        total_tokens: (stats.input_tokens + stats.output_tokens) as i32,
-                        total_duration_ms: Some(
-                            state.start_time.elapsed().as_millis().min(i32::MAX as u128) as i32,
-                        ),
-                        ttft_ms: ttft,
-                        request_headers: state.request_headers.clone(),
-                        ..Default::default()
-                    });
-
-                    // Mark as finalized so next iteration returns None
+                    record_completion_metrics(&state);
                     state.finalized = true;
-
-                    // Return final output with closing events
-                    Some((Ok(axum::body::Bytes::from(output)), state))
+                    Some((Ok(output), state))
                 }
             }
         });
@@ -2128,6 +2177,41 @@ fn build_openai_tools_for_token_count(
 mod tests {
     use super::*;
     use crate::api::upstream::build_gcp_vertex_url;
+    use std::sync::Arc;
+
+    fn make_test_cross_protocol_state(
+        client_protocol: Protocol,
+        provider_protocol: Protocol,
+    ) -> CrossProtocolStreamingState {
+        let cancel_handle = StreamCancelHandle::new();
+        let cancel_rx = cancel_handle.subscribe();
+
+        CrossProtocolStreamingState {
+            stream: Box::pin(futures::stream::empty::<
+                std::result::Result<bytes::Bytes, reqwest::Error>,
+            >()),
+            stream_state: CrossProtocolStreamState::new("gpt-4"),
+            registry: Arc::new(TransformerRegistry::new()),
+            client_protocol,
+            provider_protocol,
+            model: "gpt-4".to_string(),
+            provider: "test-provider".to_string(),
+            client: "test-client".to_string(),
+            start_time: std::time::Instant::now(),
+            first_token_time: None,
+            finalized: false,
+            sse_parser: SseParser::new(),
+            cancel_rx,
+            cancel_handle,
+            request_id: "req_test".to_string(),
+            endpoint: "/v2/chat/completions".to_string(),
+            credential_name: "test-key".to_string(),
+            model_requested: "gpt-4".to_string(),
+            mapped_model: "gpt-4".to_string(),
+            provider_type: "openai".to_string(),
+            request_headers: None,
+        }
+    }
 
     #[test]
     fn test_extract_model_from_request() {
@@ -2157,6 +2241,111 @@ mod tests {
         assert_eq!(get_provider_endpoint(Protocol::Anthropic), "/v1/messages");
         assert_eq!(get_provider_endpoint(Protocol::ResponseApi), "/responses");
         assert_eq!(get_provider_endpoint(Protocol::GcpVertex), "");
+    }
+
+    #[test]
+    fn test_rebuild_sse_event_with_multiline_data() {
+        let event = SseEvent {
+            raw: None,
+            event: None,
+            data: Some("{\"a\":1}\n{\"b\":2}".to_string()),
+            id: None,
+            retry: None,
+        };
+
+        let raw = rebuild_sse_event(&event).expect("data event should be rebuilt");
+        assert_eq!(raw, "data: {\"a\":1}\ndata: {\"b\":2}\n\n");
+    }
+
+    #[test]
+    fn test_rebuild_sse_event_preserves_event_name() {
+        let event = SseEvent {
+            raw: None,
+            event: Some("message_start".to_string()),
+            data: Some("{\"type\":\"message_start\"}".to_string()),
+            id: None,
+            retry: None,
+        };
+
+        let raw = rebuild_sse_event(&event).expect("event should be rebuilt");
+        assert_eq!(
+            raw,
+            "event: message_start\ndata: {\"type\":\"message_start\"}\n\n"
+        );
+    }
+
+    #[test]
+    fn test_transform_sse_events_passthrough_on_provider_parse_error() {
+        let registry = TransformerRegistry::new();
+        let provider_t = registry
+            .get(Protocol::OpenAI)
+            .expect("openai transformer should exist");
+        let client_t = registry
+            .get(Protocol::OpenAI)
+            .expect("openai transformer should exist");
+
+        let mut stream_state = CrossProtocolStreamState::new("gpt-4");
+        let events = vec![SseEvent {
+            raw: Some("id: evt_1\nretry: 2500\ndata: {invalid-json}\n\n".to_string()),
+            event: None,
+            data: Some("{invalid-json}".to_string()),
+            id: Some("evt_1".to_string()),
+            retry: Some(2500),
+        }];
+
+        let output = transform_sse_events(
+            &mut stream_state,
+            events,
+            provider_t.as_ref(),
+            client_t.as_ref(),
+            Protocol::OpenAI,
+        );
+
+        assert_eq!(output, "id: evt_1\nretry: 2500\ndata: {invalid-json}\n\n");
+    }
+
+    #[test]
+    fn test_process_stream_bytes_passthrough_without_transformer_preserves_raw_metadata() {
+        let mut state = make_test_cross_protocol_state(Protocol::OpenAI, Protocol::OpenAI);
+        state.registry = Arc::new(TransformerRegistry::empty());
+
+        let output = process_stream_bytes(
+            &mut state,
+            &bytes::Bytes::from_static(b": heartbeat\nid: evt_7\nretry: 1000\ndata: hello\n\n"),
+        );
+        let output_str = String::from_utf8(output.to_vec()).expect("valid utf8");
+        assert_eq!(
+            output_str,
+            ": heartbeat\nid: evt_7\nretry: 1000\ndata: hello\n\n"
+        );
+    }
+
+    #[test]
+    fn test_process_stream_bytes_sets_first_token_time_on_partial_event() {
+        let mut state = make_test_cross_protocol_state(Protocol::OpenAI, Protocol::OpenAI);
+        assert!(state.first_token_time.is_none());
+
+        let output = process_stream_bytes(
+            &mut state,
+            &bytes::Bytes::from_static(b"data: {\"id\":\"x\""),
+        );
+        assert!(output.is_empty());
+        assert!(state.first_token_time.is_some());
+    }
+
+    #[test]
+    fn test_finalize_cross_protocol_stream_flushes_remaining_event_and_done() {
+        let mut state = make_test_cross_protocol_state(Protocol::OpenAI, Protocol::OpenAI);
+
+        let pending = b"data: {invalid-json}";
+        let parsed = state.sse_parser.parse(pending);
+        assert!(parsed.is_empty());
+
+        let output = finalize_cross_protocol_stream(&mut state);
+        let output_str = String::from_utf8(output.to_vec()).expect("valid utf8");
+
+        assert!(output_str.contains("data: {invalid-json}\n\n"));
+        assert!(output_str.contains("data: [DONE]"));
     }
 
     #[test]
