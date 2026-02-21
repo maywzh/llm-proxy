@@ -41,6 +41,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - name: format check
-        run: uv run --directory python-server ruff format --check .
+        run: uvx ruff format --check python-server/
       - name: lint
-        run: uv run --directory python-server ruff check .
+        run: uvx ruff check python-server/
