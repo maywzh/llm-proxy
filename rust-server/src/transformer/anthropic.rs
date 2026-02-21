@@ -568,16 +568,13 @@ impl AnthropicTransformer {
     /// a conversation history (stream replay, retry logic). Anthropic-compatible
     /// providers reject requests where two tool_use blocks share the same id, or
     /// where a tool_result id is referenced more than once.
-    fn deduplicate_tool_ids(messages: &mut Vec<AnthropicMessage>) {
+    fn deduplicate_tool_ids(messages: &mut [AnthropicMessage]) {
         // First pass: collect a mapping of original_id → list of new ids (one per occurrence).
         // We assign new ids in encounter order; the first occurrence keeps the original id.
         use std::collections::HashMap;
 
         // id_occurrences: original_id → number of times seen so far
         let mut id_occurrences: HashMap<String, usize> = HashMap::new();
-        // remap: (original_id, occurrence_index) → new_id
-        // occurrence 0 keeps the original id, occurrence N≥1 gets suffix "_N".
-        let mut encounter_count: HashMap<String, usize> = HashMap::new();
 
         // We need a two-pass strategy:
         // Pass 1: scan all tool_use blocks to build the remap table.
