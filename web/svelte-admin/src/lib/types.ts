@@ -263,6 +263,33 @@ export interface ModelsResponse {
   data: Model[];
 }
 
+export interface ModelInfoDetails {
+  provider_name: string;
+  provider_type: string;
+  weight: number;
+  is_pattern: boolean;
+  supports_vision?: boolean | null;
+  supports_function_calling?: boolean | null;
+  supports_streaming?: boolean | null;
+  supports_response_schema?: boolean | null;
+  supports_reasoning?: boolean | null;
+  supports_computer_use?: boolean | null;
+  supports_pdf_input?: boolean | null;
+  mode?: string | null;
+  max_tokens?: number | null;
+  max_input_tokens?: number | null;
+  max_output_tokens?: number | null;
+}
+
+export interface ModelInfoEntry {
+  model_name: string;
+  model_info: ModelInfoDetails;
+}
+
+export interface ModelInfoListV1 {
+  data: ModelInfoEntry[];
+}
+
 // Health Check Types
 export type HealthStatus = 'healthy' | 'unhealthy' | 'disabled' | 'unknown';
 

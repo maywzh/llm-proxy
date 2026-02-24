@@ -27,6 +27,7 @@
     ChatRequestMessage,
     StreamChunk,
     Model,
+    ModelInfoDetails,
     ChatContentPart,
     ImageAttachment,
   } from '$lib/types';
@@ -37,13 +38,6 @@
 
   const API_BASE_URL =
     import.meta.env.VITE_PUBLIC_API_BASE_URL || 'http://127.0.0.1:18000';
-
-  const VISION_MODEL_ALLOWLIST = (
-    import.meta.env.VITE_CHAT_VISION_MODEL_ALLOWLIST as string | undefined
-  )
-    ?.split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
 
   const IMAGE_FORMAT_WHITELIST = [
     'image/png',
@@ -56,13 +50,10 @@
   const MAX_IMAGES = 5;
   const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 
+  let modelInfoMap = $state<Map<string, ModelInfoDetails>>(new Map());
+
   function isVisionModel(model: string) {
-    if (!VISION_MODEL_ALLOWLIST || VISION_MODEL_ALLOWLIST.length === 0)
-      return false;
-    const normalized = model.trim().toLowerCase();
-    return VISION_MODEL_ALLOWLIST.some(prefix =>
-      normalized.startsWith(prefix.toLowerCase())
-    );
+    return modelInfoMap.get(model)?.supports_vision === true;
   }
 
   function maskCredentialKey(key: string) {
@@ -400,18 +391,28 @@
       if (!auth.apiClient) return;
       if (!$chatSettings.credentialKey.trim()) return;
 
-      const response = await auth.apiClient.listModels(
-        $chatSettings.credentialKey.trim()
-      );
-      models = response.data;
+      const [modelsResponse, modelInfoResponse] = await Promise.allSettled([
+        auth.apiClient.listModels($chatSettings.credentialKey.trim()),
+        auth.apiClient.listModelInfo($chatSettings.credentialKey.trim()),
+      ]);
+
+      if (modelsResponse.status === 'rejected') throw modelsResponse.reason;
+
+      models = modelsResponse.value.data;
       modelsError = null;
 
-      const available = new Set(response.data.map(m => m.id));
+      if (modelInfoResponse.status === 'fulfilled') {
+        modelInfoMap = new Map(
+          modelInfoResponse.value.data.map(m => [m.model_name, m.model_info])
+        );
+      }
+
+      const available = new Set(modelsResponse.value.data.map(m => m.id));
       const nextModel =
         ($chatSettings.selectedModel &&
           available.has($chatSettings.selectedModel) &&
           $chatSettings.selectedModel) ||
-        (response.data[0]?.id ?? '');
+        (modelsResponse.value.data[0]?.id ?? '');
 
       if (nextModel !== $chatSettings.selectedModel)
         updateChatSettings({ selectedModel: nextModel });
