@@ -79,6 +79,7 @@ pub fn provider_type_to_protocol(provider_type: &str) -> Protocol {
         "gcp-vertex" | "gcp_vertex" | "vertex" => Protocol::GcpVertex,
         "gemini" | "gcp-gemini" => Protocol::Gemini,
         "response_api" | "response-api" | "responses" => Protocol::ResponseApi,
+        // github-copilot uses OpenAI-compatible API
         _ => Protocol::OpenAI,
     }
 }

@@ -966,6 +966,11 @@ pub async fn chat_completions(
 
                 let provider_service = state.get_provider_service();
 
+                let custom_headers: Option<std::collections::HashMap<String, String>> = provider
+                    .provider_params
+                    .get("custom_headers")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+
                 let request = build_upstream_request(
                     &state.http_client,
                     &url,
@@ -973,6 +978,7 @@ pub async fn chat_completions(
                     UpstreamAuth::Bearer(&provider.api_key),
                     None,
                     None,
+                    custom_headers.as_ref(),
                 );
 
                 let upstream_ctx = UpstreamContext {
@@ -1197,6 +1203,11 @@ pub async fn completions(
 
                 let provider_service = state.get_provider_service();
 
+                let custom_headers: Option<std::collections::HashMap<String, String>> = provider
+                    .provider_params
+                    .get("custom_headers")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+
                 let request = build_upstream_request(
                     &state.http_client,
                     &url,
@@ -1204,6 +1215,7 @@ pub async fn completions(
                     UpstreamAuth::Bearer(&provider.api_key),
                     None,
                     None,
+                    custom_headers.as_ref(),
                 );
 
                 let upstream_ctx = UpstreamContext {

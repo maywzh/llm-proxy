@@ -13,6 +13,7 @@ use axum::{
 };
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 const MAX_ERROR_MESSAGE_LEN: usize = 500;
 
@@ -43,7 +44,7 @@ pub struct UpstreamErrorPayload {
     pub raw_text: String,
 }
 
-/// Build a provider request with unified auth and optional Anthropic headers.
+/// Build a provider request with unified auth, optional Anthropic headers, and custom headers.
 pub fn build_upstream_request(
     http_client: &reqwest::Client,
     url: &str,
@@ -51,6 +52,7 @@ pub fn build_upstream_request(
     auth: UpstreamAuth<'_>,
     anthropic_version: Option<&str>,
     anthropic_beta: Option<&str>,
+    custom_headers: Option<&HashMap<String, String>>,
 ) -> reqwest::RequestBuilder {
     let mut request = http_client.post(url);
 
@@ -66,6 +68,12 @@ pub fn build_upstream_request(
     }
     if let Some(beta) = anthropic_beta {
         request = request.header("anthropic-beta", beta);
+    }
+
+    if let Some(headers) = custom_headers {
+        for (key, value) in headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
     }
 
     request.json(payload)
@@ -142,6 +150,7 @@ fn get_anthropic_version<'a>(headers: &'a HeaderMap, default: &'a str) -> &'a st
         .unwrap_or(default)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_protocol_upstream_request(
     http_client: &reqwest::Client,
     url: &str,
@@ -150,6 +159,7 @@ pub fn build_protocol_upstream_request(
     headers: &HeaderMap,
     anthropic_beta_header: Option<&str>,
     payload: &serde_json::Value,
+    custom_headers: Option<&HashMap<String, String>>,
 ) -> reqwest::RequestBuilder {
     match provider_protocol {
         Protocol::Anthropic => {
@@ -161,6 +171,7 @@ pub fn build_protocol_upstream_request(
                 UpstreamAuth::XApiKey(provider_api_key),
                 Some(anthropic_version),
                 anthropic_beta_header,
+                custom_headers,
             )
         }
         Protocol::GcpVertex => {
@@ -172,6 +183,7 @@ pub fn build_protocol_upstream_request(
                 UpstreamAuth::Bearer(provider_api_key),
                 Some(anthropic_version),
                 anthropic_beta_header,
+                custom_headers,
             )
         }
         _ => build_upstream_request(
@@ -181,6 +193,7 @@ pub fn build_protocol_upstream_request(
             UpstreamAuth::Bearer(provider_api_key),
             None,
             None,
+            custom_headers,
         ),
     }
 }
@@ -191,6 +204,7 @@ pub fn build_provider_debug_headers(
     url: &str,
     headers: &HeaderMap,
     anthropic_beta_header: Option<&str>,
+    custom_headers: Option<&HashMap<String, String>>,
 ) -> Value {
     let mut header_map = serde_json::Map::new();
     header_map.insert("url".to_string(), json!(url));
@@ -215,6 +229,12 @@ pub fn build_provider_debug_headers(
         }
         _ => {
             header_map.insert("authorization".to_string(), json!("Bearer ***"));
+        }
+    }
+
+    if let Some(headers) = custom_headers {
+        for (key, value) in headers {
+            header_map.insert(key.clone(), json!(value));
         }
     }
 
@@ -777,6 +797,7 @@ mod tests {
             UpstreamAuth::Bearer("sk-test-key"),
             None,
             None,
+            None,
         )
         .build()
         .unwrap();
@@ -803,6 +824,7 @@ mod tests {
             &payload,
             UpstreamAuth::XApiKey("sk-ant-key"),
             Some("2023-06-01"),
+            None,
             None,
         )
         .build()
@@ -834,6 +856,7 @@ mod tests {
             UpstreamAuth::XApiKey("key"),
             Some("2023-06-01"),
             Some("max-tokens-3-5-sonnet-2024-07-15"),
+            None,
         )
         .build()
         .unwrap();
@@ -845,6 +868,49 @@ mod tests {
                 .to_str()
                 .unwrap(),
             "max-tokens-3-5-sonnet-2024-07-15"
+        );
+    }
+
+    #[test]
+    fn test_build_upstream_request_with_custom_headers() {
+        let client = reqwest::Client::new();
+        let payload = json!({"model": "gpt-4o"});
+        let mut custom = HashMap::new();
+        custom.insert(
+            "Copilot-Integration-Id".to_string(),
+            "vscode-chat".to_string(),
+        );
+        custom.insert(
+            "Openai-Intent".to_string(),
+            "conversation-edits".to_string(),
+        );
+        let req = build_upstream_request(
+            &client,
+            "https://api.githubcopilot.com/chat/completions",
+            &payload,
+            UpstreamAuth::Bearer("token"),
+            None,
+            None,
+            Some(&custom),
+        )
+        .build()
+        .unwrap();
+
+        assert_eq!(
+            req.headers()
+                .get("Copilot-Integration-Id")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "vscode-chat"
+        );
+        assert_eq!(
+            req.headers()
+                .get("Openai-Intent")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "conversation-edits"
         );
     }
 
@@ -863,6 +929,7 @@ mod tests {
             &headers,
             None,
             &payload,
+            None,
         )
         .build()
         .unwrap();
@@ -891,6 +958,7 @@ mod tests {
             &headers,
             None,
             &payload,
+            None,
         )
         .build()
         .unwrap();
@@ -922,6 +990,7 @@ mod tests {
             &headers,
             Some("output-128k-2025-02-19"),
             &payload,
+            None,
         )
         .build()
         .unwrap();
@@ -962,6 +1031,7 @@ mod tests {
             "https://api.openai.com",
             &headers,
             None,
+            None,
         );
 
         assert_eq!(result["authorization"], "Bearer ***");
@@ -977,6 +1047,7 @@ mod tests {
             "https://api.anthropic.com",
             &headers,
             Some("beta-feature"),
+            None,
         );
 
         assert_eq!(result["x-api-key"], "***");
@@ -993,11 +1064,32 @@ mod tests {
             "https://vertex.api.com",
             &headers,
             None,
+            None,
         );
 
         assert_eq!(result["authorization"], "Bearer ***");
         assert_eq!(result["anthropic-version"], "vertex-2023-10-16");
         assert!(result.get("anthropic-beta").is_none());
+    }
+
+    #[test]
+    fn test_build_provider_debug_headers_with_custom() {
+        let headers = HeaderMap::new();
+        let mut custom = HashMap::new();
+        custom.insert(
+            "Copilot-Integration-Id".to_string(),
+            "vscode-chat".to_string(),
+        );
+        let result = build_provider_debug_headers(
+            Protocol::OpenAI,
+            "https://api.githubcopilot.com",
+            &headers,
+            None,
+            Some(&custom),
+        );
+
+        assert_eq!(result["authorization"], "Bearer ***");
+        assert_eq!(result["Copilot-Integration-Id"], "vscode-chat");
     }
 
     // -- build_protocol_error_body (tested via build_protocol_error_response) --

@@ -37,6 +37,7 @@ def build_upstream_headers(
     api_key: str,
     anthropic_version: Optional[str] = None,
     anthropic_beta: Optional[str] = None,
+    custom_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, str]:
     """Build auth headers based on provider protocol."""
     headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -50,6 +51,8 @@ def build_upstream_headers(
         headers["Authorization"] = f"Bearer {api_key}"
     if anthropic_beta:
         headers["anthropic-beta"] = anthropic_beta
+    if custom_headers:
+        headers.update(custom_headers)
     return headers
 
 
@@ -83,6 +86,7 @@ def build_provider_debug_headers(
     url: str,
     headers: dict[str, str],
     anthropic_beta: Optional[str] = None,
+    custom_headers: Optional[dict[str, str]] = None,
 ) -> dict[str, str]:
     """Build masked provider request headers for error logging."""
     h: dict[str, str] = {"url": url, "content-type": "application/json"}
@@ -98,6 +102,8 @@ def build_provider_debug_headers(
             h["anthropic-beta"] = anthropic_beta
     else:
         h["authorization"] = "Bearer ***"
+    if custom_headers:
+        h.update(custom_headers)
     return h
 
 
