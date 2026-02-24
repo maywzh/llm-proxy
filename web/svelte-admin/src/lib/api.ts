@@ -21,6 +21,7 @@ import type {
   ChatResponse,
   StreamChunk,
   ModelsResponse,
+  ModelInfoListV1,
   HealthCheckRequest,
   HealthCheckResponse,
   ProviderHealthStatus,
@@ -260,6 +261,13 @@ export class ApiClient {
   // Chat API
   async listModels(credentialKey: string): Promise<ModelsResponse> {
     return this.requestWithApiKey<ModelsResponse>(credentialKey, '/v1/models');
+  }
+
+  async listModelInfo(credentialKey: string): Promise<ModelInfoListV1> {
+    return this.requestWithApiKey<ModelInfoListV1>(
+      credentialKey,
+      '/v1/model/info'
+    );
   }
 
   async createChatCompletion(
