@@ -115,6 +115,10 @@ class ProviderConfig(BaseModel):
         default_factory=dict,
         description="Provider-specific parameters (e.g., GCP Vertex settings)",
     )
+    lua_script: Optional[str] = Field(
+        default=None,
+        description="Optional Lua script for request/response transformation",
+    )
 
     @property
     def gcp_project(self) -> Optional[str]:

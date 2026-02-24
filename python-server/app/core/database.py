@@ -57,6 +57,7 @@ class ProviderModel(Base):
     weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     provider_params: Mapped[dict] = mapped_column(JSONB, nullable=False, default={})
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    lua_script: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -461,6 +462,7 @@ class DynamicConfig:
                 model_mapping=p.get_model_mapping(),
                 provider_type=p.provider_type,
                 provider_params=p.get_provider_params(),
+                lua_script=p.lua_script,
             )
             for p in versioned_config.providers
         ]
@@ -499,6 +501,11 @@ class DynamicConfig:
 
         # Sync rate limiter with updated credentials
         init_rate_limiter()
+
+        # Reload Lua scripts for providers
+        from app.scripting.engine import get_lua_engine
+
+        get_lua_engine().reload_from_providers(providers)
 
         logger.info(
             f"AppConfig and ProviderService synced: {len(providers)} providers, {len(credentials)} credentials"
@@ -635,6 +642,7 @@ async def create_provider(
     model_mapping: Optional[dict] = None,
     weight: int = 1,
     provider_params: Optional[dict] = None,
+    lua_script: Optional[str] = None,
 ) -> ProviderModel:
     """Create a new provider"""
     async with db.session() as session:
@@ -647,6 +655,7 @@ async def create_provider(
             weight=weight,
             provider_params=provider_params or {},
             is_enabled=True,
+            lua_script=lua_script,
         )
         session.add(provider)
         await session.flush()

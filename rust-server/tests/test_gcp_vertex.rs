@@ -57,6 +57,7 @@ async fn create_vertex_test_app(mock_server: &MockServer) -> Router {
             model_mapping,
             provider_type: "gcp-vertex".to_string(),
             provider_params,
+            lua_script: None,
         }],
         server: ServerConfig {
             host: "0.0.0.0".to_string(),

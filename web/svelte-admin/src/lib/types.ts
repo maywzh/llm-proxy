@@ -32,6 +32,7 @@ export interface Provider {
   model_mapping: Record<string, ModelMappingValue>;
   is_enabled: boolean;
   provider_params?: Record<string, unknown>;
+  lua_script?: string | null;
 }
 
 export interface ProviderCreate {
@@ -41,6 +42,7 @@ export interface ProviderCreate {
   api_key: string;
   model_mapping?: Record<string, ModelMappingValue>;
   provider_params?: Record<string, unknown>;
+  lua_script?: string | null;
 }
 
 export interface ProviderUpdate {
@@ -50,6 +52,7 @@ export interface ProviderUpdate {
   model_mapping?: Record<string, ModelMappingValue>;
   is_enabled?: boolean;
   provider_params?: Record<string, unknown>;
+  lua_script?: string | null;
 }
 
 export interface ProviderListResponse {
@@ -171,6 +174,8 @@ export interface ProviderFormData {
   gcp_streaming_action: string;
   // Custom headers (stored in provider_params.custom_headers on backend)
   custom_headers: Record<string, string>;
+  // Lua script for request/response transformation
+  lua_script: string;
 }
 
 export interface CredentialFormData {

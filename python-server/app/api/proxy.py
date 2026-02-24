@@ -59,6 +59,7 @@ from app.core.logging import (
 )
 from app.models.config import CredentialConfig
 from app.models.provider import Provider
+from app.scripting.engine import get_lua_engine
 from app.transformer import (
     Protocol,
     ProtocolDetector,
@@ -125,6 +126,36 @@ def _get_provider_endpoint(protocol: Protocol) -> str:
 def _extract_model_from_request(payload: dict[str, Any], protocol: Protocol) -> str:
     """Extract model from request based on protocol."""
     return payload.get("model", "unknown")
+
+
+def _apply_lua_on_request(
+    provider_payload: dict[str, Any],
+    provider: Provider,
+    ctx: TransformContext,
+) -> None:
+    """Apply Lua on_request hook if the provider has a script."""
+    if not provider.lua_script:
+        return
+    engine = get_lua_engine()
+    modified = engine.call_on_request(
+        provider.name, provider_payload, ctx.original_model
+    )
+    if modified is not None:
+        provider_payload.clear()
+        provider_payload.update(modified)
+
+
+def _apply_lua_on_response(
+    response_body: dict[str, Any],
+    provider: Provider,
+    model: str,
+) -> dict[str, Any]:
+    """Apply Lua on_response hook if the provider has a script. Returns (possibly modified) body."""
+    if not provider.lua_script:
+        return response_body
+    engine = get_lua_engine()
+    modified = engine.call_on_response(provider.name, response_body, model)
+    return modified if modified is not None else response_body
 
 
 def _extract_stream_flag(payload: dict[str, Any], protocol: Protocol) -> bool:
@@ -904,6 +935,9 @@ async def _handle_streaming_request(
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)
     _normalize_gemini3_provider_payload(provider_payload, ctx)
 
+    # Apply Lua on_request hook if the provider has a script
+    _apply_lua_on_request(provider_payload, provider, ctx)
+
     # Record bypass/cross-protocol metrics
     _record_protocol_metrics(ctx, bypassed)
 
@@ -1155,6 +1189,9 @@ async def _handle_non_streaming_request(
     # Transform request
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)
     _normalize_gemini3_provider_payload(provider_payload, ctx)
+
+    # Apply Lua on_request hook if the provider has a script
+    _apply_lua_on_request(provider_payload, provider, ctx)
 
     # Record bypass/cross-protocol metrics
     _record_protocol_metrics(ctx, bypassed)

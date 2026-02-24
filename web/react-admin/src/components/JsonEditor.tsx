@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import CodeMirror from '@uiw/react-codemirror';
+import { json } from '@codemirror/lang-json';
 import type { ModelMappingEntry, ModelMappingValue } from '../types';
 
 type JsonEditorProps = {
@@ -40,14 +42,12 @@ function tryParseModelMapping(
     parsed as Record<string, unknown>
   )) {
     if (typeof value === 'string') {
-      // Simple format: "gpt-4": "gpt-4-turbo"
       mapping[key] = value;
     } else if (
       typeof value === 'object' &&
       value !== null &&
       !Array.isArray(value)
     ) {
-      // Extended format: check for mapped_model field
       const entry = value as Record<string, unknown>;
       if (typeof entry.mapped_model !== 'string') {
         return {
@@ -66,6 +66,8 @@ function tryParseModelMapping(
 
   return { ok: true, value: mapping };
 }
+
+const jsonLang = json();
 
 const JsonEditor: React.FC<JsonEditorProps> = ({
   id,
@@ -95,44 +97,59 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
     setErrorAndNotify(null);
   }, [setErrorAndNotify, value]);
 
-  const handleChange = (nextText: string) => {
-    isEditingRef.current = true;
-    setText(nextText);
+  const handleChange = useCallback(
+    (nextText: string) => {
+      isEditingRef.current = true;
+      setText(nextText);
 
-    const parsed = tryParseModelMapping(nextText);
-    if (!parsed.ok) {
-      setErrorAndNotify(parsed.error);
-      return;
-    }
+      const parsed = tryParseModelMapping(nextText);
+      if (!parsed.ok) {
+        setErrorAndNotify(parsed.error);
+        return;
+      }
 
-    setErrorAndNotify(null);
-    onChange(parsed.value);
-  };
+      setErrorAndNotify(null);
+      onChange(parsed.value);
+    },
+    [onChange, setErrorAndNotify]
+  );
 
-  const handleBlur = () => {
+  const handleBlur = useCallback(() => {
     isEditingRef.current = false;
 
     const parsed = tryParseModelMapping(text);
     if (!parsed.ok) return;
 
     setText(toPrettyJson(parsed.value));
-  };
+  }, [text]);
+
+  const height = `${rows * 1.5}rem`;
 
   return (
     <div>
       <label htmlFor={id} className="label">
         {label}
       </label>
-      <textarea
-        id={id}
-        value={text}
-        onChange={e => handleChange(e.target.value)}
-        onBlur={handleBlur}
-        className="input font-mono"
-        rows={rows}
-        placeholder={placeholder}
-        aria-invalid={!!error}
-      />
+      <div
+        className={`rounded-md border ${error ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'} overflow-hidden`}
+      >
+        <CodeMirror
+          id={id}
+          value={text}
+          height={height}
+          extensions={[jsonLang]}
+          onChange={handleChange}
+          onBlur={handleBlur}
+          theme="dark"
+          placeholder={placeholder}
+          basicSetup={{
+            lineNumbers: true,
+            foldGutter: false,
+            highlightActiveLine: true,
+            tabSize: 2,
+          }}
+        />
+      </div>
       {helperText && !error && <p className="helper-text">{helperText}</p>}
       {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
     </div>

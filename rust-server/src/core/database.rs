@@ -4,6 +4,7 @@
 //! Migrations are managed externally by golang-migrate.
 
 use crate::core::config::ModelMappingValue;
+use crate::scripting::LuaEngine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -171,7 +172,7 @@ impl Database {
     pub async fn load_providers(&self) -> Result<Vec<ProviderEntity>, sqlx::Error> {
         let providers = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, lua_script, created_at, updated_at
             FROM providers
             WHERE is_enabled = true
             ORDER BY id
@@ -186,7 +187,7 @@ impl Database {
     pub async fn load_all_providers(&self) -> Result<Vec<ProviderEntity>, sqlx::Error> {
         let providers = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, lua_script, created_at, updated_at
             FROM providers
             ORDER BY id
             "#,
@@ -200,7 +201,7 @@ impl Database {
     pub async fn get_provider(&self, id: i32) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let provider = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, lua_script, created_at, updated_at
             FROM providers
             WHERE id = $1
             "#,
@@ -218,7 +219,7 @@ impl Database {
     ) -> Result<Option<ProviderEntity>, sqlx::Error> {
         let provider = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
+            SELECT id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, lua_script, created_at, updated_at
             FROM providers
             WHERE provider_key = $1
             "#,
@@ -236,9 +237,9 @@ impl Database {
     ) -> Result<ProviderEntity, sqlx::Error> {
         let entity = sqlx::query_as::<_, ProviderEntity>(
             r#"
-            INSERT INTO providers (provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, provider_params)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
+            INSERT INTO providers (provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, provider_params, lua_script)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, lua_script, created_at, updated_at
             "#,
         )
         .bind(&provider.provider_key)
@@ -249,6 +250,7 @@ impl Database {
         .bind(provider.weight)
         .bind(provider.is_enabled)
         .bind(sqlx::types::Json(&provider.provider_params))
+        .bind(&provider.lua_script)
         .fetch_one(&self.pool)
         .await?;
         Ok(entity)
@@ -270,9 +272,10 @@ impl Database {
                 weight = COALESCE($6, weight),
                 is_enabled = COALESCE($7, is_enabled),
                 provider_params = COALESCE($8, provider_params),
+                lua_script = CASE WHEN $9::boolean THEN $10 ELSE lua_script END,
                 updated_at = NOW()
             WHERE id = $1
-            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, created_at, updated_at
+            RETURNING id, provider_key, provider_type, api_base, api_key, model_mapping, weight, is_enabled, COALESCE(provider_params, '{}'::jsonb) as provider_params, lua_script, created_at, updated_at
             "#,
         )
         .bind(id)
@@ -283,6 +286,8 @@ impl Database {
         .bind(update.weight)
         .bind(update.is_enabled)
         .bind(update.provider_params.as_ref().map(sqlx::types::Json))
+        .bind(update.lua_script.is_some()) // $9: whether to update lua_script
+        .bind(update.lua_script.as_ref().and_then(|v| v.as_ref())) // $10: new value (nullable)
         .fetch_optional(&self.pool)
         .await?;
         Ok(entity)
@@ -423,6 +428,21 @@ impl Database {
     }
 }
 
+/// Deserialize `Option<Option<T>>` for nullable fields in update requests.
+///
+/// - Field absent from JSON → `None` (don't change)
+/// - Field is `null` → `Some(None)` (clear the value)
+/// - Field has a value → `Some(Some(value))`
+pub fn deserialize_optional_nullable<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(deserializer)?))
+}
+
 /// Provider entity from database
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
@@ -435,6 +455,7 @@ impl Database {
     "weight": 1,
     "is_enabled": true,
     "provider_params": {},
+    "lua_script": null,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
 }))]
@@ -461,6 +482,8 @@ pub struct ProviderEntity {
     #[serde(default)]
     #[schema(value_type = HashMap<String, serde_json::Value>)]
     pub provider_params: sqlx::types::Json<HashMap<String, serde_json::Value>>,
+    /// Optional Lua script for request/response transformation
+    pub lua_script: Option<String>,
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
     /// Last update timestamp
@@ -500,6 +523,9 @@ pub struct CreateProvider {
     /// Provider-specific parameters (e.g., GCP project, location, publisher)
     #[serde(default)]
     pub provider_params: HashMap<String, serde_json::Value>,
+    /// Optional Lua script for request/response transformation
+    #[serde(default)]
+    pub lua_script: Option<String>,
 }
 
 /// Update provider request
@@ -525,6 +551,9 @@ pub struct UpdateProvider {
     pub is_enabled: Option<bool>,
     /// Provider-specific parameters (e.g., GCP project, location, publisher)
     pub provider_params: Option<HashMap<String, serde_json::Value>>,
+    /// Optional Lua script (None=don't change, Some(None)=clear, Some(Some)=set)
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
+    pub lua_script: Option<Option<String>>,
 }
 
 /// Credential entity from database
@@ -656,6 +685,7 @@ impl RuntimeConfig {
 pub struct DynamicConfig {
     config: arc_swap::ArcSwap<RuntimeConfig>,
     db: Arc<Database>,
+    lua_engine: Option<Arc<LuaEngine>>,
 }
 
 impl DynamicConfig {
@@ -663,7 +693,13 @@ impl DynamicConfig {
         Self {
             config: arc_swap::ArcSwap::from_pointee(config),
             db,
+            lua_engine: None,
         }
+    }
+
+    /// Set the Lua engine for script hot-reload on config changes.
+    pub fn set_lua_engine(&mut self, engine: Arc<LuaEngine>) {
+        self.lua_engine = Some(engine);
     }
 
     /// Get current configuration (zero-cost read)
@@ -680,6 +716,21 @@ impl DynamicConfig {
     pub async fn reload(&self) -> Result<i64, sqlx::Error> {
         let new_config = RuntimeConfig::load_from_db(&self.db).await?;
         let version = new_config.version;
+
+        // Reload Lua scripts from providers
+        if let Some(ref engine) = self.lua_engine {
+            let sources: Vec<(String, String)> = new_config
+                .providers
+                .iter()
+                .filter_map(|p| {
+                    p.lua_script
+                        .as_ref()
+                        .map(|s| (p.provider_key.clone(), s.clone()))
+                })
+                .collect();
+            engine.reload(sources);
+        }
+
         self.config.store(Arc::new(new_config));
         tracing::info!(version = version, "Configuration reloaded from database");
         Ok(version)

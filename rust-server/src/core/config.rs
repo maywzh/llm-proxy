@@ -246,6 +246,10 @@ pub struct ProviderConfig {
     /// Provider-specific parameters (e.g., GCP project, location, publisher)
     #[serde(default)]
     pub provider_params: HashMap<String, serde_json::Value>,
+
+    /// Optional Lua script for request/response transformation
+    #[serde(default)]
+    pub lua_script: Option<String>,
 }
 
 fn default_provider_type() -> String {

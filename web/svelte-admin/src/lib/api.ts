@@ -140,6 +140,19 @@ export class ApiClient {
     });
   }
 
+  async validateScript(
+    providerId: number,
+    luaScript: string
+  ): Promise<{ valid: boolean; error?: string }> {
+    return this.request<{ valid: boolean; error?: string }>(
+      `/admin/v1/providers/${providerId}/validate-script`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ lua_script: luaScript }),
+      }
+    );
+  }
+
   async setProviderStatus(
     id: number,
     enabled: boolean

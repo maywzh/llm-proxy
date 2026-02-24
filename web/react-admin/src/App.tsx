@@ -10,6 +10,7 @@ import { ToastContainer } from './components/Toast';
 import Layout from './components/Layout.tsx';
 import Login from './pages/Login.tsx';
 import Providers from './pages/Providers.tsx';
+import ProviderDetail from './pages/ProviderDetail.tsx';
 import Credentials from './pages/Credentials.tsx';
 import Dashboard from './pages/Dashboard.tsx';
 import Health from './pages/Health.tsx';
@@ -35,6 +36,18 @@ function App() {
               isAuthenticated ? (
                 <Layout>
                   <Dashboard />
+                </Layout>
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/providers/:id"
+            element={
+              isAuthenticated ? (
+                <Layout>
+                  <ProviderDetail />
                 </Layout>
               ) : (
                 <Navigate to="/" replace />

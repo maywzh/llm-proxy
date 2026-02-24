@@ -60,6 +60,7 @@ pub use unified::*;
 
 use crate::core::error::Result;
 use crate::core::AppError;
+use crate::scripting::LuaEngine;
 
 // ============================================================================
 // Transformer Trait
@@ -276,6 +277,7 @@ impl TransformContext {
 pub struct TransformPipeline {
     registry: Arc<TransformerRegistry>,
     feature_transformers: Option<Arc<dyn FeatureTransformer>>,
+    lua_engine: Option<Arc<LuaEngine>>,
 }
 
 impl TransformPipeline {
@@ -284,6 +286,7 @@ impl TransformPipeline {
         TransformPipeline {
             registry,
             feature_transformers: None,
+            lua_engine: None,
         }
     }
 
@@ -295,6 +298,7 @@ impl TransformPipeline {
         TransformPipeline {
             registry,
             feature_transformers: Some(Arc::new(features)),
+            lua_engine: None,
         }
     }
 
@@ -385,6 +389,24 @@ impl TransformPipeline {
         self.feature_transformers.as_ref()
     }
 
+    /// Set the Lua scripting engine.
+    pub fn set_lua_engine(&mut self, engine: Arc<LuaEngine>) {
+        self.lua_engine = Some(engine);
+    }
+
+    /// Get the Lua engine (if any).
+    pub fn lua_engine(&self) -> Option<&Arc<LuaEngine>> {
+        self.lua_engine.as_ref()
+    }
+
+    /// Check if a provider has a Lua script.
+    pub fn has_lua_script(&self, provider_name: &str) -> bool {
+        self.lua_engine
+            .as_ref()
+            .map(|e| e.has_script(provider_name))
+            .unwrap_or(false)
+    }
+
     // =========================================================================
     // Bypass Mode Methods
     // =========================================================================
@@ -394,11 +416,12 @@ impl TransformPipeline {
     /// Bypass mode is used when:
     /// 1. Client and provider use the same protocol
     /// 2. No feature transformers are configured
+    /// 3. No Lua script exists for the provider
     ///
     /// In bypass mode, requests/responses pass through with minimal transformation
     /// (only model name mapping is applied).
     pub fn should_bypass(&self, ctx: &TransformContext) -> bool {
-        ctx.is_same_protocol() && !self.has_features()
+        ctx.is_same_protocol() && !self.has_features() && !self.has_lua_script(&ctx.provider_name)
     }
 
     /// Transform request with bypass optimization.

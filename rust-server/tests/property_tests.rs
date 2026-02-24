@@ -28,6 +28,7 @@ fn provider_config_strategy() -> impl Strategy<Value = ProviderConfig> {
         model_mapping: HashMap::new(),
         provider_type: "openai".to_string(),
         provider_params: HashMap::new(),
+        lua_script: None,
     })
 }
 
@@ -105,6 +106,7 @@ proptest! {
                     model_mapping: HashMap::new(),
                     provider_type: "openai".to_string(),
                     provider_params: HashMap::new(),
+                    lua_script: None,
                 },
                 ProviderConfig {
                     name: "Provider2".to_string(),
@@ -114,6 +116,7 @@ proptest! {
                     model_mapping: HashMap::new(),
                     provider_type: "openai".to_string(),
                     provider_params: HashMap::new(),
+                    lua_script: None,
                 },
             ],
             server: ServerConfig::default(),
@@ -204,6 +207,7 @@ proptest! {
                     model_mapping,
                     provider_type: "openai".to_string(),
                     provider_params: HashMap::new(),
+                    lua_script: None,
                 },
             ],
             server: ServerConfig::default(),
@@ -266,6 +270,7 @@ proptest! {
                     model_mapping: HashMap::new(),
                     provider_type: "openai".to_string(),
                     provider_params: HashMap::new(),
+                    lua_script: None,
                 },
             ],
             server: ServerConfig::default(),
@@ -367,6 +372,7 @@ mod quickcheck_tests {
                 model_mapping: HashMap::new(),
                 provider_type: "openai".to_string(),
                 provider_params: HashMap::new(),
+                lua_script: None,
             })
             .collect();
 
@@ -404,6 +410,7 @@ mod quickcheck_tests {
                 model_mapping: HashMap::new(),
                 provider_type: "openai".to_string(),
                 provider_params: HashMap::new(),
+                lua_script: None,
             })
             .collect();
 
@@ -461,6 +468,7 @@ mod complex_multi_provider_tests {
                     ]),
                     provider_type: "openai".to_string(),
                     provider_params: HashMap::new(),
+                    lua_script: None,
                 },
                 ProviderConfig {
                     name: "provider1".to_string(),
@@ -474,6 +482,7 @@ mod complex_multi_provider_tests {
                     ]),
                     provider_type: "openai".to_string(),
                     provider_params: HashMap::new(),
+                    lua_script: None,
                 },
                 ProviderConfig {
                     name: "provider2".to_string(),
@@ -486,6 +495,7 @@ mod complex_multi_provider_tests {
                     ]),
                     provider_type: "openai".to_string(),
                     provider_params: HashMap::new(),
+                    lua_script: None,
                 },
                 ProviderConfig {
                     name: "provider3".to_string(),
@@ -495,6 +505,7 @@ mod complex_multi_provider_tests {
                     model_mapping: simple_mapping(&[("model-c", "provider3-model-c")]),
                     provider_type: "openai".to_string(),
                     provider_params: HashMap::new(),
+                    lua_script: None,
                 },
             ],
             server: ServerConfig::default(),

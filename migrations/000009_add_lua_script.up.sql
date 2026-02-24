@@ -1,0 +1,1 @@
+ALTER TABLE providers ADD COLUMN lua_script TEXT DEFAULT NULL;

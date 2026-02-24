@@ -32,6 +32,7 @@
 
 pub mod api;
 pub mod core;
+pub mod scripting;
 pub mod services;
 pub mod transformer;
 

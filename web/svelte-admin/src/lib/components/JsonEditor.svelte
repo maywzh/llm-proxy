@@ -1,19 +1,51 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
+  import {
+    EditorView,
+    keymap,
+    lineNumbers,
+    highlightActiveLine,
+    highlightSpecialChars,
+  } from '@codemirror/view';
+  import { EditorState } from '@codemirror/state';
+  import { bracketMatching, indentOnInput } from '@codemirror/language';
+  import { json } from '@codemirror/lang-json';
+  import {
+    defaultKeymap,
+    indentWithTab,
+    history,
+    historyKeymap,
+  } from '@codemirror/commands';
+  import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+  import { highlightSelectionMatches } from '@codemirror/search';
   import type { ModelMappingEntry, ModelMappingValue } from '../types';
 
-  export let id: string;
-  export let label: string;
-  export let value: Record<string, ModelMappingValue>;
-  export let onChange: (next: Record<string, ModelMappingValue>) => void;
-  export let onErrorChange: ((error: string | null) => void) | undefined =
-    undefined;
-  export let placeholder: string | undefined = undefined;
-  export let helperText: string | undefined = undefined;
-  export let rows = 6;
+  interface Props {
+    id: string;
+    label: string;
+    value: Record<string, ModelMappingValue>;
+    onChange: (next: Record<string, ModelMappingValue>) => void;
+    onErrorChange?: (error: string | null) => void;
+    rows?: number;
+    placeholder?: string;
+    helperText?: string;
+  }
 
-  let text = '';
-  let error: string | null = null;
-  let isEditing = false;
+  let {
+    id,
+    label,
+    value,
+    onChange,
+    onErrorChange,
+    rows = 6,
+    placeholder: _placeholder,
+    helperText,
+  }: Props = $props();
+
+  let error = $state<string | null>(null);
+  let editorContainer: HTMLDivElement;
+  let view: EditorView | null = null;
+  let isInternalUpdate = false;
 
   function toPrettyJson(v: Record<string, ModelMappingValue>): string {
     return JSON.stringify(v ?? {}, null, 2);
@@ -50,10 +82,8 @@
     const mapping: Record<string, ModelMappingValue> = {};
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof v === 'string') {
-        // Simple format: "gpt-4": "gpt-4-turbo"
         mapping[k] = v;
       } else if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
-        // Extended format: check for mapped_model field
         const entry = v as Record<string, unknown>;
         if (typeof entry.mapped_model !== 'string') {
           return {
@@ -73,46 +103,142 @@
     return { ok: true, value: mapping };
   }
 
-  $: if (!isEditing) {
-    text = toPrettyJson(value);
-    setError(null);
-  }
+  const darkTheme = EditorView.theme({
+    '&': {
+      backgroundColor: '#1e1e2e',
+      color: '#cdd6f4',
+      fontSize: '13px',
+    },
+    '.cm-content': {
+      caretColor: '#f5e0dc',
+      fontFamily:
+        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+    },
+    '.cm-gutters': {
+      backgroundColor: '#181825',
+      color: '#6c7086',
+      border: 'none',
+    },
+    '.cm-activeLine': {
+      backgroundColor: '#313244',
+    },
+    '.cm-activeLineGutter': {
+      backgroundColor: '#313244',
+    },
+    '&.cm-focused .cm-cursor': {
+      borderLeftColor: '#f5e0dc',
+    },
+    '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': {
+      backgroundColor: '#45475a',
+    },
+  });
 
-  function handleInput(nextText: string) {
-    isEditing = true;
-    text = nextText;
-
-    const parsed = tryParseModelMapping(nextText);
-    if (!parsed.ok) {
-      setError(parsed.error);
-      return;
-    }
-
-    setError(null);
-    onChange(parsed.value);
-  }
-
-  function handleBlur() {
-    isEditing = false;
-
+  function formatIfValid() {
+    if (!view) return;
+    const text = view.state.doc.toString();
     const parsed = tryParseModelMapping(text);
     if (!parsed.ok) return;
-    text = toPrettyJson(parsed.value);
+    const pretty = toPrettyJson(parsed.value);
+    if (pretty !== text) {
+      isInternalUpdate = true;
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: pretty },
+      });
+      isInternalUpdate = false;
+    }
   }
+
+  function createEditor() {
+    if (!editorContainer) return;
+
+    const updateListener = EditorView.updateListener.of(update => {
+      if (update.docChanged && !isInternalUpdate) {
+        const newText = update.state.doc.toString();
+        const parsed = tryParseModelMapping(newText);
+        if (!parsed.ok) {
+          setError(parsed.error);
+          return;
+        }
+        setError(null);
+        onChange(parsed.value);
+      }
+    });
+
+    const blurHandler = EditorView.domEventHandlers({
+      blur: () => {
+        formatIfValid();
+      },
+    });
+
+    const state = EditorState.create({
+      doc: toPrettyJson(value),
+      extensions: [
+        lineNumbers(),
+        highlightActiveLine(),
+        highlightSpecialChars(),
+        history(),
+        indentOnInput(),
+        bracketMatching(),
+        closeBrackets(),
+        highlightSelectionMatches(),
+        EditorState.tabSize.of(2),
+        keymap.of([
+          ...closeBracketsKeymap,
+          ...defaultKeymap,
+          ...historyKeymap,
+          indentWithTab,
+        ]),
+        json(),
+        darkTheme,
+        EditorView.lineWrapping,
+        updateListener,
+        blurHandler,
+      ],
+    });
+
+    view = new EditorView({
+      state,
+      parent: editorContainer,
+    });
+  }
+
+  onMount(() => {
+    createEditor();
+  });
+
+  onDestroy(() => {
+    view?.destroy();
+    view = null;
+  });
+
+  // Sync external value changes into the editor
+  $effect(() => {
+    if (!view) return;
+    const pretty = toPrettyJson(value);
+    if (pretty !== view.state.doc.toString()) {
+      isInternalUpdate = true;
+      view.dispatch({
+        changes: {
+          from: 0,
+          to: view.state.doc.length,
+          insert: pretty,
+        },
+      });
+      isInternalUpdate = false;
+      setError(null);
+    }
+  });
 </script>
 
 <div>
   <label for={id} class="label">{label}</label>
-  <textarea
-    {id}
-    class="input font-mono"
-    {rows}
-    {placeholder}
-    value={text}
-    aria-invalid={error ? 'true' : undefined}
-    oninput={e => handleInput((e.currentTarget as HTMLTextAreaElement).value)}
-    onblur={handleBlur}
-  ></textarea>
+  <div
+    class="rounded-md border overflow-hidden {error
+      ? 'border-red-500'
+      : 'border-gray-300 dark:border-gray-600'}"
+    style="height: {rows * 1.5}rem;"
+    bind:this={editorContainer}
+  ></div>
 
   {#if helperText && !error}
     <p class="helper-text">{helperText}</p>

@@ -38,6 +38,16 @@
     "vite": "^7.3.0"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.0",
+    "@codemirror/commands": "^6.10.2",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/language": "^6.12.1",
+    "@codemirror/legacy-modes": "^6.5.2",
+    "@codemirror/lint": "^6.9.4",
+    "@codemirror/search": "^6.6.0",
+    "@codemirror/state": "^6.5.4",
+    "@codemirror/view": "^6.39.15",
+    "codemirror": "^6.0.2",
     "highlight.js": "^11.11.1",
     "isomorphic-dompurify": "^2.35.0",
     "lucide-svelte": "^0.468.0",

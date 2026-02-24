@@ -77,7 +77,10 @@ const Dashboard: React.FC = () => {
                 <span className="flex-shrink-0 w-6 h-6 bg-primary-100 dark:bg-primary-900 text-primary-600 dark:text-primary-400 rounded-full flex items-center justify-center text-sm font-medium mr-3">
                   2
                 </span>
-                <span>Click the share button and select "Public Dashboard"</span>
+                <span>
+                  Click the share button and select &ldquo;Public
+                  Dashboard&rdquo;
+                </span>
               </li>
               <li className="flex items-start">
                 <span className="flex-shrink-0 w-6 h-6 bg-primary-100 dark:bg-primary-900 text-primary-600 dark:text-primary-400 rounded-full flex items-center justify-center text-sm font-medium mr-3">
