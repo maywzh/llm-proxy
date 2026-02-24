@@ -68,5 +68,10 @@ k8s/
 **/config.yaml
 **/config.*.yaml
 
+# Tesla-specific files (internal builds)
+**/build.sh
+**/Dockerfile.tesla
+**/debian-cn-sources.list
+
 **/Claude.md
 **/Agents.md
