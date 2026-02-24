@@ -403,7 +403,8 @@ impl HealthCheckService {
             let response_api_payload = json!({
                 "model": actual_model,
                 "input": [{"role": "user", "content": "Hi"}],
-                "stream": false,
+                "max_output_tokens": 5,
+                "stream": true,
             });
             build_upstream_request(
                 client,

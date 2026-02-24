@@ -282,9 +282,9 @@ class HealthCheckService:
             }
             test_payload = {
                 "model": actual_model,
-                "input": "Hi",
+                "input": [{"role": "user", "content": "Hi"}],
                 "max_output_tokens": 5,
-                "stream": False,
+                "stream": True,
             }
         else:
             # OpenAI-compatible (openai, azure, etc.): Bearer auth + /chat/completions
