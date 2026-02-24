@@ -20,6 +20,11 @@
     EyeOff,
   } from 'lucide-svelte';
 
+  const DEFAULT_COPILOT_HEADERS: Record<string, string> = {
+    'Copilot-Integration-Id': 'vscode-chat',
+    'Openai-Intent': 'conversation-agents',
+  };
+
   let searchTerm = $state('');
   let debouncedSearch = $state('');
   let showDisabled = $state(false);
@@ -39,8 +44,11 @@
     gcp_publisher: '',
     gcp_blocking_action: '',
     gcp_streaming_action: '',
+    custom_headers: {},
   });
   let modelMappingError = $state<string | null>(null);
+  let newHeaderKey = $state('');
+  let newHeaderValue = $state('');
 
   // Debounce search input
   const updateDebouncedSearch = debounce((value: string) => {
@@ -88,8 +96,11 @@
       gcp_publisher: '',
       gcp_blocking_action: '',
       gcp_streaming_action: '',
+      custom_headers: {},
     };
     modelMappingError = null;
+    newHeaderKey = '';
+    newHeaderValue = '';
     editingProvider = null;
     showCreateForm = false;
     isModalClosing = false;
@@ -125,8 +136,13 @@
       gcp_streaming_action:
         (provider.provider_params?.gcp_vertex_actions as Record<string, string>)
           ?.streaming || '',
+      custom_headers:
+        (provider.provider_params?.custom_headers as Record<string, string>) ||
+        {},
     };
     modelMappingError = null;
+    newHeaderKey = '';
+    newHeaderValue = '';
     showCreateForm = true;
   }
 
@@ -184,9 +200,16 @@
               formData.gcp_streaming_action.trim() || 'streamRawPredict',
           };
         }
+        if (Object.keys(formData.custom_headers).length > 0) {
+          params.custom_headers = formData.custom_headers;
+        }
         updateData.provider_params = params;
       } else {
-        updateData.provider_params = {};
+        const params: Record<string, unknown> = {};
+        if (Object.keys(formData.custom_headers).length > 0) {
+          params.custom_headers = formData.custom_headers;
+        }
+        updateData.provider_params = params;
       }
 
       const success = await actions.updateProvider(
@@ -208,6 +231,9 @@
         gcp_project: formData.gcp_project,
         gcp_location: formData.gcp_location,
         gcp_publisher: formData.gcp_publisher,
+        gcp_blocking_action: formData.gcp_blocking_action,
+        gcp_streaming_action: formData.gcp_streaming_action,
+        custom_headers: formData.custom_headers,
       };
 
       const success = await actions.createProvider(createData);
@@ -377,6 +403,7 @@
                 <option value="openai">OpenAI</option>
                 <option value="azure">Azure OpenAI</option>
                 <option value="anthropic">Anthropic</option>
+                <option value="github-copilot">GitHub Copilot</option>
                 <option value="google">Google</option>
                 <option value="gemini">Gemini</option>
                 <option value="gcp-vertex">GCP Vertex AI</option>
@@ -396,7 +423,9 @@
               placeholder={formData.provider_type === 'gcp-vertex' ||
               formData.provider_type === 'gemini'
                 ? 'https://us-central1-aiplatform.googleapis.com'
-                : 'https://api.openai.com/v1'}
+                : formData.provider_type === 'github-copilot'
+                  ? 'https://api.githubcopilot.com'
+                  : 'https://api.openai.com/v1'}
               required
             />
           </div>
@@ -496,6 +525,98 @@
               {/if}
             </div>
           {/if}
+
+          <!-- Custom Headers -->
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="label mb-0">Custom Headers</label>
+              {#if formData.provider_type === 'github-copilot' && Object.keys(formData.custom_headers).length === 0}
+                <button
+                  type="button"
+                  onclick={() => {
+                    formData.custom_headers = { ...DEFAULT_COPILOT_HEADERS };
+                  }}
+                  class="text-xs text-primary-600 hover:text-primary-800 dark:text-primary-400"
+                >
+                  Load Copilot defaults
+                </button>
+              {/if}
+            </div>
+            {#if Object.keys(formData.custom_headers).length > 0}
+              <div class="space-y-2 mb-2">
+                {#each Object.entries(formData.custom_headers) as [key, _value] (key)}
+                  <div class="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={key}
+                      disabled
+                      class="input flex-1 text-sm font-mono"
+                      placeholder="Header name"
+                    />
+                    <span class="text-gray-400">:</span>
+                    <input
+                      type="text"
+                      value={formData.custom_headers[key]}
+                      oninput={e => {
+                        formData.custom_headers = {
+                          ...formData.custom_headers,
+                          [key]: (e.target as HTMLInputElement).value,
+                        };
+                      }}
+                      class="input flex-1 text-sm font-mono"
+                      placeholder="Header value"
+                    />
+                    <button
+                      type="button"
+                      onclick={() => {
+                        const { [key]: _, ...rest } = formData.custom_headers;
+                        formData.custom_headers = rest;
+                      }}
+                      class="btn-icon text-red-500 hover:text-red-700"
+                      title="Remove header"
+                    >
+                      <X class="w-4 h-4" />
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+            <div class="flex items-center gap-2">
+              <input
+                type="text"
+                bind:value={newHeaderKey}
+                class="input flex-1 text-sm font-mono"
+                placeholder="Header name"
+              />
+              <span class="text-gray-400">:</span>
+              <input
+                type="text"
+                bind:value={newHeaderValue}
+                class="input flex-1 text-sm font-mono"
+                placeholder="Header value"
+              />
+              <button
+                type="button"
+                onclick={() => {
+                  if (newHeaderKey.trim() && newHeaderValue.trim()) {
+                    formData.custom_headers = {
+                      ...formData.custom_headers,
+                      [newHeaderKey.trim()]: newHeaderValue.trim(),
+                    };
+                    newHeaderKey = '';
+                    newHeaderValue = '';
+                  }
+                }}
+                class="btn btn-secondary text-sm"
+                disabled={!newHeaderKey.trim() || !newHeaderValue.trim()}
+              >
+                Add
+              </button>
+            </div>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Extra headers sent with every request to this provider
+            </p>
+          </div>
 
           <div>
             <label for="api_key" class="label">

@@ -422,6 +422,12 @@ pub async fn handle_proxy_request(
                     headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
                 );
 
+                // Extract custom_headers from provider_params
+                let custom_headers: Option<std::collections::HashMap<String, String>> = provider
+                    .provider_params
+                    .get("custom_headers")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+
                 let request = build_protocol_upstream_request(
                     &state.app_state.http_client,
                     &url,
@@ -430,6 +436,7 @@ pub async fn handle_proxy_request(
                     &headers,
                     anthropic_beta_header.as_deref(),
                     &provider_payload,
+                    custom_headers.as_ref(),
                 );
 
                 let upstream_ctx = UpstreamContext {
@@ -500,6 +507,7 @@ pub async fn handle_proxy_request(
                             &url,
                             &headers,
                             anthropic_beta_header.as_deref(),
+                            custom_headers.as_ref(),
                         );
 
                         log_error(ErrorLogRecord {
@@ -535,6 +543,7 @@ pub async fn handle_proxy_request(
                             &url,
                             &headers,
                             anthropic_beta_header.as_deref(),
+                            custom_headers.as_ref(),
                         );
 
                         log_error(ErrorLogRecord {
@@ -1942,6 +1951,12 @@ pub async fn completions_v2(
                         "Processing completions request (V2)"
                     );
 
+                    let custom_headers: Option<std::collections::HashMap<String, String>> =
+                        provider
+                            .provider_params
+                            .get("custom_headers")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
                     let request = build_upstream_request(
                         &state.app_state.http_client,
                         &url,
@@ -1949,6 +1964,7 @@ pub async fn completions_v2(
                         UpstreamAuth::Bearer(&provider.api_key),
                         None,
                         None,
+                        custom_headers.as_ref(),
                     );
 
                     let upstream_ctx = UpstreamContext {

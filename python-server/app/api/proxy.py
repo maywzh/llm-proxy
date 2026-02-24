@@ -895,6 +895,11 @@ async def _handle_streaming_request(
         if anthropic_beta:
             headers["anthropic-beta"] = anthropic_beta
 
+    # Apply custom headers from provider_params
+    custom_headers = (provider.provider_params or {}).get("custom_headers")
+    if isinstance(custom_headers, dict):
+        headers.update(custom_headers)
+
     # Transform request
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)
     _normalize_gemini3_provider_payload(provider_payload, ctx)
@@ -1141,6 +1146,11 @@ async def _handle_non_streaming_request(
         )
         if anthropic_beta:
             headers["anthropic-beta"] = anthropic_beta
+
+    # Apply custom headers from provider_params
+    custom_headers = (provider.provider_params or {}).get("custom_headers")
+    if isinstance(custom_headers, dict):
+        headers.update(custom_headers)
 
     # Transform request
     provider_payload, bypassed = pipeline.transform_request_with_bypass(data, ctx)

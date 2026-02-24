@@ -293,6 +293,11 @@ class HealthCheckService:
                 "Authorization": f"Bearer {provider.api_key}",
             }
 
+        # Apply custom headers from provider_params
+        custom_headers = (provider.provider_params or {}).get("custom_headers")
+        if isinstance(custom_headers, dict):
+            headers.update(custom_headers)
+
         start_time = time.time()
 
         try:

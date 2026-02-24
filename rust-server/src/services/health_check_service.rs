@@ -266,6 +266,11 @@ impl HealthCheckService {
 
         let provider_type = provider.provider_type.to_lowercase();
 
+        let custom_headers: Option<std::collections::HashMap<String, String>> = provider
+            .provider_params
+            .get("custom_headers")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
         let payload = json!({
             "model": actual_model,
             "messages": [{"role": "user", "content": "Hi"}],
@@ -332,6 +337,7 @@ impl HealthCheckService {
                 UpstreamAuth::Bearer(&provider.api_key),
                 Some("vertex-2023-10-16"),
                 None,
+                custom_headers.as_ref(),
             )
         } else if provider_type == "gemini" || provider_type == "gcp-gemini" {
             // Gemini: uses Gemini format (contents instead of messages)
@@ -384,6 +390,7 @@ impl HealthCheckService {
                 UpstreamAuth::Bearer(&provider.api_key),
                 None,
                 None,
+                custom_headers.as_ref(),
             )
         } else if provider_type == "anthropic" || provider_type == "claude" {
             let url = format!("{}/v1/messages", provider.api_base);
@@ -394,6 +401,7 @@ impl HealthCheckService {
                 UpstreamAuth::XApiKey(&provider.api_key),
                 Some("2023-06-01"),
                 None,
+                custom_headers.as_ref(),
             )
         } else if provider_type == "response_api"
             || provider_type == "response-api"
@@ -413,6 +421,7 @@ impl HealthCheckService {
                 UpstreamAuth::Bearer(&provider.api_key),
                 None,
                 None,
+                custom_headers.as_ref(),
             )
         } else {
             let url = format!("{}/chat/completions", provider.api_base);
@@ -423,6 +432,7 @@ impl HealthCheckService {
                 UpstreamAuth::Bearer(&provider.api_key),
                 None,
                 None,
+                custom_headers.as_ref(),
             )
         };
 

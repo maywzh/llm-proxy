@@ -169,6 +169,8 @@ export interface ProviderFormData {
   gcp_publisher: string;
   gcp_blocking_action: string;
   gcp_streaming_action: string;
+  // Custom headers (stored in provider_params.custom_headers on backend)
+  custom_headers: Record<string, string>;
 }
 
 export interface CredentialFormData {

@@ -255,6 +255,11 @@ pub async fn gcp_vertex_proxy(
                     headers.get("anthropic-beta").and_then(|v| v.to_str().ok()),
                 );
 
+                let custom_headers: Option<std::collections::HashMap<String, String>> = provider
+                    .provider_params
+                    .get("custom_headers")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+
                 let request = build_upstream_request(
                     &state.app_state.http_client,
                     &upstream_url,
@@ -262,6 +267,7 @@ pub async fn gcp_vertex_proxy(
                     UpstreamAuth::Bearer(&provider.api_key),
                     Some(anthropic_version),
                     anthropic_beta_header.as_deref(),
+                    custom_headers.as_ref(),
                 );
 
                 let upstream_ctx = UpstreamContext {

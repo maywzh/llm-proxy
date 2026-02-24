@@ -190,6 +190,11 @@ def _build_anthropic_headers(
     if anthropic_beta:
         headers["anthropic-beta"] = anthropic_beta
 
+    # Apply custom headers from provider_params
+    custom_headers = (provider_params or {}).get("custom_headers")
+    if isinstance(custom_headers, dict):
+        headers.update(custom_headers)
+
     return headers
 
 

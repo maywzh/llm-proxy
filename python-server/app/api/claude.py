@@ -309,6 +309,11 @@ async def create_message(
             normalize_gemini3_request(openai_request, provider_model)
             strip_gemini3_provider_fields(openai_request, provider_model)
 
+        # Apply custom headers from provider_params
+        custom_headers = (provider.provider_params or {}).get("custom_headers")
+        if isinstance(custom_headers, dict):
+            headers.update(custom_headers)
+
         try:
             set_provider_context(provider.name)
 
