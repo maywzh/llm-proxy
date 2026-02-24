@@ -328,8 +328,30 @@ impl TransformPipeline {
         let client_transformer = self.registry.get_or_error(ctx.client_protocol)?;
         let provider_transformer = self.registry.get_or_error(ctx.provider_protocol)?;
 
+        let client_proto = ctx.client_protocol.to_string();
+        let provider_proto = ctx.provider_protocol.to_string();
+
         // Step 1: Client format → Unified
-        let mut unified = client_transformer.transform_request_out(raw)?;
+        // Try Lua on_transform_request_out first; fallback to hardcoded transformer.
+        let mut unified = if let Some(ref engine) = self.lua_engine {
+            match engine
+                .call_on_transform_request_out(
+                    &ctx.provider_name,
+                    raw.clone(),
+                    &ctx.original_model,
+                    &client_proto,
+                    &provider_proto,
+                )
+                .map_err(|e| AppError::Internal(e.to_string()))?
+            {
+                Some(uif_json) => serde_json::from_value(uif_json).map_err(|e| {
+                    AppError::Internal(format!("Lua UIF deserialization error: {e}"))
+                })?,
+                None => client_transformer.transform_request_out(raw)?,
+            }
+        } else {
+            client_transformer.transform_request_out(raw)?
+        };
 
         // Update model name if mapped
         if !ctx.mapped_model.is_empty() && ctx.mapped_model != ctx.original_model {
@@ -342,7 +364,26 @@ impl TransformPipeline {
         }
 
         // Step 3: Unified → Provider format
-        provider_transformer.transform_request_in(&unified)
+        // Try Lua on_transform_request_in first; fallback to hardcoded transformer.
+        if let Some(ref engine) = self.lua_engine {
+            let uif_json = serde_json::to_value(&unified)
+                .map_err(|e| AppError::Internal(format!("UIF serialization error: {e}")))?;
+            match engine
+                .call_on_transform_request_in(
+                    &ctx.provider_name,
+                    uif_json,
+                    &ctx.original_model,
+                    &client_proto,
+                    &provider_proto,
+                )
+                .map_err(|e| AppError::Internal(e.to_string()))?
+            {
+                Some(provider_json) => Ok(provider_json),
+                None => provider_transformer.transform_request_in(&unified),
+            }
+        } else {
+            provider_transformer.transform_request_in(&unified)
+        }
     }
 
     /// Transform a provider response to client format.
@@ -354,8 +395,30 @@ impl TransformPipeline {
         let client_transformer = self.registry.get_or_error(ctx.client_protocol)?;
         let provider_transformer = self.registry.get_or_error(ctx.provider_protocol)?;
 
+        let client_proto = ctx.client_protocol.to_string();
+        let provider_proto = ctx.provider_protocol.to_string();
+
         // Step 1: Provider format → Unified
-        let mut unified = provider_transformer.transform_response_in(raw, &ctx.original_model)?;
+        // Try Lua on_transform_response_in first; fallback to hardcoded transformer.
+        let mut unified = if let Some(ref engine) = self.lua_engine {
+            match engine
+                .call_on_transform_response_in(
+                    &ctx.provider_name,
+                    raw.clone(),
+                    &ctx.original_model,
+                    &client_proto,
+                    &provider_proto,
+                )
+                .map_err(|e| AppError::Internal(e.to_string()))?
+            {
+                Some(uif_json) => serde_json::from_value(uif_json).map_err(|e| {
+                    AppError::Internal(format!("Lua UIF deserialization error: {e}"))
+                })?,
+                None => provider_transformer.transform_response_in(raw, &ctx.original_model)?,
+            }
+        } else {
+            provider_transformer.transform_response_in(raw, &ctx.original_model)?
+        };
 
         // Restore original model name for client
         unified.model = ctx.original_model.clone();
@@ -366,7 +429,26 @@ impl TransformPipeline {
         }
 
         // Step 3: Unified → Client format
-        client_transformer.transform_response_out(&unified, ctx.client_protocol)
+        // Try Lua on_transform_response_out first; fallback to hardcoded transformer.
+        if let Some(ref engine) = self.lua_engine {
+            let uif_json = serde_json::to_value(&unified)
+                .map_err(|e| AppError::Internal(format!("UIF serialization error: {e}")))?;
+            match engine
+                .call_on_transform_response_out(
+                    &ctx.provider_name,
+                    uif_json,
+                    &ctx.original_model,
+                    &client_proto,
+                    &provider_proto,
+                )
+                .map_err(|e| AppError::Internal(e.to_string()))?
+            {
+                Some(client_json) => Ok(client_json),
+                None => client_transformer.transform_response_out(&unified, ctx.client_protocol),
+            }
+        } else {
+            client_transformer.transform_response_out(&unified, ctx.client_protocol)
+        }
     }
 
     /// Transform a streaming chunk.
@@ -407,6 +489,14 @@ impl TransformPipeline {
             .unwrap_or(false)
     }
 
+    /// Check if a provider has any Lua protocol transform hooks.
+    pub fn has_lua_transform_hooks(&self, provider_name: &str) -> bool {
+        self.lua_engine
+            .as_ref()
+            .map(|e| e.has_transform_hooks(provider_name))
+            .unwrap_or(false)
+    }
+
     // =========================================================================
     // Bypass Mode Methods
     // =========================================================================
@@ -417,11 +507,15 @@ impl TransformPipeline {
     /// 1. Client and provider use the same protocol
     /// 2. No feature transformers are configured
     /// 3. No Lua script exists for the provider
+    /// 4. No Lua transform hooks exist for the provider
     ///
     /// In bypass mode, requests/responses pass through with minimal transformation
     /// (only model name mapping is applied).
     pub fn should_bypass(&self, ctx: &TransformContext) -> bool {
-        ctx.is_same_protocol() && !self.has_features() && !self.has_lua_script(&ctx.provider_name)
+        ctx.is_same_protocol()
+            && !self.has_features()
+            && !self.has_lua_script(&ctx.provider_name)
+            && !self.has_lua_transform_hooks(&ctx.provider_name)
     }
 
     /// Transform request with bypass optimization.
@@ -690,6 +784,243 @@ mod tests {
 
         // Without features, thinking delta should be preserved
         assert!(chunk.delta.is_some());
+    }
+
+    // -------------------------------------------------------------------------
+    // Lua Gemini Transformer Integration Tests
+    // -------------------------------------------------------------------------
+
+    fn create_lua_gemini_pipeline() -> TransformPipeline {
+        let script = include_str!("../../../examples/gemini_transformer.lua");
+        let engine = LuaEngine::new();
+        engine.reload(vec![("test-gemini".to_string(), script.to_string())]);
+
+        let registry = Arc::new(TransformerRegistry::new());
+        let mut pipeline = TransformPipeline::new(registry);
+        pipeline.set_lua_engine(Arc::new(engine));
+        pipeline
+    }
+
+    fn make_gemini_ctx(client: Protocol, provider: Protocol) -> TransformContext {
+        let mut ctx = TransformContext::new("test-123");
+        ctx.client_protocol = client;
+        ctx.provider_protocol = provider;
+        ctx.original_model = "gemini-2.0-flash".to_string();
+        ctx.mapped_model = "gemini-2.0-flash".to_string();
+        ctx.provider_name = "test-gemini".to_string();
+        ctx
+    }
+
+    #[test]
+    fn test_lua_gemini_openai_to_gemini_request() {
+        let pipeline = create_lua_gemini_pipeline();
+        let request = serde_json::json!({
+            "model": "gemini-2.0-flash",
+            "messages": [
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "Hello"}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 100
+        });
+        let ctx = make_gemini_ctx(Protocol::OpenAI, Protocol::Gemini);
+        let result = pipeline.transform_request(request, &ctx).unwrap();
+
+        // Lua on_transform_request_in converts UIF -> Gemini
+        assert!(result.get("contents").is_some());
+        assert_eq!(result["contents"][0]["parts"][0]["text"], "Hello");
+        assert_eq!(result["generationConfig"]["temperature"], 0.7);
+        assert_eq!(result["generationConfig"]["maxOutputTokens"], 100);
+        // System instruction
+        assert_eq!(
+            result["systemInstruction"]["parts"][0]["text"],
+            "Be helpful."
+        );
+    }
+
+    #[test]
+    fn test_lua_gemini_response_to_openai() {
+        let pipeline = create_lua_gemini_pipeline();
+        let response = serde_json::json!({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "Hello!"}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20, "totalTokenCount": 30}
+        });
+        let ctx = make_gemini_ctx(Protocol::OpenAI, Protocol::Gemini);
+        let result = pipeline.transform_response(response, &ctx).unwrap();
+
+        // Lua on_transform_response_in + hardcoded OpenAI.transform_response_out
+        assert!(result.get("choices").is_some());
+        assert_eq!(result["choices"][0]["message"]["content"], "Hello!");
+        assert_eq!(result["usage"]["prompt_tokens"], 10);
+        assert_eq!(result["usage"]["completion_tokens"], 20);
+    }
+
+    #[test]
+    fn test_lua_gemini_to_gemini_request_roundtrip() {
+        let pipeline = create_lua_gemini_pipeline();
+        let request = serde_json::json!({
+            "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+            "systemInstruction": {"parts": [{"text": "Be nice."}]},
+            "generationConfig": {"temperature": 0.5, "maxOutputTokens": 200}
+        });
+        let ctx = make_gemini_ctx(Protocol::Gemini, Protocol::Gemini);
+        let result = pipeline.transform_request(request, &ctx).unwrap();
+
+        assert_eq!(result["contents"][0]["parts"][0]["text"], "Hello");
+        assert_eq!(result["systemInstruction"]["parts"][0]["text"], "Be nice.");
+        assert_eq!(result["generationConfig"]["temperature"], 0.5);
+        assert_eq!(result["generationConfig"]["maxOutputTokens"], 200);
+    }
+
+    #[test]
+    fn test_lua_gemini_to_gemini_response_roundtrip() {
+        let pipeline = create_lua_gemini_pipeline();
+        let response = serde_json::json!({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "Response"}]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 10, "totalTokenCount": 15}
+        });
+        let ctx = make_gemini_ctx(Protocol::Gemini, Protocol::Gemini);
+        let result = pipeline.transform_response(response, &ctx).unwrap();
+
+        assert!(result.get("candidates").is_some());
+        assert_eq!(
+            result["candidates"][0]["content"]["parts"][0]["text"],
+            "Response"
+        );
+        assert_eq!(result["candidates"][0]["finishReason"], "STOP");
+    }
+
+    #[test]
+    fn test_lua_gemini_thinking_blocks_roundtrip() {
+        let pipeline = create_lua_gemini_pipeline();
+        let request = serde_json::json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "Think step by step"}]},
+                {"role": "model", "parts": [
+                    {"thought": true, "text": "Let me think..."},
+                    {"text": "Answer", "thoughtSignature": "sig_abc"}
+                ]}
+            ]
+        });
+        let ctx = make_gemini_ctx(Protocol::Gemini, Protocol::Gemini);
+        let result = pipeline.transform_request(request, &ctx).unwrap();
+
+        let model_parts = &result["contents"][1]["parts"];
+        assert_eq!(model_parts[0]["thought"], true);
+        assert_eq!(model_parts[0]["text"], "Let me think...");
+        assert_eq!(model_parts[1]["text"], "Answer");
+        assert_eq!(model_parts[1]["thoughtSignature"], "sig_abc");
+    }
+
+    #[test]
+    fn test_lua_gemini_tool_call_roundtrip() {
+        let pipeline = create_lua_gemini_pipeline();
+        let request = serde_json::json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "Weather?"}]},
+                {"role": "model", "parts": [{"functionCall": {"name": "get_weather", "args": {"city": "SF"}}}]},
+                {"role": "user", "parts": [{"functionResponse": {"name": "get_weather", "response": {"temp": 72}}}]}
+            ],
+            "tools": [{"functionDeclarations": [{"name": "get_weather", "description": "Get weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}]}]
+        });
+        let ctx = make_gemini_ctx(Protocol::Gemini, Protocol::Gemini);
+        let result = pipeline.transform_request(request, &ctx).unwrap();
+
+        assert_eq!(result["contents"].as_array().unwrap().len(), 3);
+        assert!(result["contents"][1]["parts"][0]
+            .get("functionCall")
+            .is_some());
+        assert_eq!(
+            result["contents"][1]["parts"][0]["functionCall"]["name"],
+            "get_weather"
+        );
+        assert!(result["contents"][2]["parts"][0]
+            .get("functionResponse")
+            .is_some());
+        assert!(result.get("tools").is_some());
+    }
+
+    #[test]
+    fn test_lua_gemini_image_roundtrip() {
+        let pipeline = create_lua_gemini_pipeline();
+        let request = serde_json::json!({
+            "contents": [{"role": "user", "parts": [
+                {"text": "What's this?"},
+                {"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}}
+            ]}]
+        });
+        let ctx = make_gemini_ctx(Protocol::Gemini, Protocol::Gemini);
+        let result = pipeline.transform_request(request, &ctx).unwrap();
+
+        let parts = &result["contents"][0]["parts"];
+        assert_eq!(parts[0]["text"], "What's this?");
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(parts[1]["inlineData"]["data"], "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn test_lua_gemini_bypass_disabled() {
+        let pipeline = create_lua_gemini_pipeline();
+        let ctx = make_gemini_ctx(Protocol::Gemini, Protocol::Gemini);
+        assert!(!pipeline.should_bypass(&ctx));
+    }
+
+    #[test]
+    fn test_lua_gemini_tool_call_response_to_openai() {
+        let pipeline = create_lua_gemini_pipeline();
+        let response = serde_json::json!({
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"functionCall": {"name": "get_weather", "args": {"city": "Tokyo"}}}
+            ]}, "finishReason": "STOP"}],
+            "usageMetadata": {"promptTokenCount": 15, "candidatesTokenCount": 10, "totalTokenCount": 25}
+        });
+        let ctx = make_gemini_ctx(Protocol::OpenAI, Protocol::Gemini);
+        let result = pipeline.transform_response(response, &ctx).unwrap();
+
+        assert!(result.get("choices").is_some());
+        let msg = &result["choices"][0]["message"];
+        assert!(msg.get("tool_calls").is_some());
+        assert_eq!(msg["tool_calls"][0]["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn test_lua_gemini_multi_turn_request() {
+        let pipeline = create_lua_gemini_pipeline();
+        let request = serde_json::json!({
+            "model": "gemini-2.0-flash",
+            "messages": [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello!"},
+                {"role": "user", "content": "Joke?"}
+            ]
+        });
+        let ctx = make_gemini_ctx(Protocol::OpenAI, Protocol::Gemini);
+        let result = pipeline.transform_request(request, &ctx).unwrap();
+
+        let contents = result["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 3);
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[1]["role"], "model");
+        assert_eq!(contents[2]["role"], "user");
+    }
+
+    #[test]
+    fn test_lua_gemini_openai_request_with_tools() {
+        let pipeline = create_lua_gemini_pipeline();
+        let request = serde_json::json!({
+            "model": "gemini-2.0-flash",
+            "messages": [{"role": "user", "content": "Weather?"}],
+            "tools": [{"type": "function", "function": {"name": "get_weather", "description": "Get weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}],
+            "tool_choice": "auto"
+        });
+        let ctx = make_gemini_ctx(Protocol::OpenAI, Protocol::Gemini);
+        let result = pipeline.transform_request(request, &ctx).unwrap();
+
+        assert!(result.get("tools").is_some());
+        assert_eq!(
+            result["tools"][0]["functionDeclarations"][0]["name"],
+            "get_weather"
+        );
     }
 
     // -------------------------------------------------------------------------

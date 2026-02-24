@@ -50,13 +50,53 @@ pub fn create_sandboxed_lua() -> LuaResult<(Lua, Arc<AtomicU32>)> {
     Ok((lua, counter))
 }
 
+/// Flags indicating which Lua hooks are defined in a compiled script.
+#[derive(Debug, Clone, Default)]
+pub struct HookFlags {
+    pub on_request: bool,
+    pub on_response: bool,
+    pub on_stream_chunk: bool,
+    pub on_transform_request_out: bool,
+    pub on_transform_request_in: bool,
+    pub on_transform_response_in: bool,
+    pub on_transform_response_out: bool,
+}
+
+impl HookFlags {
+    /// True if any of the 4 protocol transform hooks are defined.
+    pub fn has_transform_hooks(&self) -> bool {
+        self.on_transform_request_out
+            || self.on_transform_request_in
+            || self.on_transform_response_in
+            || self.on_transform_response_out
+    }
+
+    /// True if any hook at all is defined.
+    pub fn has_any(&self) -> bool {
+        self.on_request || self.on_response || self.on_stream_chunk || self.has_transform_hooks()
+    }
+}
+
 /// Inspect a compiled Lua environment and return which hooks are defined.
-pub fn parse_hooks(lua: &Lua) -> (bool, bool, bool) {
+pub fn parse_hooks(lua: &Lua) -> HookFlags {
     let globals = lua.globals();
-    let has_on_request = globals.get::<mlua::Function>("on_request").is_ok();
-    let has_on_response = globals.get::<mlua::Function>("on_response").is_ok();
-    let has_on_stream_chunk = globals.get::<mlua::Function>("on_stream_chunk").is_ok();
-    (has_on_request, has_on_response, has_on_stream_chunk)
+    HookFlags {
+        on_request: globals.get::<mlua::Function>("on_request").is_ok(),
+        on_response: globals.get::<mlua::Function>("on_response").is_ok(),
+        on_stream_chunk: globals.get::<mlua::Function>("on_stream_chunk").is_ok(),
+        on_transform_request_out: globals
+            .get::<mlua::Function>("on_transform_request_out")
+            .is_ok(),
+        on_transform_request_in: globals
+            .get::<mlua::Function>("on_transform_request_in")
+            .is_ok(),
+        on_transform_response_in: globals
+            .get::<mlua::Function>("on_transform_response_in")
+            .is_ok(),
+        on_transform_response_out: globals
+            .get::<mlua::Function>("on_transform_response_out")
+            .is_ok(),
+    }
 }
 
 /// Validate a Lua script by compiling it in a sandbox.
@@ -77,10 +117,12 @@ pub fn validate_script(source: &str) -> std::result::Result<(), String> {
         .exec()
         .map_err(|e| format!("Lua compilation error: {e}"))?;
 
-    let (has_req, has_resp, has_chunk) = parse_hooks(&lua);
-    if !has_req && !has_resp && !has_chunk {
+    let hooks = parse_hooks(&lua);
+    if !hooks.has_any() {
         return Err(
-            "Script must define at least one hook: on_request, on_response, or on_stream_chunk"
+            "Script must define at least one hook: on_request, on_response, on_stream_chunk, \
+             on_transform_request_out, on_transform_request_in, \
+             on_transform_response_in, or on_transform_response_out"
                 .to_string(),
         );
     }

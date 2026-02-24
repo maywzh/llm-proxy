@@ -14,11 +14,25 @@ use std::collections::HashMap;
 ///   ctx:set_request(req)
 /// end
 /// ```
+///
+/// For protocol transform hooks, the `unified` field carries the UIF
+/// (Unified Internal Format) as a JSON table:
+///
+/// ```lua
+/// function on_transform_request_out(ctx)
+///   local raw = ctx:get_request()
+///   ctx:set_unified({ model = raw.model, messages = {}, parameters = {} })
+/// end
+/// ```
 pub struct LuaTransformContext {
     pub request: Option<serde_json::Value>,
     pub response: Option<serde_json::Value>,
+    /// UIF (Unified Internal Format) payload for protocol transform hooks.
+    pub unified: Option<serde_json::Value>,
     pub provider_name: String,
     pub model: String,
+    pub client_protocol: String,
+    pub provider_protocol: String,
     pub meta: HashMap<String, serde_json::Value>,
 }
 
@@ -27,8 +41,11 @@ impl LuaTransformContext {
         Self {
             request: Some(request),
             response: None,
+            unified: None,
             provider_name: provider_name.to_string(),
             model: model.to_string(),
+            client_protocol: String::new(),
+            provider_protocol: String::new(),
             meta: HashMap::new(),
         }
     }
@@ -37,8 +54,33 @@ impl LuaTransformContext {
         Self {
             request: None,
             response: Some(response),
+            unified: None,
             provider_name: provider_name.to_string(),
             model: model.to_string(),
+            client_protocol: String::new(),
+            provider_protocol: String::new(),
+            meta: HashMap::new(),
+        }
+    }
+
+    /// Create context for protocol transform hooks that need UIF access.
+    pub fn for_transform(
+        request: Option<serde_json::Value>,
+        response: Option<serde_json::Value>,
+        unified: Option<serde_json::Value>,
+        provider_name: &str,
+        model: &str,
+        client_protocol: &str,
+        provider_protocol: &str,
+    ) -> Self {
+        Self {
+            request,
+            response,
+            unified,
+            provider_name: provider_name.to_string(),
+            model: model.to_string(),
+            client_protocol: client_protocol.to_string(),
+            provider_protocol: provider_protocol.to_string(),
             meta: HashMap::new(),
         }
     }
@@ -82,6 +124,24 @@ impl UserData for LuaTransformContext {
 
         methods.add_method("get_model", |lua, this, ()| {
             this.model.clone().into_lua(lua)
+        });
+
+        methods.add_method("get_unified", |lua, this, ()| match &this.unified {
+            Some(u) => json_to_lua(lua, u),
+            None => Ok(mlua::Value::Nil),
+        });
+
+        methods.add_method_mut("set_unified", |lua, this, value: mlua::Value| {
+            this.unified = Some(lua_to_json(lua, value)?);
+            Ok(())
+        });
+
+        methods.add_method("get_client_protocol", |lua, this, ()| {
+            this.client_protocol.clone().into_lua(lua)
+        });
+
+        methods.add_method("get_provider_protocol", |lua, this, ()| {
+            this.provider_protocol.clone().into_lua(lua)
         });
 
         methods.add_method("get_meta", |lua, this, key: String| {

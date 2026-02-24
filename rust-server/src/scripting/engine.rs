@@ -8,16 +8,14 @@ use mlua::{Function, Lua};
 use tracing;
 
 use super::bindings::LuaTransformContext;
-use super::sandbox::{create_sandboxed_lua, parse_hooks, MAX_SCRIPT_SIZE};
+use super::sandbox::{create_sandboxed_lua, parse_hooks, HookFlags, MAX_SCRIPT_SIZE};
 
 /// Cached compiled Lua state for a single provider.
 struct CompiledScript {
     lua: Lua,
     /// Reset to 0 before each hook call to give a fresh instruction budget.
     instruction_counter: Arc<AtomicU32>,
-    has_on_request: bool,
-    has_on_response: bool,
-    has_on_stream_chunk: bool,
+    hooks: HookFlags,
 }
 
 /// Manages compiled Lua scripts keyed by provider name.
@@ -77,7 +75,17 @@ impl LuaEngine {
             .read()
             .unwrap()
             .get(provider_name)
-            .map(|s| s.has_on_stream_chunk)
+            .map(|s| s.hooks.on_stream_chunk)
+            .unwrap_or(false)
+    }
+
+    /// Check if a provider's script defines any protocol transform hooks.
+    pub fn has_transform_hooks(&self, provider_name: &str) -> bool {
+        self.scripts
+            .read()
+            .unwrap()
+            .get(provider_name)
+            .map(|s| s.hooks.has_transform_hooks())
             .unwrap_or(false)
     }
 
@@ -90,7 +98,7 @@ impl LuaEngine {
     ) -> Result<Option<serde_json::Value>, String> {
         let scripts = self.scripts.read().unwrap();
         let compiled = match scripts.get(provider_name) {
-            Some(c) if c.has_on_request => c,
+            Some(c) if c.hooks.on_request => c,
             _ => return Ok(None),
         };
 
@@ -108,7 +116,7 @@ impl LuaEngine {
     ) -> Result<Option<serde_json::Value>, String> {
         let scripts = self.scripts.read().unwrap();
         let compiled = match scripts.get(provider_name) {
-            Some(c) if c.has_on_response => c,
+            Some(c) if c.hooks.on_response => c,
             _ => return Ok(None),
         };
 
@@ -126,13 +134,133 @@ impl LuaEngine {
     ) -> Result<Option<serde_json::Value>, String> {
         let scripts = self.scripts.read().unwrap();
         let compiled = match scripts.get(provider_name) {
-            Some(c) if c.has_on_stream_chunk => c,
+            Some(c) if c.hooks.on_stream_chunk => c,
             _ => return Ok(None),
         };
 
         compiled.instruction_counter.store(0, Ordering::Relaxed);
         let ctx = LuaTransformContext::for_response(chunk, provider_name, model);
         Self::call_hook_response(&compiled.lua, "on_stream_chunk", ctx)
+    }
+
+    // =========================================================================
+    // Protocol Transform Hooks
+    // =========================================================================
+
+    /// Call `on_transform_request_out` hook (Client raw JSON → UIF).
+    /// Returns the UIF JSON from `ctx.unified` if the hook set it.
+    pub fn call_on_transform_request_out(
+        &self,
+        provider_name: &str,
+        request: serde_json::Value,
+        model: &str,
+        client_protocol: &str,
+        provider_protocol: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let scripts = self.scripts.read().unwrap();
+        let compiled = match scripts.get(provider_name) {
+            Some(c) if c.hooks.on_transform_request_out => c,
+            _ => return Ok(None),
+        };
+
+        compiled.instruction_counter.store(0, Ordering::Relaxed);
+        let ctx = LuaTransformContext::for_transform(
+            Some(request),
+            None,
+            None,
+            provider_name,
+            model,
+            client_protocol,
+            provider_protocol,
+        );
+        Self::call_hook_unified(&compiled.lua, "on_transform_request_out", ctx)
+    }
+
+    /// Call `on_transform_request_in` hook (UIF → Provider JSON).
+    /// Returns the provider JSON from `ctx.request` if the hook set it.
+    pub fn call_on_transform_request_in(
+        &self,
+        provider_name: &str,
+        unified: serde_json::Value,
+        model: &str,
+        client_protocol: &str,
+        provider_protocol: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let scripts = self.scripts.read().unwrap();
+        let compiled = match scripts.get(provider_name) {
+            Some(c) if c.hooks.on_transform_request_in => c,
+            _ => return Ok(None),
+        };
+
+        compiled.instruction_counter.store(0, Ordering::Relaxed);
+        let ctx = LuaTransformContext::for_transform(
+            None,
+            None,
+            Some(unified),
+            provider_name,
+            model,
+            client_protocol,
+            provider_protocol,
+        );
+        Self::call_hook(&compiled.lua, "on_transform_request_in", ctx)
+    }
+
+    /// Call `on_transform_response_in` hook (Provider raw JSON → UIF).
+    /// Returns the UIF JSON from `ctx.unified` if the hook set it.
+    pub fn call_on_transform_response_in(
+        &self,
+        provider_name: &str,
+        response: serde_json::Value,
+        model: &str,
+        client_protocol: &str,
+        provider_protocol: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let scripts = self.scripts.read().unwrap();
+        let compiled = match scripts.get(provider_name) {
+            Some(c) if c.hooks.on_transform_response_in => c,
+            _ => return Ok(None),
+        };
+
+        compiled.instruction_counter.store(0, Ordering::Relaxed);
+        let ctx = LuaTransformContext::for_transform(
+            None,
+            Some(response),
+            None,
+            provider_name,
+            model,
+            client_protocol,
+            provider_protocol,
+        );
+        Self::call_hook_unified(&compiled.lua, "on_transform_response_in", ctx)
+    }
+
+    /// Call `on_transform_response_out` hook (UIF → Client JSON).
+    /// Returns the client JSON from `ctx.response` if the hook set it.
+    pub fn call_on_transform_response_out(
+        &self,
+        provider_name: &str,
+        unified: serde_json::Value,
+        model: &str,
+        client_protocol: &str,
+        provider_protocol: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let scripts = self.scripts.read().unwrap();
+        let compiled = match scripts.get(provider_name) {
+            Some(c) if c.hooks.on_transform_response_out => c,
+            _ => return Ok(None),
+        };
+
+        compiled.instruction_counter.store(0, Ordering::Relaxed);
+        let ctx = LuaTransformContext::for_transform(
+            None,
+            None,
+            Some(unified),
+            provider_name,
+            model,
+            client_protocol,
+            provider_protocol,
+        );
+        Self::call_hook_response(&compiled.lua, "on_transform_response_out", ctx)
     }
 
     fn compile(source: &str) -> Result<CompiledScript, String> {
@@ -153,14 +281,12 @@ impl LuaEngine {
         // Reset counter after compilation (compilation itself consumes instructions)
         counter.store(0, Ordering::Relaxed);
 
-        let (has_on_request, has_on_response, has_on_stream_chunk) = parse_hooks(&lua);
+        let hooks = parse_hooks(&lua);
 
         Ok(CompiledScript {
             lua,
             instruction_counter: counter,
-            has_on_request,
-            has_on_response,
-            has_on_stream_chunk,
+            hooks,
         })
     }
 
@@ -210,6 +336,31 @@ impl LuaEngine {
             .map_err(|e| format!("Failed to borrow context: {e}"))?;
 
         Ok(ctx_ref.response.clone())
+    }
+
+    /// Execute a hook and extract `ctx.unified` (for transform hooks that produce UIF).
+    fn call_hook_unified(
+        lua: &Lua,
+        hook_name: &str,
+        ctx: LuaTransformContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let func: Function = lua
+            .globals()
+            .get(hook_name)
+            .map_err(|e| format!("Failed to get {hook_name}: {e}"))?;
+
+        let ctx = lua
+            .create_userdata(ctx)
+            .map_err(|e| format!("Failed to create context: {e}"))?;
+
+        func.call::<()>(ctx.clone())
+            .map_err(|e| format!("Lua {hook_name} error: {e}"))?;
+
+        let ctx_ref = ctx
+            .borrow::<LuaTransformContext>()
+            .map_err(|e| format!("Failed to borrow context: {e}"))?;
+
+        Ok(ctx_ref.unified.clone())
     }
 }
 
@@ -348,5 +499,169 @@ mod tests {
             err.contains("instruction limit"),
             "Expected instruction limit error, got: {err}"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Protocol Transform Hook Tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_transform_request_out() {
+        let engine = LuaEngine::new();
+        engine.reload(vec![(
+            "provider-a".to_string(),
+            r#"
+            function on_transform_request_out(ctx)
+                local raw = ctx:get_request()
+                ctx:set_unified({
+                    model = raw.model,
+                    messages = {},
+                    parameters = { stream = false }
+                })
+            end
+            "#
+            .to_string(),
+        )]);
+
+        assert!(engine.has_transform_hooks("provider-a"));
+
+        let request = serde_json::json!({"model": "gpt-4", "messages": []});
+        let result = engine
+            .call_on_transform_request_out("provider-a", request, "gpt-4", "openai", "anthropic")
+            .unwrap();
+
+        assert!(result.is_some());
+        let uif = result.unwrap();
+        assert_eq!(uif["model"], "gpt-4");
+        assert!(uif["parameters"]["stream"].is_boolean());
+    }
+
+    #[test]
+    fn test_transform_request_in() {
+        let engine = LuaEngine::new();
+        engine.reload(vec![(
+            "provider-a".to_string(),
+            r#"
+            function on_transform_request_in(ctx)
+                local uif = ctx:get_unified()
+                ctx:set_request({
+                    model = uif.model,
+                    prompt = "converted"
+                })
+            end
+            "#
+            .to_string(),
+        )]);
+
+        let unified = serde_json::json!({"model": "gpt-4", "messages": []});
+        let result = engine
+            .call_on_transform_request_in("provider-a", unified, "gpt-4", "openai", "anthropic")
+            .unwrap();
+
+        assert!(result.is_some());
+        let provider_req = result.unwrap();
+        assert_eq!(provider_req["prompt"], "converted");
+    }
+
+    #[test]
+    fn test_transform_response_in() {
+        let engine = LuaEngine::new();
+        engine.reload(vec![(
+            "provider-a".to_string(),
+            r#"
+            function on_transform_response_in(ctx)
+                local resp = ctx:get_response()
+                ctx:set_unified({
+                    id = "msg_1",
+                    model = resp.model,
+                    content = {{ type = "text", text = "hello" }}
+                })
+            end
+            "#
+            .to_string(),
+        )]);
+
+        let response = serde_json::json!({"model": "gpt-4", "choices": []});
+        let result = engine
+            .call_on_transform_response_in("provider-a", response, "gpt-4", "openai", "anthropic")
+            .unwrap();
+
+        assert!(result.is_some());
+        let uif = result.unwrap();
+        assert_eq!(uif["id"], "msg_1");
+    }
+
+    #[test]
+    fn test_transform_response_out() {
+        let engine = LuaEngine::new();
+        engine.reload(vec![(
+            "provider-a".to_string(),
+            r#"
+            function on_transform_response_out(ctx)
+                local uif = ctx:get_unified()
+                ctx:set_response({
+                    id = uif.id,
+                    object = "chat.completion",
+                    model = uif.model
+                })
+            end
+            "#
+            .to_string(),
+        )]);
+
+        let unified = serde_json::json!({"id": "msg_1", "model": "gpt-4", "content": []});
+        let result = engine
+            .call_on_transform_response_out("provider-a", unified, "gpt-4", "openai", "anthropic")
+            .unwrap();
+
+        assert!(result.is_some());
+        let client_resp = result.unwrap();
+        assert_eq!(client_resp["object"], "chat.completion");
+    }
+
+    #[test]
+    fn test_no_transform_hooks_returns_none() {
+        let engine = LuaEngine::new();
+        engine.reload(vec![(
+            "provider-a".to_string(),
+            "function on_request(ctx) end".to_string(),
+        )]);
+
+        assert!(!engine.has_transform_hooks("provider-a"));
+
+        let request = serde_json::json!({"model": "gpt-4"});
+        let result = engine
+            .call_on_transform_request_out("provider-a", request, "gpt-4", "openai", "anthropic")
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_transform_hook_has_protocol_context() {
+        let engine = LuaEngine::new();
+        engine.reload(vec![(
+            "provider-a".to_string(),
+            r#"
+            function on_transform_request_out(ctx)
+                local cp = ctx:get_client_protocol()
+                local pp = ctx:get_provider_protocol()
+                ctx:set_unified({
+                    model = "test",
+                    client = cp,
+                    provider = pp
+                })
+            end
+            "#
+            .to_string(),
+        )]);
+
+        let request = serde_json::json!({"model": "test"});
+        let result = engine
+            .call_on_transform_request_out("provider-a", request, "test", "openai", "anthropic")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result["client"], "openai");
+        assert_eq!(result["provider"], "anthropic");
     }
 }

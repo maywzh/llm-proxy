@@ -97,7 +97,7 @@ def get_transform_pipeline() -> TransformPipeline:
         registry.register(GcpVertexTransformer())
         registry.register(GeminiTransformer())
         registry.register(ResponseApiTransformer())
-        _transform_pipeline = TransformPipeline(registry)
+        _transform_pipeline = TransformPipeline(registry, lua_engine=get_lua_engine())
     return _transform_pipeline
 
 

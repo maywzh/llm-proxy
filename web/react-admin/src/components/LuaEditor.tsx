@@ -13,8 +13,10 @@ interface LuaEditorProps {
   providerId?: number | null;
 }
 
-const LUA_TEMPLATE = `-- Available hooks: on_request, on_response, on_stream_chunk
--- Each hook receives a context object (ctx) with methods:
+const LUA_TEMPLATE = `-- ======================================================================
+-- Raw JSON hooks: modify the final provider request / response
+-- ======================================================================
+-- ctx methods:
 --   ctx:get_request()  / ctx:set_request(tbl)
 --   ctx:get_response() / ctx:set_response(tbl)
 --   ctx:get_provider()
@@ -32,6 +34,53 @@ function on_response(ctx)
   -- modify resp here
   ctx:set_response(resp)
 end
+
+-- function on_stream_chunk(ctx)
+--   local chunk = ctx:get_response()
+--   -- modify streaming chunk here
+--   ctx:set_response(chunk)
+-- end
+
+-- ======================================================================
+-- Protocol transform hooks: override hardcoded protocol conversion
+-- ======================================================================
+-- Additional ctx methods for transform hooks:
+--   ctx:get_unified()  / ctx:set_unified(tbl)
+--   ctx:get_client_protocol()
+--   ctx:get_provider_protocol()
+--
+-- Hook chain:
+--   Client JSON  --[on_transform_request_out]--> UIF
+--                --[on_transform_request_in]-->  Provider JSON
+--   Provider JSON --[on_transform_response_in]--> UIF
+--                 --[on_transform_response_out]--> Client JSON
+--
+-- Return without calling set_unified / set_request / set_response
+-- to fall back to the hardcoded transformer for that step.
+
+-- function on_transform_request_out(ctx)
+--   local raw = ctx:get_request()
+--   -- convert client raw JSON -> UIF table
+--   ctx:set_unified({ model = raw.model, messages = {}, parameters = {} })
+-- end
+
+-- function on_transform_request_in(ctx)
+--   local uif = ctx:get_unified()
+--   -- convert UIF table -> provider raw JSON
+--   ctx:set_request({ contents = {} })
+-- end
+
+-- function on_transform_response_in(ctx)
+--   local raw = ctx:get_response()
+--   -- convert provider raw JSON -> UIF table
+--   ctx:set_unified({ id = "", model = "", content = {}, usage = {} })
+-- end
+
+-- function on_transform_response_out(ctx)
+--   local uif = ctx:get_unified()
+--   -- convert UIF table -> client raw JSON
+--   ctx:set_response({ choices = {} })
+-- end
 `;
 
 const luaLang = StreamLanguage.define(lua);
@@ -169,8 +218,8 @@ const LuaEditor: React.FC<LuaEditorProps> = ({
           <p className="text-xs text-red-600 mt-1">{validationError}</p>
         ) : (
           <p className="helper-text">
-            Define hooks: on_request(ctx), on_response(ctx),
-            on_stream_chunk(ctx)
+            Hooks: on_request, on_response, on_stream_chunk,
+            on_transform_request_out/in, on_transform_response_in/out
           </p>
         )}
       </div>
