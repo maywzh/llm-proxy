@@ -23,6 +23,7 @@
   } from '@codemirror/commands';
   import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
   import { highlightSelectionMatches } from '@codemirror/search';
+  import { Maximize2, Minimize2 } from 'lucide-svelte';
 
   interface Props {
     id: string;
@@ -44,7 +45,9 @@
 
   let validationError = $state<string | null>(null);
   let validating = $state(false);
+  let maximized = $state(false);
   let editorContainer: HTMLDivElement;
+  let fullscreenEditorContainer: HTMLDivElement;
   let view: EditorView | null = null;
 
   const LUA_TEMPLATE = `-- Available hooks: on_request, on_response, on_stream_chunk
@@ -100,9 +103,7 @@ end
     },
   });
 
-  function createEditor() {
-    if (!editorContainer) return;
-
+  function buildExtensions(fullscreen = false) {
     const updateListener = EditorView.updateListener.of(update => {
       if (update.docChanged) {
         const newValue = update.state.doc.toString();
@@ -111,43 +112,71 @@ end
       }
     });
 
-    const state = EditorState.create({
-      doc: value,
-      extensions: [
-        lineNumbers(),
-        highlightActiveLine(),
-        highlightSpecialChars(),
-        history(),
-        indentOnInput(),
-        bracketMatching(),
-        closeBrackets(),
-        highlightSelectionMatches(),
-        keymap.of([
-          ...closeBracketsKeymap,
-          ...defaultKeymap,
-          ...historyKeymap,
-          indentWithTab,
-        ]),
-        luaLang,
-        darkTheme,
-        EditorView.lineWrapping,
-        updateListener,
-      ],
-    });
+    const exts = [
+      lineNumbers(),
+      highlightActiveLine(),
+      highlightSpecialChars(),
+      history(),
+      indentOnInput(),
+      bracketMatching(),
+      closeBrackets(),
+      highlightSelectionMatches(),
+      keymap.of([
+        ...closeBracketsKeymap,
+        ...defaultKeymap,
+        ...historyKeymap,
+        indentWithTab,
+      ]),
+      luaLang,
+      darkTheme,
+      EditorView.lineWrapping,
+      updateListener,
+    ];
 
-    view = new EditorView({
-      state,
-      parent: editorContainer,
-    });
+    if (fullscreen) {
+      exts.push(
+        EditorView.theme({
+          '&': { height: '100%' },
+          '.cm-scroller': { overflow: 'auto' },
+        })
+      );
+    }
+
+    return exts;
   }
 
   onMount(() => {
-    createEditor();
+    const state = EditorState.create({
+      doc: value,
+      extensions: buildExtensions(),
+    });
+    view = new EditorView({ state, parent: editorContainer });
   });
 
   onDestroy(() => {
     view?.destroy();
     view = null;
+  });
+
+  // Re-mount editor when toggling fullscreen
+  $effect(() => {
+    if (maximized && fullscreenEditorContainer) {
+      const doc = view?.state.doc.toString() ?? value;
+      view?.destroy();
+      const state = EditorState.create({
+        doc,
+        extensions: buildExtensions(true),
+      });
+      view = new EditorView({ state, parent: fullscreenEditorContainer });
+    } else if (!maximized && editorContainer) {
+      const doc = view?.state.doc.toString() ?? value;
+      view?.destroy();
+      const state = EditorState.create({
+        doc,
+        extensions: buildExtensions(false),
+      });
+      view = new EditorView({ state, parent: editorContainer });
+    }
   });
 
   // Sync external value changes into the editor
@@ -191,39 +220,59 @@ end
       validating = false;
     }
   }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && maximized) {
+      maximized = false;
+    }
+  }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
+
+{#snippet actionButtons()}
+  {#if value && providerId}
+    <button
+      type="button"
+      class="text-xs text-green-600 hover:text-green-800 underline"
+      onclick={validateScript}
+      disabled={validating}
+    >
+      {validating ? 'Validating...' : 'Validate'}
+    </button>
+  {/if}
+  {#if !value}
+    <button
+      type="button"
+      class="text-xs text-blue-600 hover:text-blue-800 underline"
+      onclick={insertTemplate}
+    >
+      Insert Template
+    </button>
+  {:else}
+    <button
+      type="button"
+      class="text-xs text-red-600 hover:text-red-800 underline"
+      onclick={clearScript}
+    >
+      Clear
+    </button>
+  {/if}
+{/snippet}
 
 <div>
   <div class="flex items-center justify-between mb-1">
     <label for={id} class="label">{label}</label>
-    <div class="flex gap-2">
-      {#if value && providerId}
-        <button
-          type="button"
-          class="text-xs text-green-600 hover:text-green-800 underline"
-          onclick={validateScript}
-          disabled={validating}
-        >
-          {validating ? 'Validating...' : 'Validate'}
-        </button>
-      {/if}
-      {#if !value}
-        <button
-          type="button"
-          class="text-xs text-blue-600 hover:text-blue-800 underline"
-          onclick={insertTemplate}
-        >
-          Insert Template
-        </button>
-      {:else}
-        <button
-          type="button"
-          class="text-xs text-red-600 hover:text-red-800 underline"
-          onclick={clearScript}
-        >
-          Clear
-        </button>
-      {/if}
+    <div class="flex items-center gap-2">
+      {@render actionButtons()}
+      <button
+        type="button"
+        onclick={() => (maximized = true)}
+        class="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+        title="Maximize editor"
+      >
+        <Maximize2 class="w-3.5 h-3.5" />
+      </button>
     </div>
   </div>
   <div
@@ -241,3 +290,52 @@ end
     </p>
   {/if}
 </div>
+
+{#if maximized}
+  <div
+    class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex flex-col p-4"
+    onclick={() => (maximized = false)}
+    onkeydown={e => e.key === 'Escape' && (maximized = false)}
+    role="button"
+    tabindex="0"
+    aria-label="Close fullscreen editor"
+  >
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="flex-1 flex flex-col bg-white dark:bg-gray-900 rounded-lg overflow-hidden shadow-2xl"
+      onclick={e => e.stopPropagation()}
+      onkeydown={e => e.stopPropagation()}
+    >
+      <div
+        class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 shrink-0"
+      >
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+          {label}
+        </span>
+        <div class="flex items-center gap-3">
+          {@render actionButtons()}
+          <button
+            type="button"
+            onclick={() => (maximized = false)}
+            class="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+            title="Exit fullscreen (Esc)"
+          >
+            <Minimize2 class="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      <div
+        class="flex-1 min-h-0"
+        bind:this={fullscreenEditorContainer}
+        style="height: calc(100vh - 7rem);"
+      ></div>
+      {#if validationError}
+        <div
+          class="px-4 py-2 border-t border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20"
+        >
+          <p class="text-xs text-red-600">{validationError}</p>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
