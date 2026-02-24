@@ -43,3 +43,14 @@ be592e76ba57d0c3a955d3565e7b60a3f4131aec:rust-server/tests/test_rate_limiting.rs
 be592e76ba57d0c3a955d3565e7b60a3f4131aec:scripts/verify_auth.sh:curl-auth-header:143
 83a5caaadc05454ce3c9a0132796aaddc70e4d5e:python-server/tests/test_rate_limiting.py:generic-api-key:287
 83a5caaadc05454ce3c9a0132796aaddc70e4d5e:python-server/tests/test_rate_limiting.py:generic-api-key:295
+
+# Post filter-repo rewritten commit hashes
+e80a802623860d143221d6d1dc83a01fa55ef3ba:rust-server/tests/test_gcp_vertex.rs:generic-api-key:795
+e80a802623860d143221d6d1dc83a01fa55ef3ba:python-server/tests/test_gcp_vertex.py:generic-api-key:868
+12d641f21929e74b6dfc3565f15fe4c8f4c6ec63:rust-server/tests/test_rate_limiting.rs:generic-api-key:269
+12d641f21929e74b6dfc3565f15fe4c8f4c6ec63:rust-server/tests/test_rate_limiting.rs:generic-api-key:288
+804bf36c9c55cf5bf956097dfd31a78f4b738f1f:python-server/tests/test_rate_limiting.py:generic-api-key:287
+804bf36c9c55cf5bf956097dfd31a78f4b738f1f:python-server/tests/test_rate_limiting.py:generic-api-key:295
+08d0656885d5370af2ea9ac26af9a92ce9a2be02:rust-server/tests/test_rate_limiting.rs:generic-api-key:246
+08d0656885d5370af2ea9ac26af9a92ce9a2be02:rust-server/tests/test_rate_limiting.rs:generic-api-key:263
+08d0656885d5370af2ea9ac26af9a92ce9a2be02:scripts/verify_auth.sh:curl-auth-header:143

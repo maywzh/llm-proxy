@@ -1,0 +1,18 @@
+apiVersion: v2
+name: llm-proxy
+description: A high-performance OpenAI-compatible LLM API proxy with weighted load balancing, streaming support, and built-in observability
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+keywords:
+  - llm
+  - proxy
+  - openai
+  - ai
+  - load-balancer
+  - api-gateway
+home: https://github.com/maywzh/llm-proxy
+sources:
+  - https://github.com/maywzh/llm-proxy
+maintainers:
+  - name: maywzh

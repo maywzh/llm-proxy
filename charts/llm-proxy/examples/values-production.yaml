@@ -1,0 +1,120 @@
+# ============================================
+# Preset: Production
+# ============================================
+# Production-ready setup with:
+#   - External database (via existingSecret)
+#   - HPA autoscaling
+#   - TLS ingress
+#   - Full monitoring stack with persistence
+#
+# Prerequisites:
+#   1. Create secrets before installing:
+#      kubectl create secret generic llm-proxy-db \
+#        --from-literal=DB_URL="postgresql://user:pass@rds.example.com:5432/llm_proxy?sslmode=require"
+#      kubectl create secret generic llm-proxy-admin \
+#        --from-literal=ADMIN_KEY="your-secure-key"
+#
+#
+# Usage:
+#   helm install llm-proxy ./charts/llm-proxy \
+#     -f charts/llm-proxy/examples/values-production.yaml
+
+serverType: python
+replicaCount: 2
+
+# Reference pre-created secrets (never store credentials in values files)
+database:
+  existingSecret: "llm-proxy-db"
+  existingSecretKey: "DB_URL"
+
+adminKey:
+  existingSecret: "llm-proxy-admin"
+  existingSecretKey: "ADMIN_KEY"
+
+env:
+  VERIFY_SSL: "true"
+  REQUEST_TIMEOUT_SECS: "300"
+  LOG_LEVEL: "info"
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: llm-proxy.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: llm-proxy-tls
+      hosts:
+        - llm-proxy.example.com
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+resources:
+  python:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+adminUI:
+  enabled: true
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: llm-proxy-admin.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: llm-proxy-admin-tls
+        hosts:
+          - llm-proxy-admin.example.com
+  env:
+    VITE_PUBLIC_API_BASE_URL: "https://llm-proxy.example.com"
+
+prometheus:
+  enabled: true
+  retention: 30d
+  persistence:
+    enabled: true
+    size: 50Gi
+
+grafana:
+  enabled: true
+  existingSecret: "llm-proxy-grafana"
+  persistence:
+    enabled: true
+    size: 10Gi
+  env:
+    GF_FEATURE_TOGGLES_ENABLE: "publicDashboards"
+    GF_SECURITY_ALLOW_EMBEDDING: "true"
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: grafana.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: grafana-tls
+        hosts:
+          - grafana.example.com
