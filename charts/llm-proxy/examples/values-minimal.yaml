@@ -1,0 +1,32 @@
+# ============================================
+# Preset: Minimal
+# ============================================
+# Simplest deployment — proxy only, with inline credentials.
+# Replace the database URL and admin key before installing.
+#
+# Usage:
+#   helm install llm-proxy ./charts/llm-proxy \
+#     -f charts/llm-proxy/examples/values-minimal.yaml
+
+serverType: python
+replicaCount: 1
+
+# Point to your existing PostgreSQL
+database:
+  url: "postgresql://llm_proxy:changeme@your-postgres-host:5432/llm_proxy?sslmode=require"
+
+adminKey:
+  value: "changeme-admin-key"
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+  hosts:
+    - host: llm-proxy.example.com
+      paths:
+        - path: /
+          pathType: Prefix

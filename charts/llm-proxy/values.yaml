@@ -1,0 +1,261 @@
+# -- Override the chart name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+# -- Global configuration
+global:
+  # -- Image pull secrets for private registries
+  imagePullSecrets: []
+
+# -- Number of proxy replicas
+replicaCount: 1
+
+# -- Choose which server implementation to deploy: "python" or "rust"
+serverType: python
+
+image:
+  # -- Python server image
+  python:
+    repository: ghcr.io/maywzh/llm-proxy
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  # -- Rust server image
+  rust:
+    repository: ghcr.io/maywzh/llm-proxy-rust
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+
+# -- Service port for the proxy
+service:
+  type: ClusterIP
+  port: 18000
+
+# -- Ingress configuration for the proxy
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    # nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+  hosts:
+    - host: llm-proxy.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: llm-proxy-tls
+  #    hosts:
+  #      - llm-proxy.local
+
+# -- Resource limits for the proxy pod
+resources:
+  python:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  rust:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -- Pod-level security context
+podSecurityContext: {}
+
+# -- Container-level security context
+securityContext: {}
+
+# -- Node selector for the proxy pod
+nodeSelector: {}
+
+# -- Tolerations for the proxy pod
+tolerations: []
+
+# -- Affinity rules for the proxy pod
+affinity: {}
+
+# -- Pod annotations
+podAnnotations: {}
+
+# -- Service account configuration
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# -- Health check probes
+probes:
+  liveness:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# -- Autoscaling configuration
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# =====================
+#  Application Config
+# =====================
+
+# -- Database connection URL (required)
+# Format: postgresql://user:password@host:5432/dbname
+database:
+  # -- Use an existing secret for the database URL
+  existingSecret: ""
+  existingSecretKey: "DB_URL"
+  # -- Or provide the URL directly (not recommended for production)
+  url: ""
+
+# -- Admin API key for management endpoints
+adminKey:
+  # -- Use an existing secret
+  existingSecret: ""
+  existingSecretKey: "ADMIN_KEY"
+  # -- Or provide the key directly (not recommended for production)
+  value: ""
+
+# -- Additional environment variables
+env: {}
+  # VERIFY_SSL: "true"
+  # REQUEST_TIMEOUT_SECS: "300"
+  # LOG_LEVEL: "info"
+
+# -- Additional environment variables from secrets/configmaps
+envFrom: []
+  # - secretRef:
+  #     name: my-extra-secrets
+
+# =====================
+#  Admin UI (optional)
+# =====================
+
+adminUI:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/maywzh/llm-proxy-admin-ui
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}
+    hosts:
+      - host: llm-proxy-admin.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  # -- Environment variables for the admin UI
+  env: {}
+    # VITE_PUBLIC_API_BASE_URL: "https://llm-proxy.local"
+
+# =====================
+#  Monitoring (optional)
+# =====================
+
+prometheus:
+  enabled: false
+  image:
+    repository: prom/prometheus
+    tag: "v3.4.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 9090
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}
+    hosts:
+      - host: prometheus.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  retention: 15d
+  persistence:
+    enabled: false
+    size: 10Gi
+    storageClass: ""
+  # -- Additional scrape configs
+  extraScrapeConfigs: []
+
+grafana:
+  enabled: false
+  image:
+    repository: grafana/grafana
+    tag: "11.6.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: false
+    className: nginx
+    annotations: {}
+    hosts:
+      - host: grafana.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+  adminUser: admin
+  adminPassword: ""
+  # -- Use an existing secret for Grafana admin credentials
+  existingSecret: ""
+  persistence:
+    enabled: false
+    size: 5Gi
+    storageClass: ""
+  env: {}
+    # GF_FEATURE_TOGGLES_ENABLE: "publicDashboards"
+    # GF_SECURITY_ALLOW_EMBEDDING: "true"
