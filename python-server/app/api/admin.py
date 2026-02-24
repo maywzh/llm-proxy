@@ -129,6 +129,13 @@ class ProviderCreate(BaseModel):
         description="Provider-specific parameters (e.g., GCP Vertex settings)",
         examples=[{"gcp_project": "my-project", "gcp_location": "us-central1"}],
     )
+    lua_script: Optional[str] = Field(
+        default=None,
+        description="Optional Lua script for request/response transformation",
+    )
+
+
+_UNSET = object()
 
 
 class ProviderUpdate(BaseModel):
@@ -154,6 +161,10 @@ class ProviderUpdate(BaseModel):
     )
     is_enabled: Optional[bool] = Field(
         None, description="Whether the provider is enabled"
+    )
+    lua_script: Any = Field(
+        default=_UNSET,
+        description="Optional Lua script (omit=don't change, null=clear, string=set)",
     )
 
 
@@ -188,6 +199,10 @@ class ProviderResponse(BaseModel):
         default_factory=dict, description="Provider-specific parameters"
     )
     is_enabled: bool = Field(..., description="Whether the provider is enabled")
+    lua_script: Optional[str] = Field(
+        default=None,
+        description="Optional Lua script for request/response transformation",
+    )
 
 
 class ProviderListResponse(BaseModel):
@@ -464,6 +479,7 @@ async def api_list_providers(
                 weight=p.weight,
                 provider_params=p.get_provider_params(),
                 is_enabled=p.is_enabled,
+                lua_script=p.lua_script,
             )
             for p in providers
         ],
@@ -515,6 +531,7 @@ async def api_create_provider(
         model_mapping=provider.model_mapping,
         weight=provider.weight,
         provider_params=provider.provider_params,
+        lua_script=provider.lua_script,
     )
 
     await config.reload()
@@ -531,6 +548,7 @@ async def api_create_provider(
             weight=new_provider.weight,
             provider_params=new_provider.get_provider_params(),
             is_enabled=new_provider.is_enabled,
+            lua_script=new_provider.lua_script,
         ),
     )
 
@@ -578,6 +596,7 @@ async def api_get_provider(
         weight=provider.weight,
         provider_params=provider.get_provider_params(),
         is_enabled=provider.is_enabled,
+        lua_script=provider.lua_script,
     )
 
 
@@ -615,6 +634,15 @@ async def api_update_provider(
 ) -> UpdateResponse:
     """Update a provider"""
     update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
+
+    # Handle lua_script with _UNSET sentinel: omitted=don't change, null=clear, string=set
+    if update_data.lua_script is not _UNSET:
+        update_dict["lua_script"] = (
+            update_data.lua_script
+        )  # None (clear) or string (set)
+    else:
+        update_dict.pop("lua_script", None)
+
     if not update_dict:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -671,6 +699,48 @@ async def api_delete_provider(
 
     await config.reload()
     logger.info(f"Provider deleted: {provider_id}")
+
+
+class ValidateScriptRequest(BaseModel):
+    lua_script: str
+
+
+class ValidateScriptResponse(BaseModel):
+    valid: bool
+    error: Optional[str] = None
+
+
+@router.post(
+    "/providers/{provider_id}/validate-script",
+    response_model=ValidateScriptResponse,
+    summary="Validate a Lua script",
+    description="Check whether the given Lua script compiles and defines at least one hook",
+    tags=["providers"],
+    responses={
+        401: {"model": ErrorResponse, "description": "Unauthorized"},
+        404: {"model": ErrorResponse, "description": "Provider not found"},
+    },
+)
+async def api_validate_script(
+    provider_id: int,
+    body: ValidateScriptRequest,
+    _: None = Depends(verify_admin_key),
+    db: Database = Depends(get_db),
+) -> ValidateScriptResponse:
+    """Validate a Lua script for syntax and hook presence"""
+    provider = await get_provider_by_id(db, provider_id)
+    if not provider:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Provider with ID {provider_id} not found",
+        )
+
+    from app.scripting.sandbox import sanitize_lua_error, validate_script
+
+    error = validate_script(body.lua_script)
+    if error is None:
+        return ValidateScriptResponse(valid=True)
+    return ValidateScriptResponse(valid=False, error=sanitize_lua_error(error))
 
 
 @router.get(

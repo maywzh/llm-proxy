@@ -686,6 +686,7 @@ mod tests {
             weight: 1,
             is_enabled: true,
             provider_params: sqlx::types::Json(HashMap::new()),
+            lua_script: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

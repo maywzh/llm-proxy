@@ -32,6 +32,7 @@ export interface Provider {
   model_mapping: Record<string, ModelMappingValue>;
   is_enabled: boolean;
   provider_params?: Record<string, unknown>;
+  lua_script?: string | null;
 }
 
 export interface ProviderCreate {
@@ -41,6 +42,7 @@ export interface ProviderCreate {
   api_key: string;
   model_mapping?: Record<string, ModelMappingValue>;
   provider_params?: Record<string, unknown>;
+  lua_script?: string | null;
 }
 
 export interface ProviderUpdate {
@@ -50,6 +52,7 @@ export interface ProviderUpdate {
   model_mapping?: Record<string, ModelMappingValue>;
   is_enabled?: boolean;
   provider_params?: Record<string, unknown>;
+  lua_script?: string | null;
 }
 
 export interface ProviderListResponse {
@@ -173,6 +176,8 @@ export interface ProviderFormData {
   gcp_publisher: string;
   gcp_blocking_action: string;
   gcp_streaming_action: string;
+  custom_headers: Record<string, string>;
+  lua_script: string;
 }
 
 export interface CredentialFormData {

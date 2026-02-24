@@ -137,6 +137,7 @@ class ProviderService:
                 model_mapping=p.model_mapping,
                 provider_type=p.provider_type,
                 provider_params=p.provider_params,
+                lua_script=p.lua_script,
             )
             for p in config.providers
         ]

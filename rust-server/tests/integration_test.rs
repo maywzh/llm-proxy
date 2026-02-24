@@ -96,6 +96,7 @@ fn create_test_config_no_auth() -> AppConfig {
                 },
                 provider_type: "openai".to_string(),
                 provider_params: HashMap::new(),
+                lua_script: None,
             },
             ProviderConfig {
                 name: "TestProvider2".to_string(),
@@ -109,6 +110,7 @@ fn create_test_config_no_auth() -> AppConfig {
                 },
                 provider_type: "anthropic".to_string(),
                 provider_params: HashMap::new(),
+                lua_script: None,
             },
         ],
         server: ServerConfig {

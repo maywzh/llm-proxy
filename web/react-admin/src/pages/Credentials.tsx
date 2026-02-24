@@ -217,7 +217,9 @@ const Credentials: React.FC = () => {
   const filteredCredentials = credentials.filter(
     credential =>
       credential.name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-      credential.key_preview.toLowerCase().includes(debouncedSearch.toLowerCase())
+      credential.key_preview
+        .toLowerCase()
+        .includes(debouncedSearch.toLowerCase())
   );
 
   return (
@@ -591,13 +593,17 @@ const Credentials: React.FC = () => {
 
                     <div className="space-y-1">
                       <div className="flex justify-between text-sm">
-                        <span className="text-gray-500 dark:text-gray-400">Key:</span>
+                        <span className="text-gray-500 dark:text-gray-400">
+                          Key:
+                        </span>
                         <code className="bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded font-mono text-xs">
                           {credential.key_preview}
                         </code>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-gray-500 dark:text-gray-400">Models:</span>
+                        <span className="text-gray-500 dark:text-gray-400">
+                          Models:
+                        </span>
                         <span className="text-gray-900 dark:text-gray-100">
                           {credential.allowed_models.length === 0
                             ? 'All models'
@@ -605,7 +611,9 @@ const Credentials: React.FC = () => {
                         </span>
                       </div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-gray-500 dark:text-gray-400">Rate Limit:</span>
+                        <span className="text-gray-500 dark:text-gray-400">
+                          Rate Limit:
+                        </span>
                         <span className="text-gray-900 dark:text-gray-100">
                           {credential.rate_limit
                             ? `${credential.rate_limit}/s`
@@ -648,7 +656,10 @@ const Credentials: React.FC = () => {
       {/* Delete Confirmation Modal */}
       {deleteConfirm && (
         <div className="modal-overlay" onClick={() => setDeleteConfirm(null)}>
-          <div className="modal animate-modal-enter" onClick={e => e.stopPropagation()}>
+          <div
+            className="modal animate-modal-enter"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="modal-header">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Delete Credential
@@ -690,7 +701,10 @@ const Credentials: React.FC = () => {
       {/* Rotate Confirmation Modal */}
       {rotateConfirm && (
         <div className="modal-overlay" onClick={() => setRotateConfirm(null)}>
-          <div className="modal animate-modal-enter" onClick={e => e.stopPropagation()}>
+          <div
+            className="modal animate-modal-enter"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="modal-header">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Rotate API Key
@@ -732,7 +746,10 @@ const Credentials: React.FC = () => {
       {/* New Key Display Modal */}
       {newRotatedKey && (
         <div className="modal-overlay" onClick={() => setNewRotatedKey(null)}>
-          <div className="modal animate-modal-enter" onClick={e => e.stopPropagation()}>
+          <div
+            className="modal animate-modal-enter"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="modal-header">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 New API Key Generated

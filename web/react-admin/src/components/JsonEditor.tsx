@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import CodeMirror from '@uiw/react-codemirror';
+import { json } from '@codemirror/lang-json';
+import { Maximize2, Minimize2 } from 'lucide-react';
 import type { ModelMappingEntry, ModelMappingValue } from '../types';
 
 type JsonEditorProps = {
@@ -40,14 +43,12 @@ function tryParseModelMapping(
     parsed as Record<string, unknown>
   )) {
     if (typeof value === 'string') {
-      // Simple format: "gpt-4": "gpt-4-turbo"
       mapping[key] = value;
     } else if (
       typeof value === 'object' &&
       value !== null &&
       !Array.isArray(value)
     ) {
-      // Extended format: check for mapped_model field
       const entry = value as Record<string, unknown>;
       if (typeof entry.mapped_model !== 'string') {
         return {
@@ -67,6 +68,8 @@ function tryParseModelMapping(
   return { ok: true, value: mapping };
 }
 
+const jsonLang = json();
+
 const JsonEditor: React.FC<JsonEditorProps> = ({
   id,
   label,
@@ -79,6 +82,7 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
 }) => {
   const [text, setText] = useState(() => toPrettyJson(value));
   const [error, setError] = useState<string | null>(null);
+  const [maximized, setMaximized] = useState(false);
   const isEditingRef = useRef(false);
 
   const setErrorAndNotify = useCallback(
@@ -95,47 +99,121 @@ const JsonEditor: React.FC<JsonEditorProps> = ({
     setErrorAndNotify(null);
   }, [setErrorAndNotify, value]);
 
-  const handleChange = (nextText: string) => {
-    isEditingRef.current = true;
-    setText(nextText);
+  useEffect(() => {
+    if (!maximized) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMaximized(false);
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [maximized]);
 
-    const parsed = tryParseModelMapping(nextText);
-    if (!parsed.ok) {
-      setErrorAndNotify(parsed.error);
-      return;
-    }
+  const handleChange = useCallback(
+    (nextText: string) => {
+      isEditingRef.current = true;
+      setText(nextText);
 
-    setErrorAndNotify(null);
-    onChange(parsed.value);
-  };
+      const parsed = tryParseModelMapping(nextText);
+      if (!parsed.ok) {
+        setErrorAndNotify(parsed.error);
+        return;
+      }
 
-  const handleBlur = () => {
+      setErrorAndNotify(null);
+      onChange(parsed.value);
+    },
+    [onChange, setErrorAndNotify]
+  );
+
+  const handleBlur = useCallback(() => {
     isEditingRef.current = false;
 
     const parsed = tryParseModelMapping(text);
     if (!parsed.ok) return;
 
     setText(toPrettyJson(parsed.value));
-  };
+  }, [text]);
 
-  return (
-    <div>
-      <label htmlFor={id} className="label">
-        {label}
-      </label>
-      <textarea
+  const height = `${rows * 1.5}rem`;
+
+  const editorElement = (editorHeight: string) => (
+    <div
+      className={`rounded-md border ${error ? 'border-red-500' : 'border-gray-300 dark:border-gray-600'} overflow-hidden`}
+    >
+      <CodeMirror
         id={id}
         value={text}
-        onChange={e => handleChange(e.target.value)}
+        height={editorHeight}
+        extensions={[jsonLang]}
+        onChange={handleChange}
         onBlur={handleBlur}
-        className="input font-mono"
-        rows={rows}
+        theme="dark"
         placeholder={placeholder}
-        aria-invalid={!!error}
+        basicSetup={{
+          lineNumbers: true,
+          foldGutter: false,
+          highlightActiveLine: true,
+          tabSize: 2,
+        }}
       />
-      {helperText && !error && <p className="helper-text">{helperText}</p>}
-      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
     </div>
+  );
+
+  return (
+    <>
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <label htmlFor={id} className="label">
+            {label}
+          </label>
+          <button
+            type="button"
+            onClick={() => setMaximized(true)}
+            className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+            title="Maximize editor"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        {editorElement(height)}
+        {helperText && !error && <p className="helper-text">{helperText}</p>}
+        {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+      </div>
+
+      {maximized && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex flex-col p-4"
+          onClick={() => setMaximized(false)}
+        >
+          <div
+            className="flex-1 flex flex-col bg-white dark:bg-gray-900 rounded-lg overflow-hidden shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 shrink-0">
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                {label}
+              </span>
+              <button
+                type="button"
+                onClick={() => setMaximized(false)}
+                className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                title="Exit fullscreen (Esc)"
+              >
+                <Minimize2 className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0">
+              {editorElement('calc(100vh - 7rem)')}
+            </div>
+            {error && (
+              <div className="px-4 py-2 border-t border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 shrink-0">
+                <p className="text-xs text-red-600">{error}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 };
 

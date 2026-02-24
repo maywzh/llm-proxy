@@ -32,6 +32,7 @@ use crate::core::middleware::CLIENT_PATTERNS;
         get_provider,
         update_provider,
         delete_provider,
+        validate_script,
         list_credentials,
         create_credential,
         get_credential,
@@ -56,6 +57,8 @@ use crate::core::middleware::CLIENT_PATTERNS;
             UpdateCredentialRequest,
             ConfigVersionResponse,
             AdminErrorResponse,
+            ValidateScriptRequest,
+            ValidateScriptResponse,
             crate::api::health::HealthStatus,
             crate::api::health::ModelHealthStatus,
             crate::api::health::ProviderHealthStatus,
@@ -291,6 +294,7 @@ pub struct ProviderListResponse {
     "weight": 1,
     "is_enabled": true,
     "provider_params": {},
+    "lua_script": null,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
 }))]
@@ -311,6 +315,8 @@ pub struct ProviderResponse {
     pub is_enabled: bool,
     /// Provider-specific parameters (e.g., GCP project, location, publisher)
     pub provider_params: HashMap<String, serde_json::Value>,
+    /// Optional Lua script for request/response transformation
+    pub lua_script: Option<String>,
     /// Creation timestamp (RFC 3339 format)
     pub created_at: String,
     /// Last update timestamp (RFC 3339 format)
@@ -328,6 +334,7 @@ impl From<ProviderEntity> for ProviderResponse {
             weight: e.weight,
             is_enabled: e.is_enabled,
             provider_params: e.provider_params.0,
+            lua_script: e.lua_script,
             created_at: e.created_at.to_rfc3339(),
             updated_at: e.updated_at.to_rfc3339(),
         }
@@ -367,6 +374,9 @@ pub struct CreateProviderRequest {
     /// Provider-specific parameters (e.g., GCP project, location, publisher)
     #[serde(default)]
     pub provider_params: HashMap<String, serde_json::Value>,
+    /// Optional Lua script for request/response transformation
+    #[serde(default)]
+    pub lua_script: Option<String>,
 }
 
 /// Request to update an existing provider
@@ -392,6 +402,12 @@ pub struct UpdateProviderRequest {
     pub is_enabled: Option<bool>,
     /// Provider-specific parameters (e.g., GCP project, location, publisher)
     pub provider_params: Option<HashMap<String, serde_json::Value>>,
+    /// Optional Lua script (absent=don't change, null=clear, value=set)
+    #[serde(
+        default,
+        deserialize_with = "crate::core::database::deserialize_optional_nullable"
+    )]
+    pub lua_script: Option<Option<String>>,
 }
 
 // ============================================================================
@@ -685,6 +701,7 @@ pub async fn create_provider(
         weight: req.weight,
         is_enabled: req.is_enabled,
         provider_params: req.provider_params,
+        lua_script: req.lua_script,
     };
 
     let provider = db.create_provider(&create).await?;
@@ -729,6 +746,7 @@ pub async fn update_provider(
         weight: req.weight,
         is_enabled: req.is_enabled,
         provider_params: req.provider_params,
+        lua_script: req.lua_script,
     };
 
     let provider = db
@@ -2226,6 +2244,81 @@ pub async fn batch_delete_error_logs(
 }
 
 // ============================================================================
+// Lua Script Validation
+// ============================================================================
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ValidateScriptRequest {
+    pub lua_script: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ValidateScriptResponse {
+    pub valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Strip internal paths and details from Lua error messages.
+fn sanitize_lua_error(err: &str) -> String {
+    if err.contains("exceeds maximum") {
+        return err.to_string();
+    }
+    if err.contains("must define at least one hook") {
+        return err.to_string();
+    }
+    if let Some(msg) = err.strip_prefix("Lua compilation error: ") {
+        return format!("Syntax error: {msg}");
+    }
+    if err.contains("instruction limit") {
+        return "Script exceeded execution limit (possible infinite loop)".to_string();
+    }
+    "Script validation failed".to_string()
+}
+
+#[utoipa::path(
+    post,
+    path = "/admin/v1/providers/{id}/validate-script",
+    tag = "providers",
+    request_body = ValidateScriptRequest,
+    responses(
+        (status = 200, description = "Validation result", body = ValidateScriptResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Provider not found"),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub async fn validate_script(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i32>,
+    Json(body): Json<ValidateScriptRequest>,
+) -> Result<Json<ValidateScriptResponse>, AdminError> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    // Verify provider exists
+    let db = state.dynamic_config.database();
+    let _provider = db
+        .get_provider(id)
+        .await?
+        .ok_or_else(|| AdminError::NotFound(format!("Provider with ID {} not found", id)))?;
+
+    match crate::scripting::sandbox::validate_script(&body.lua_script) {
+        Ok(()) => Ok(Json(ValidateScriptResponse {
+            valid: true,
+            error: None,
+        })),
+        Err(e) => {
+            tracing::debug!(provider_id = id, error = %e, "Script validation failed");
+            Ok(Json(ValidateScriptResponse {
+                valid: false,
+                error: Some(sanitize_lua_error(&e)),
+            }))
+        }
+    }
+}
+
+// ============================================================================
 // Router
 // ============================================================================
 
@@ -2246,6 +2339,8 @@ pub fn admin_router(state: Arc<AdminState>) -> Router {
         )
         // Provider health check route (POST /admin/v1/providers/{id}/health)
         .nest("/providers", provider_health_router())
+        // Provider script validation route
+        .route("/providers/:id/validate-script", post(validate_script))
         // Credential routes
         .route(
             "/credentials",

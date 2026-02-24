@@ -176,6 +176,7 @@ class Provider:
     model_mapping: Dict[str, ModelMappingValue] = field(default_factory=dict)
     provider_type: str = field(default="openai")
     provider_params: Dict[str, Any] = field(default_factory=dict)
+    lua_script: Optional[str] = field(default=None)
 
     def get_param(self, key: str) -> Optional[Any]:
         """Get a provider parameter by key.

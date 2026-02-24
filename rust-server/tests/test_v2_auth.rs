@@ -54,6 +54,7 @@ fn create_test_config_no_auth(mock_server_uri: &str) -> llm_proxy_rust::core::Ap
             model_mapping,
             provider_type: "openai".to_string(),
             provider_params: HashMap::new(),
+            lua_script: None,
         }],
         server: ServerConfig {
             host: "0.0.0.0".to_string(),

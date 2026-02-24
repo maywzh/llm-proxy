@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { useDebounce } from '../hooks/useDebounce';
 import { generateApiKey } from '../api/client';
 import JsonEditor from '../components/JsonEditor';
+import LuaEditor from '../components/LuaEditor';
 import { TableSkeleton } from '../components/Skeleton';
 import {
   Plus,
@@ -16,15 +18,12 @@ import {
   Inbox,
   Eye,
   EyeOff,
+  Code2,
 } from 'lucide-react';
-import type {
-  Provider,
-  ProviderFormData,
-  ProviderUpdate,
-  ProviderCreate,
-} from '../types';
+import type { Provider, ProviderFormData, ProviderCreate } from '../types';
 
 const Providers: React.FC = () => {
+  const navigate = useNavigate();
   const { apiClient } = useAuth();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(false);
@@ -32,7 +31,6 @@ const Providers: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showDisabled, setShowDisabled] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Provider | null>(null);
   const [isModalClosing, setIsModalClosing] = useState(false);
   const [modelMappingError, setModelMappingError] = useState<string | null>(
@@ -50,6 +48,8 @@ const Providers: React.FC = () => {
     gcp_publisher: '',
     gcp_blocking_action: '',
     gcp_streaming_action: '',
+    custom_headers: {},
+    lua_script: '',
   });
 
   const debouncedSearch = useDebounce(searchTerm, 300);
@@ -90,9 +90,10 @@ const Providers: React.FC = () => {
       gcp_publisher: '',
       gcp_blocking_action: '',
       gcp_streaming_action: '',
+      custom_headers: {},
+      lua_script: '',
     });
     setModelMappingError(null);
-    setEditingProvider(null);
     setShowCreateForm(false);
     setIsModalClosing(false);
   };
@@ -110,26 +111,7 @@ const Providers: React.FC = () => {
   };
 
   const handleEdit = (provider: Provider) => {
-    setEditingProvider(provider);
-    setModelMappingError(null);
-    setFormData({
-      provider_key: provider.provider_key,
-      provider_type: provider.provider_type,
-      api_base: provider.api_base,
-      api_key: '', // Don't populate existing key for security
-      model_mapping: provider.model_mapping,
-      is_enabled: provider.is_enabled,
-      gcp_project: (provider.provider_params?.gcp_project as string) || '',
-      gcp_location: (provider.provider_params?.gcp_location as string) || '',
-      gcp_publisher: (provider.provider_params?.gcp_publisher as string) || '',
-      gcp_blocking_action:
-        (provider.provider_params?.gcp_vertex_actions as Record<string, string>)
-          ?.blocking || '',
-      gcp_streaming_action:
-        (provider.provider_params?.gcp_vertex_actions as Record<string, string>)
-          ?.streaming || '',
-    });
-    setShowCreateForm(true);
+    navigate(`/providers/${provider.id}`);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -151,89 +133,45 @@ const Providers: React.FC = () => {
     setError(null);
 
     try {
-      if (editingProvider) {
-        // Update existing provider
-        const updateData: ProviderUpdate = {
-          provider_type: formData.provider_type,
-          api_base: formData.api_base,
-          model_mapping: formData.model_mapping,
-          is_enabled: formData.is_enabled,
+      // Create new provider
+      const createData: ProviderCreate = {
+        provider_key: formData.provider_key,
+        provider_type: formData.provider_type,
+        api_base: formData.api_base,
+        api_key: formData.api_key,
+        model_mapping: formData.model_mapping,
+        lua_script: formData.lua_script || null,
+      };
+
+      // Include provider_params for GCP Vertex / Gemini
+      if (
+        formData.provider_type === 'gcp-vertex' ||
+        formData.provider_type === 'gemini'
+      ) {
+        const params: Record<string, unknown> = {
+          gcp_project: formData.gcp_project,
+          gcp_location: formData.gcp_location.trim() || 'us-central1',
+          gcp_publisher:
+            formData.gcp_publisher.trim() ||
+            (formData.provider_type === 'gemini' ? 'google' : 'anthropic'),
         };
-
-        // Only include API key if it's provided
-        if (formData.api_key.trim()) {
-          updateData.api_key = formData.api_key;
-        }
-
-        // Include provider_params for GCP Vertex / Gemini
         if (
-          formData.provider_type === 'gcp-vertex' ||
-          formData.provider_type === 'gemini'
+          formData.provider_type === 'gcp-vertex' &&
+          (formData.gcp_blocking_action.trim() ||
+            formData.gcp_streaming_action.trim())
         ) {
-          const params: Record<string, unknown> = {
-            gcp_project: formData.gcp_project,
-            gcp_location: formData.gcp_location.trim() || 'us-central1',
-            gcp_publisher:
-              formData.gcp_publisher.trim() ||
-              (formData.provider_type === 'gemini' ? 'google' : 'anthropic'),
+          params.gcp_vertex_actions = {
+            blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
+            streaming:
+              formData.gcp_streaming_action.trim() || 'streamRawPredict',
           };
-          if (
-            formData.provider_type === 'gcp-vertex' &&
-            (formData.gcp_blocking_action.trim() ||
-              formData.gcp_streaming_action.trim())
-          ) {
-            params.gcp_vertex_actions = {
-              blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
-              streaming:
-                formData.gcp_streaming_action.trim() || 'streamRawPredict',
-            };
-          }
-          updateData.provider_params = params;
-        } else {
-          updateData.provider_params = {};
         }
-
-        await apiClient.updateProvider(editingProvider.id, updateData);
+        createData.provider_params = params;
       } else {
-        // Create new provider
-        const createData: ProviderCreate = {
-          provider_key: formData.provider_key,
-          provider_type: formData.provider_type,
-          api_base: formData.api_base,
-          api_key: formData.api_key,
-          model_mapping: formData.model_mapping,
-        };
-
-        // Include provider_params for GCP Vertex / Gemini
-        if (
-          formData.provider_type === 'gcp-vertex' ||
-          formData.provider_type === 'gemini'
-        ) {
-          const params: Record<string, unknown> = {
-            gcp_project: formData.gcp_project,
-            gcp_location: formData.gcp_location.trim() || 'us-central1',
-            gcp_publisher:
-              formData.gcp_publisher.trim() ||
-              (formData.provider_type === 'gemini' ? 'google' : 'anthropic'),
-          };
-          if (
-            formData.provider_type === 'gcp-vertex' &&
-            (formData.gcp_blocking_action.trim() ||
-              formData.gcp_streaming_action.trim())
-          ) {
-            params.gcp_vertex_actions = {
-              blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
-              streaming:
-                formData.gcp_streaming_action.trim() || 'streamRawPredict',
-            };
-          }
-          createData.provider_params = params;
-        } else {
-          createData.provider_params = {};
-        }
-
-        await apiClient.createProvider(createData);
+        createData.provider_params = {};
       }
+
+      await apiClient.createProvider(createData);
 
       resetForm();
       await loadProviders();
@@ -375,7 +313,7 @@ const Providers: React.FC = () => {
           >
             <div className="modal-header">
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                {editingProvider ? 'Edit Provider' : 'Add Provider'}
+                Add Provider
               </h3>
               <button onClick={handleCloseModal} className="btn-icon">
                 <X className="w-5 h-5" />
@@ -398,10 +336,10 @@ const Providers: React.FC = () => {
                         provider_key: e.target.value,
                       }))
                     }
-                    disabled={!!editingProvider}
+                    disabled={false}
                     className="input"
                     placeholder="e.g., openai-primary"
-                    required={!editingProvider}
+                    required
                   />
                 </div>
 
@@ -588,8 +526,7 @@ const Providers: React.FC = () => {
 
               <div>
                 <label htmlFor="api_key" className="label">
-                  API Key{' '}
-                  {editingProvider ? '(leave empty to keep current)' : ''}
+                  API Key
                 </label>
                 <div className="flex space-x-2">
                   <input
@@ -603,10 +540,8 @@ const Providers: React.FC = () => {
                       }))
                     }
                     className="input flex-1"
-                    placeholder={
-                      editingProvider ? 'Enter new API key...' : 'sk-...'
-                    }
-                    required={!editingProvider}
+                    placeholder="sk-..."
+                    required
                   />
                   <button
                     type="button"
@@ -631,6 +566,18 @@ const Providers: React.FC = () => {
                   rows={6}
                   placeholder='{\n  "gpt-4": "gpt-4-turbo",\n  "gpt-3.5-turbo": "gpt-3.5-turbo-16k"\n}'
                   helperText='JSON object in format: {"source_model":"target_model"}'
+                />
+              </div>
+
+              <div>
+                <LuaEditor
+                  id="lua_script"
+                  label="Lua Script (optional)"
+                  value={formData.lua_script}
+                  onChange={next =>
+                    setFormData(prev => ({ ...prev, lua_script: next }))
+                  }
+                  providerId={null}
                 />
               </div>
 
@@ -671,7 +618,7 @@ const Providers: React.FC = () => {
                 disabled={loading || !!modelMappingError}
               >
                 {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-                <span>{editingProvider ? 'Update' : 'Create'} Provider</span>
+                <span>Create Provider</span>
               </button>
             </div>
           </div>
@@ -722,8 +669,13 @@ const Providers: React.FC = () => {
                   {filteredProviders.map(provider => (
                     <tr key={provider.id}>
                       <td>
-                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100 flex items-center gap-1.5">
                           {provider.provider_key}
+                          {provider.lua_script && (
+                            <span title="Lua script active">
+                              <Code2 className="w-3.5 h-3.5 text-amber-500" />
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">
                           ID: {provider.id}

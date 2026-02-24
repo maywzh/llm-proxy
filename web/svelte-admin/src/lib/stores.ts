@@ -148,6 +148,7 @@ export const actions = {
         api_base: data.api_base,
         api_key: data.api_key,
         model_mapping: data.model_mapping,
+        lua_script: data.lua_script || null,
       };
 
       // Include provider_params for GCP Vertex

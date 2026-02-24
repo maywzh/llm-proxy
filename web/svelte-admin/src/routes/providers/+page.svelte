@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { providers, loading, errors, actions } from '$lib/stores';
   import { generateApiKey } from '$lib/api';
   import { debounce } from '$lib/debounce';
   import JsonEditor from '$lib/components/JsonEditor.svelte';
+  import LuaEditor from '$lib/components/LuaEditor.svelte';
   import TableSkeleton from '$lib/components/TableSkeleton.svelte';
-  import type { Provider, ProviderFormData, ProviderUpdate } from '$lib/types';
+  import type { Provider, ProviderFormData } from '$lib/types';
   import {
     Plus,
     Pencil,
@@ -18,6 +20,7 @@
     Inbox,
     Eye,
     EyeOff,
+    Code2,
   } from 'lucide-svelte';
 
   const DEFAULT_COPILOT_HEADERS: Record<string, string> = {
@@ -30,7 +33,6 @@
   let showDisabled = $state(false);
   let showCreateForm = $state(false);
   let isModalClosing = $state(false);
-  let editingProvider: Provider | null = $state(null);
   let deleteConfirm: Provider | null = $state(null);
   let formData: ProviderFormData = $state({
     provider_key: '',
@@ -45,6 +47,7 @@
     gcp_blocking_action: '',
     gcp_streaming_action: '',
     custom_headers: {},
+    lua_script: '',
   });
   let modelMappingError = $state<string | null>(null);
   let newHeaderKey = $state('');
@@ -97,11 +100,11 @@
       gcp_blocking_action: '',
       gcp_streaming_action: '',
       custom_headers: {},
+      lua_script: '',
     };
     modelMappingError = null;
     newHeaderKey = '';
     newHeaderValue = '';
-    editingProvider = null;
     showCreateForm = false;
     isModalClosing = false;
   }
@@ -119,31 +122,7 @@
   }
 
   function handleEdit(provider: Provider) {
-    editingProvider = provider;
-    formData = {
-      provider_key: provider.provider_key,
-      provider_type: provider.provider_type,
-      api_base: provider.api_base,
-      api_key: '', // Don't populate existing key for security
-      model_mapping: provider.model_mapping,
-      is_enabled: provider.is_enabled,
-      gcp_project: (provider.provider_params?.gcp_project as string) || '',
-      gcp_location: (provider.provider_params?.gcp_location as string) || '',
-      gcp_publisher: (provider.provider_params?.gcp_publisher as string) || '',
-      gcp_blocking_action:
-        (provider.provider_params?.gcp_vertex_actions as Record<string, string>)
-          ?.blocking || '',
-      gcp_streaming_action:
-        (provider.provider_params?.gcp_vertex_actions as Record<string, string>)
-          ?.streaming || '',
-      custom_headers:
-        (provider.provider_params?.custom_headers as Record<string, string>) ||
-        {},
-    };
-    modelMappingError = null;
-    newHeaderKey = '';
-    newHeaderValue = '';
-    showCreateForm = true;
+    goto(`/providers/${provider.id}`);
   }
 
   async function handleSubmit() {
@@ -163,83 +142,25 @@
       return;
     }
 
-    if (editingProvider) {
-      // Update existing provider
-      const updateData: ProviderUpdate = {
-        provider_type: formData.provider_type,
-        api_base: formData.api_base,
-        model_mapping: formData.model_mapping,
-        is_enabled: formData.is_enabled,
-      };
+    const createData: ProviderFormData = {
+      provider_key: formData.provider_key,
+      provider_type: formData.provider_type,
+      api_base: formData.api_base,
+      api_key: formData.api_key,
+      model_mapping: formData.model_mapping,
+      is_enabled: formData.is_enabled,
+      gcp_project: formData.gcp_project,
+      gcp_location: formData.gcp_location,
+      gcp_publisher: formData.gcp_publisher,
+      gcp_blocking_action: formData.gcp_blocking_action,
+      gcp_streaming_action: formData.gcp_streaming_action,
+      custom_headers: formData.custom_headers,
+      lua_script: formData.lua_script,
+    };
 
-      // Only include API key if it's provided
-      if (formData.api_key.trim()) {
-        updateData.api_key = formData.api_key;
-      }
-
-      // Include provider_params for GCP Vertex / Gemini
-      if (
-        formData.provider_type === 'gcp-vertex' ||
-        formData.provider_type === 'gemini'
-      ) {
-        const params: Record<string, unknown> = {
-          gcp_project: formData.gcp_project,
-          gcp_location: formData.gcp_location.trim() || 'us-central1',
-          gcp_publisher:
-            formData.gcp_publisher.trim() ||
-            (formData.provider_type === 'gemini' ? 'google' : 'anthropic'),
-        };
-        if (
-          formData.provider_type === 'gcp-vertex' &&
-          (formData.gcp_blocking_action.trim() ||
-            formData.gcp_streaming_action.trim())
-        ) {
-          params.gcp_vertex_actions = {
-            blocking: formData.gcp_blocking_action.trim() || 'rawPredict',
-            streaming:
-              formData.gcp_streaming_action.trim() || 'streamRawPredict',
-          };
-        }
-        if (Object.keys(formData.custom_headers).length > 0) {
-          params.custom_headers = formData.custom_headers;
-        }
-        updateData.provider_params = params;
-      } else {
-        const params: Record<string, unknown> = {};
-        if (Object.keys(formData.custom_headers).length > 0) {
-          params.custom_headers = formData.custom_headers;
-        }
-        updateData.provider_params = params;
-      }
-
-      const success = await actions.updateProvider(
-        editingProvider.id,
-        updateData
-      );
-      if (success) {
-        resetForm();
-      }
-    } else {
-      // Create new provider
-      const createData: ProviderFormData = {
-        provider_key: formData.provider_key,
-        provider_type: formData.provider_type,
-        api_base: formData.api_base,
-        api_key: formData.api_key,
-        model_mapping: formData.model_mapping,
-        is_enabled: formData.is_enabled,
-        gcp_project: formData.gcp_project,
-        gcp_location: formData.gcp_location,
-        gcp_publisher: formData.gcp_publisher,
-        gcp_blocking_action: formData.gcp_blocking_action,
-        gcp_streaming_action: formData.gcp_streaming_action,
-        custom_headers: formData.custom_headers,
-      };
-
-      const success = await actions.createProvider(createData);
-      if (success) {
-        resetForm();
-      }
+    const success = await actions.createProvider(createData);
+    if (success) {
+      resetForm();
     }
   }
 
@@ -306,7 +227,7 @@
         <span
           class="inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform {showDisabled
             ? 'translate-x-4.5'
-            : 'translate-x-0.75'}"
+            : 'translate-x-0.76'}"
         ></span>
       </button>
       {#if showDisabled}
@@ -340,7 +261,7 @@
     </div>
   {/if}
 
-  <!-- Create/Edit Form Modal -->
+  <!-- Create Form Modal -->
   {#if showCreateForm}
     <div
       class="modal-overlay {isModalClosing
@@ -364,7 +285,7 @@
       >
         <div class="modal-header">
           <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
-            {editingProvider ? 'Edit Provider' : 'Add Provider'}
+            Add Provider
           </h3>
           <button onclick={handleCloseModal} class="btn-icon">
             <X class="w-5 h-5" />
@@ -385,10 +306,9 @@
                 id="provider_key"
                 type="text"
                 bind:value={formData.provider_key}
-                disabled={!!editingProvider}
                 class="input"
                 placeholder="e.g., openai-primary"
-                required={!editingProvider}
+                required
               />
             </div>
 
@@ -619,19 +539,15 @@
           </div>
 
           <div>
-            <label for="api_key" class="label">
-              API Key {editingProvider ? '(leave empty to keep current)' : ''}
-            </label>
+            <label for="api_key" class="label">API Key</label>
             <div class="flex space-x-2">
               <input
                 id="api_key"
                 type="password"
                 bind:value={formData.api_key}
                 class="input flex-1"
-                placeholder={editingProvider
-                  ? 'Enter new API key...'
-                  : 'sk-...'}
-                required={!editingProvider}
+                placeholder="sk-..."
+                required
               />
               <button
                 type="button"
@@ -654,6 +570,16 @@
               rows={6}
               placeholder={`{\n  "gpt-4": "gpt-4-turbo",\n  "gpt-3.5-turbo": "gpt-3.5-turbo-16k"\n}`}
               helperText={'JSON object in format: {"source_model":"target_model"}'}
+            />
+          </div>
+
+          <div>
+            <LuaEditor
+              id="lua_script"
+              label="Lua Script (optional)"
+              value={formData.lua_script}
+              onChange={next => (formData.lua_script = next)}
+              rows={10}
             />
           </div>
 
@@ -690,7 +616,7 @@
             {#if $loading.providers}
               <Loader2 class="w-4 h-4 animate-spin" />
             {/if}
-            <span>{editingProvider ? 'Update' : 'Create'} Provider</span>
+            <span>Create Provider</span>
           </button>
         </div>
       </div>
@@ -755,9 +681,14 @@
                 <tr class="animate-fade-in">
                   <td>
                     <div
-                      class="text-sm font-medium text-gray-900 dark:text-gray-100"
+                      class="text-sm font-medium text-gray-900 dark:text-gray-100 flex items-center gap-1.5"
                     >
                       {provider.provider_key}
+                      {#if provider.lua_script}
+                        <span title="Lua script active">
+                          <Code2 class="w-3.5 h-3.5 text-amber-500" />
+                        </span>
+                      {/if}
                     </div>
                     <div class="text-xs text-gray-500 dark:text-gray-400">
                       ID: {provider.id}

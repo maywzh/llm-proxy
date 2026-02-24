@@ -4,7 +4,7 @@
 # complete transformation flow between client and provider protocols.
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from .base import TransformContext
 from .rectifier import sanitize_provider_payload
@@ -16,6 +16,9 @@ from .unified import (
     UnifiedStreamChunk,
     ThinkingContent,
 )
+
+if TYPE_CHECKING:
+    from app.scripting.engine import LuaEngine
 
 
 # =============================================================================
@@ -195,9 +198,11 @@ class TransformPipeline:
         self,
         registry: TransformerRegistry,
         feature_transformers: Optional[FeatureTransformer] = None,
+        lua_engine: Optional["LuaEngine"] = None,
     ) -> None:
         self._registry = registry
         self._feature_transformers = feature_transformers
+        self._lua_engine = lua_engine
 
     @classmethod
     def default(cls) -> "TransformPipeline":
@@ -239,6 +244,24 @@ class TransformPipeline:
         """Get the feature transformers (if any)."""
         return self._feature_transformers
 
+    def set_lua_engine(self, engine: "LuaEngine") -> None:
+        """Set the Lua scripting engine."""
+        self._lua_engine = engine
+
+    @property
+    def lua_engine(self) -> Optional["LuaEngine"]:
+        return self._lua_engine
+
+    def has_lua_script(self, provider_name: str) -> bool:
+        if self._lua_engine is None:
+            return False
+        return self._lua_engine.has_script(provider_name)
+
+    def has_lua_transform_hooks(self, provider_name: str) -> bool:
+        if self._lua_engine is None:
+            return False
+        return self._lua_engine.has_transform_hooks(provider_name)
+
     # =========================================================================
     # Core Transformation Methods
     # =========================================================================
@@ -246,21 +269,37 @@ class TransformPipeline:
     def transform_request(
         self, raw: dict[str, Any], ctx: TransformContext
     ) -> dict[str, Any]:
-        """
-        Transform a client request to provider format.
-
-        Args:
-            raw: Raw request payload from client
-            ctx: Transform context with protocol info
-
-        Returns:
-            Transformed request payload for provider
-        """
+        """Transform a client request to provider format."""
         client_transformer = self._registry.get_or_error(ctx.client_protocol)
         provider_transformer = self._registry.get_or_error(ctx.provider_protocol)
 
+        client_proto = (
+            str(ctx.client_protocol.value)
+            if hasattr(ctx.client_protocol, "value")
+            else str(ctx.client_protocol)
+        )
+        provider_proto = (
+            str(ctx.provider_protocol.value)
+            if hasattr(ctx.provider_protocol, "value")
+            else str(ctx.provider_protocol)
+        )
+
         # Step 1: Client format → Unified
-        unified = client_transformer.transform_request_out(raw)
+        # Try Lua on_transform_request_out first; fallback to hardcoded.
+        unified: Optional[UnifiedRequest] = None
+        if self._lua_engine is not None:
+            uif_dict = self._lua_engine.call_on_transform_request_out(
+                ctx.provider_name,
+                raw,
+                ctx.original_model,
+                client_proto,
+                provider_proto,
+            )
+            if uif_dict is not None:
+                unified = UnifiedRequest.model_validate(uif_dict)
+
+        if unified is None:
+            unified = client_transformer.transform_request_out(raw)
 
         # Update model name if mapped
         if ctx.mapped_model and ctx.mapped_model != ctx.original_model:
@@ -271,26 +310,56 @@ class TransformPipeline:
             self._feature_transformers.transform_request(unified)
 
         # Step 3: Unified → Provider format
+        # Try Lua on_transform_request_in first; fallback to hardcoded.
+        if self._lua_engine is not None:
+            provider_json = self._lua_engine.call_on_transform_request_in(
+                ctx.provider_name,
+                unified.model_dump(exclude_none=True),
+                ctx.original_model,
+                client_proto,
+                provider_proto,
+            )
+            if provider_json is not None:
+                return provider_json
+
         return provider_transformer.transform_request_in(unified)
 
     def transform_response(
         self, raw: dict[str, Any], ctx: TransformContext
     ) -> dict[str, Any]:
-        """
-        Transform a provider response to client format.
-
-        Args:
-            raw: Raw response payload from provider
-            ctx: Transform context with protocol info
-
-        Returns:
-            Transformed response payload for client
-        """
+        """Transform a provider response to client format."""
         client_transformer = self._registry.get_or_error(ctx.client_protocol)
         provider_transformer = self._registry.get_or_error(ctx.provider_protocol)
 
+        client_proto = (
+            str(ctx.client_protocol.value)
+            if hasattr(ctx.client_protocol, "value")
+            else str(ctx.client_protocol)
+        )
+        provider_proto = (
+            str(ctx.provider_protocol.value)
+            if hasattr(ctx.provider_protocol, "value")
+            else str(ctx.provider_protocol)
+        )
+
         # Step 1: Provider format → Unified
-        unified = provider_transformer.transform_response_in(raw, ctx.original_model)
+        # Try Lua on_transform_response_in first; fallback to hardcoded.
+        unified: Optional[UnifiedResponse] = None
+        if self._lua_engine is not None:
+            uif_dict = self._lua_engine.call_on_transform_response_in(
+                ctx.provider_name,
+                raw,
+                ctx.original_model,
+                client_proto,
+                provider_proto,
+            )
+            if uif_dict is not None:
+                unified = UnifiedResponse.model_validate(uif_dict)
+
+        if unified is None:
+            unified = provider_transformer.transform_response_in(
+                raw, ctx.original_model
+            )
 
         # Restore original model name for client
         unified.model = ctx.original_model
@@ -300,6 +369,18 @@ class TransformPipeline:
             self._feature_transformers.transform_response(unified)
 
         # Step 3: Unified → Client format
+        # Try Lua on_transform_response_out first; fallback to hardcoded.
+        if self._lua_engine is not None:
+            client_json = self._lua_engine.call_on_transform_response_out(
+                ctx.provider_name,
+                unified.model_dump(exclude_none=True),
+                ctx.original_model,
+                client_proto,
+                provider_proto,
+            )
+            if client_json is not None:
+                return client_json
+
         return client_transformer.transform_response_out(unified, ctx.client_protocol)
 
     def transform_stream_chunk(self, chunk: UnifiedStreamChunk) -> None:
@@ -323,17 +404,14 @@ class TransformPipeline:
         Bypass mode is used when:
         1. Client and provider use the same protocol
         2. No feature transformers are configured
-
-        In bypass mode, requests/responses pass through with minimal transformation
-        (only model name mapping is applied).
-
-        Args:
-            ctx: Transform context
-
-        Returns:
-            True if bypass mode should be used
+        3. No Lua script or transform hooks for the provider
         """
-        return ctx.is_same_protocol() and not self.has_features()
+        return (
+            ctx.is_same_protocol()
+            and not self.has_features()
+            and not self.has_lua_script(ctx.provider_name)
+            and not self.has_lua_transform_hooks(ctx.provider_name)
+        )
 
     def transform_request_with_bypass(
         self, raw: dict[str, Any], ctx: TransformContext
